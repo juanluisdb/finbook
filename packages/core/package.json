@@ -15,5 +15,9 @@
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "decimal.js": "10.6.0",
+    "zod": "4.4.3"
   }
 }
