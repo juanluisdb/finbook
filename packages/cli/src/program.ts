@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import {
   FileBookStore,
   getGlance,
@@ -19,8 +21,13 @@ import { requireDate } from "./dates.js";
 import { notFoundFailure, requireResult, validationFailure } from "./errors.js";
 import { createDoctor, type DoctorSummary } from "./doctor.js";
 import { formatMoney, formatRows, writeSuccess } from "./output.js";
+import { addAccount, addEvent, addInstrument, setFx, setPrice } from "./writes.js";
 
-export function createProgram(dataHome: string, defaultDate: string): Command {
+export function createProgram(
+  dataHome: string,
+  defaultDate: string,
+  generateId: () => string = randomUUID,
+): Command {
   const store = new FileBookStore(dataHome);
   const program = new Command()
     .name("finbook")
@@ -38,6 +45,15 @@ export function createProgram(dataHome: string, defaultDate: string): Command {
   doctor.action((_options, command) => showDoctor(store, jsonMode(command), defaultDate));
 
   const account = program.command("account").description("manage accounts");
+  const accountAdd = account.command("add").description("add an account");
+  accountAdd
+    .requiredOption("--id <id>", "account ID")
+    .requiredOption("--name <name>", "account name")
+    .requiredOption("--platform <platform>", "custodian platform")
+    .requiredOption("--country <code>", "custody country")
+    .requiredOption("--custodial <kind>", "custodial kind: broker, crypto-exchange, or cash");
+  addJsonOption(accountAdd);
+  accountAdd.action((_options, command) => addAccount(store, command.opts(), jsonMode(command)));
   const accountList = account.command("list").description("list accounts");
   addJsonOption(accountList);
   accountList.action((_options, command) => listAccounts(store, jsonMode(command)));
@@ -46,6 +62,17 @@ export function createProgram(dataHome: string, defaultDate: string): Command {
   accountGet.action((id, _options, command) => getAccount(store, id, jsonMode(command)));
 
   const instrument = program.command("instrument").description("manage instruments");
+  const instrumentAdd = instrument.command("add").description("add an instrument");
+  instrumentAdd
+    .requiredOption("--id <id>", "instrument ID")
+    .requiredOption("--name <name>", "instrument name")
+    .requiredOption("--type <type>", "instrument type: stock, etf, fund, or crypto")
+    .requiredOption("--quote-currency <code>", "instrument quote currency")
+    .option("--isin <isin>", "ISIN");
+  addJsonOption(instrumentAdd);
+  instrumentAdd.action((_options, command) =>
+    addInstrument(store, command.opts(), jsonMode(command)),
+  );
   const instrumentList = instrument.command("list").description("list instruments");
   addJsonOption(instrumentList);
   instrumentList.action((_options, command) => listInstruments(store, jsonMode(command)));
@@ -54,6 +81,12 @@ export function createProgram(dataHome: string, defaultDate: string): Command {
   instrumentGet.action((id, _options, command) => getInstrument(store, id, jsonMode(command)));
 
   const event = program.command("event").description("inspect events");
+  const eventAdd = event.command("add [type]").description("add an event from flags or --file");
+  addEventOptions(eventAdd);
+  addJsonOption(eventAdd);
+  eventAdd.action((type, _options, command) =>
+    addEvent(store, type, command.opts(), jsonMode(command), generateId),
+  );
   const eventList = event.command("list").description("list events");
   eventList
     .option("--account <id>", "filter by account")
@@ -67,12 +100,27 @@ export function createProgram(dataHome: string, defaultDate: string): Command {
   addJsonOption(eventGet);
   eventGet.action((id, _options, command) => getEvent(store, id, jsonMode(command)));
 
-  const price = program.command("price").description("inspect price stamps");
+  const price = program.command("price").description("manage price stamps");
+  const priceSet = price.command("set").description("append a price stamp");
+  priceSet
+    .requiredOption("--instrument <id>", "instrument ID")
+    .requiredOption("--amount <decimal>", "price amount")
+    .requiredOption("--currency <code>", "price currency")
+    .requiredOption("--as-of <date>", "price date");
+  addJsonOption(priceSet);
+  priceSet.action((_options, command) => setPrice(store, command.opts(), jsonMode(command)));
   const priceList = price.command("list").description("list price stamps");
   addJsonOption(priceList);
   priceList.action((_options, command) => listPrices(store, jsonMode(command)));
 
-  const fx = program.command("fx").description("inspect FX stamps");
+  const fx = program.command("fx").description("manage FX stamps");
+  const fxSet = fx.command("set").description("append an FX stamp");
+  fxSet
+    .requiredOption("--pair <pair>", "currency/EUR pair")
+    .requiredOption("--rate <decimal>", "EUR per unit")
+    .requiredOption("--as-of <date>", "rate date");
+  addJsonOption(fxSet);
+  fxSet.action((_options, command) => setFx(store, command.opts(), jsonMode(command)));
   const fxList = fx.command("list").description("list FX stamps");
   addJsonOption(fxList);
   fxList.action((_options, command) => listFx(store, jsonMode(command)));
@@ -107,6 +155,36 @@ type EventListOptions = JsonOptions & {
 type AsOfOptions = JsonOptions & {
   asOf?: string | undefined;
 };
+
+function addEventOptions(command: Command): void {
+  command
+    .option("--file <path>", "read one canonical event object")
+    .option("--id <id>", "event ID; generated when omitted")
+    .option("--date <date>", "event date")
+    .option("--source <source>", "event source; defaults to manual")
+    .option("--external-id <id>", "source-specific idempotency ID")
+    .option("--note <text>", "event note")
+    .option("--account <id>", "account ID")
+    .option("--from <id>", "source account or amount, depending on event type")
+    .option("--to <id>", "destination account or amount, depending on event type")
+    .option("--amount <decimal>", "amount")
+    .option("--currency <code>", "currency")
+    .option("--from-amount <decimal>", "FX source amount")
+    .option("--from-currency <code>", "FX source currency")
+    .option("--to-amount <decimal>", "FX destination amount")
+    .option("--to-currency <code>", "FX destination currency")
+    .option("--fee-amount <decimal>", "trade or FX fee amount")
+    .option("--fee-currency <code>", "trade or FX fee currency")
+    .option("--instrument <id>", "instrument ID")
+    .option("--qty <decimal>", "quantity")
+    .option("--price-amount <decimal>", "trade price amount")
+    .option("--price-currency <code>", "trade price currency")
+    .option("--gross-amount <decimal>", "gross income amount")
+    .option("--gross-currency <code>", "gross income currency")
+    .option("--withholding-foreign-amount <decimal>", "foreign withholding")
+    .option("--withholding-domestic-amount <decimal>", "domestic withholding")
+    .option("--eur-per-unit <decimal>", "historical EUR per unit rate");
+}
 
 function addJsonOption(command: Command): void {
   command.option("--json", "return the stable JSON envelope");
