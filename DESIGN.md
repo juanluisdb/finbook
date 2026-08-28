@@ -371,6 +371,7 @@ Clock and ID generation are injected (or passed in) so tests do not freeze globa
 | Runtime | Node `^24.19.0` (Active LTS). Project must refuse Node 26. |
 | Package manager | pnpm `11.24.0` (`packageManager` field) |
 | Language | TypeScript `7.0.2` |
+| Node types | `@types/node` `24.13.3` |
 | Modules | `"type": "module"`, `module`/`moduleResolution`: `nodenext` |
 | Build | `tsc -b` project references → `dist/`. Bin runs `dist`. No Bun, no Deno, no tsx as the product path. |
 | Lint | oxlint `1.80.0` + `@oxlint/plugins` `1.80.0` + oxlint-tsgolint `7.0.2001`, `--type-aware` + copied anti-slop rules |
