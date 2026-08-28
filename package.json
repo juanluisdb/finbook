@@ -4,12 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -b",
-    "typecheck": "tsc -b --pretty false",
+    "preinstall": "node tools/assert-node.mjs",
+    "build": "node tools/assert-node.mjs && tsc -b",
+    "typecheck": "node tools/assert-node.mjs && tsc -b --pretty false",
     "lint": "oxlint --type-aware --ignore-path .oxlintignore .",
     "format:check": "oxfmt --check --ignore-path .oxfmtignore .",
     "test": "vitest run",
-    "check": "tsc -b && oxlint --type-aware --ignore-path .oxlintignore . && oxfmt --check --ignore-path .oxfmtignore . && vitest run"
+    "check": "node tools/assert-node.mjs && tsc -b && oxlint --type-aware --ignore-path .oxlintignore . && oxfmt --check --ignore-path .oxfmtignore . && vitest run"
   },
   "devDependencies": {
     "@oxlint/plugins": "1.80.0",

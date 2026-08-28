@@ -104,6 +104,16 @@ describe("FileBookStore", () => {
     expect(readFileSync(eventPath, "utf8")).toBe(before);
   });
 
+  it("rejects a duplicate event ID even without an external ID", () => {
+    const store = temporaryStore();
+    const first = { ...event, externalId: undefined };
+    expect(store.appendEvent(first).ok).toBe(true);
+
+    const duplicate = store.appendEvent({ ...first, date: "2026-03-02" });
+
+    expect(duplicate).toMatchObject({ ok: false, error: { type: "invariant" } });
+  });
+
   it("reports the file and line for corrupt JSONL", () => {
     const store = temporaryStore();
     expect(store.load().ok).toBe(true);

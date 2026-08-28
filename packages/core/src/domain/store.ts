@@ -72,6 +72,8 @@ export class FileBookStore {
 
     const events = this.readJsonLines(FILES.events, EventSchema);
     if (!events.ok) return fail(events.error);
+    const duplicateEventId = duplicateIdError("event", events.data);
+    if (duplicateEventId !== undefined) return fail(duplicateEventId);
     const duplicateEvent = duplicateExternalIdError(events.data);
     if (duplicateEvent !== undefined) return fail(duplicateEvent);
 
@@ -144,6 +146,11 @@ export class FileBookStore {
     if (!parsed.success) return fail(validationError(FILES.events, parsed.error));
     const snapshot = this.load();
     if (!snapshot.ok) return fail(snapshot.error);
+    if (snapshot.data.events.some((existing) => existing.id === parsed.data.id)) {
+      return fail(
+        invariantError(`Event ID already exists: ${parsed.data.id}.`, "Choose a new event ID."),
+      );
+    }
     if (
       parsed.data.externalId !== undefined &&
       snapshot.data.events.some(

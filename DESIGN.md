@@ -4,7 +4,7 @@ Handoff for a developer who was not in the planning conversation. This file is t
 
 **Product name:** finbook
 **Binary:** `finbook`
-**Repo:** `this repository`
+**Repo:** this repository
 **Data dir:** `$FINBOOK_HOME`, default `~/.finbook`
 **Audience:** one person, this machine. Backup is copy the data folder.
 
@@ -111,7 +111,7 @@ On disk and on the wire, decimal values never use IEEE `number`:
 Money = { amount: string /* decimal */, currency: string /* ISO 4217 or crypto ticker */ }
 ```
 
-Amounts, quantities, prices, rates, and weights are decimal strings at the boundary. Counts may be normal integers. In core, parse decimal strings with `decimal.js`; a `Money` wrapper **refuses** to add different currencies.
+Amounts, quantities, prices, rates, and weights are decimal strings at the boundary. Decimal input uses plain notation without exponents; serialization canonicalizes it without rounding. Counts may be normal integers. In core, parse decimal strings with `decimal.js`; a `Money` wrapper **refuses** to add different currencies.
 
 Reporting currency is **EUR**. Not a setting.
 
@@ -218,8 +218,12 @@ contributedEur  = net deposits/withdrawals with historical rates;
 pnlEur          = totalEur − contributedEur when both are known;
                   otherwise null
 holes           = historical-rate and valuation holes
-byPlatform, byAssetType, byCurrency, cash, weights
-asOf            = the date asked
+byPlatform       = marked EUR value grouped by account platform
+byAssetType      = marked EUR value grouped by position type
+byCurrency       = marked EUR value grouped by native cash/quote currency
+cash             = detailed native cash balances and EUR marks
+weights          = each breakdown’s marked value divided by totalEur
+asOf             = the date asked
 ```
 
 A missing historical rate on a buy, sell, dividend, interest, or standalone fee remains a visible hole, but does not by itself make a currently markable position unknown. `Z` on the home screen is `pnlEur` when available; it is not “IRPF this year” and not currency-FIFO P&L.
@@ -301,7 +305,7 @@ $FINBOOK_HOME/          # default ~/.finbook
 - Inspectable files. Backup = copy this folder.
 - Never commit this folder. Never write the book into the git checkout.
 - `events.jsonl`, `prices.jsonl`, and `fx.jsonl` are append-only. For a repeated price or FX key at the same date, the last appended record wins.
-- `source` + `externalId` unique when `externalId` is present (parser retries).
+- Event `id` is unique within the book. `source` + `externalId` is also unique when `externalId` is present (parser retries).
 - A corrupt JSONL line fails that line and identifies its file and line number; do not silently skip.
 - File mode: owner-only where the OS allows (`0600`).
 - Parse at the boundary with Zod. Downstream sees the parsed type, never the raw line.

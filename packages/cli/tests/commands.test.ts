@@ -156,6 +156,33 @@ describe("read CLI", () => {
     });
   });
 
+  it("shows help when no command is provided", () => {
+    const result = runCli(temporaryHome(), []);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("Usage: finbook");
+  });
+
+  it("rejects an inverted event date range as validation", () => {
+    const result = runCli(temporaryHome(), [
+      "event",
+      "list",
+      "--from",
+      "2026-03-02",
+      "--to",
+      "2026-03-01",
+      "--json",
+    ]);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: false,
+      error: { type: "validation" },
+    });
+  });
+
   it("lists stamps and shows as-of positions as JSON", () => {
     const dataHome = temporaryHome();
     const store = new FileBookStore(dataHome);

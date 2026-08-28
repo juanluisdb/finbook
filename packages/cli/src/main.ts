@@ -20,6 +20,10 @@ export function main(
     assertSupportedNodeVersion();
     const runtimeConfig = loadRuntimeConfig(env, cwd);
     const program = createProgram(runtimeConfig.dataHome, currentDate());
+    if (argv.length === 0) {
+      program.outputHelp();
+      return 0;
+    }
     program.parse([process.execPath, "finbook", ...argv]);
     return 0;
   } catch (error) {

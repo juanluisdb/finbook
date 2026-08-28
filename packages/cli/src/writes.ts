@@ -401,9 +401,7 @@ function optionalMoney(
   amountFlag: string,
   currencyFlag: string,
 ): { amount: string; currency: string } | undefined {
-  if (amount === undefined && currency === undefined) return undefined;
-  if (amount === undefined)
-    throw validationFailure(`Missing ${amountFlag}.`, `Provide ${amountFlag}.`);
+  if (amount === undefined) return undefined;
   if (currency === undefined || currency.trim() === "") {
     throw validationFailure(`Missing ${currencyFlag}.`, `Provide ${currencyFlag}.`);
   }
