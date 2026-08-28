@@ -7,11 +7,14 @@ export type DoctorSummary = {
   dataPath: string;
 };
 
+export function createDoctor(
+  dataPath: string,
+  eventCount: number,
+  holeCount: number,
+): DoctorSummary {
+  return { schemaVersion: CURRENT_SCHEMA_VERSION, eventCount, holeCount, dataPath };
+}
+
 export function createEmptyDoctor(dataPath: string): DoctorSummary {
-  return {
-    schemaVersion: CURRENT_SCHEMA_VERSION,
-    eventCount: 0,
-    holeCount: 0,
-    dataPath,
-  };
+  return createDoctor(dataPath, 0, 0);
 }

@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 
+import { CommanderError } from "commander";
+
+import { currentDate } from "./dates.js";
+import { CliFailure } from "./errors.js";
 import { loadRuntimeConfig } from "./environment.js";
-import { createEmptyDoctor } from "./doctor.js";
+import { writeError } from "./output.js";
+import { createProgram } from "./program.js";
 import { assertSupportedNodeVersion } from "./runtime.js";
 
 export function main(
@@ -9,29 +14,55 @@ export function main(
   env: NodeJS.ProcessEnv = process.env,
   cwd: string = process.cwd(),
 ): number {
-  assertSupportedNodeVersion();
-  const runtimeConfig = loadRuntimeConfig(env, cwd);
+  const json = argv.includes("--json");
 
-  if (argv[0] !== "doctor") {
-    process.stderr.write("finbook scaffold currently supports only `doctor`.\n");
-    return 2;
-  }
-
-  const data = createEmptyDoctor(runtimeConfig.dataHome);
-  if (argv.includes("--json")) {
-    process.stdout.write(`${JSON.stringify({ ok: true, data })}\n`);
-  } else {
-    process.stdout.write(
-      [
-        `schema version: ${data.schemaVersion}`,
-        `events: ${data.eventCount}`,
-        `holes: ${data.holeCount}`,
-        `data path: ${data.dataPath}`,
-      ].join("\n") + "\n",
+  try {
+    assertSupportedNodeVersion();
+    const runtimeConfig = loadRuntimeConfig(env, cwd);
+    const program = createProgram(runtimeConfig.dataHome, currentDate());
+    program.parse([process.execPath, "finbook", ...argv]);
+    return 0;
+  } catch (error) {
+    if (error instanceof CliFailure) {
+      writeError(error.domainError, json);
+      return error.exitCode;
+    }
+    if (error instanceof CommanderError) {
+      if (error.code === "commander.helpDisplayed" || error.code === "commander.version") {
+        return 0;
+      }
+      const message = error.message.replace(/^error: /u, "");
+      writeError(
+        {
+          type: "validation",
+          message: `${message}.`,
+          hint: "Run `finbook --help` to see the available commands and flags.",
+        },
+        json,
+      );
+      return 2;
+    }
+    if (error instanceof Error) {
+      writeError(
+        {
+          type: "storage",
+          message: error.message,
+          hint: "Check the runtime and FINBOOK_HOME configuration.",
+        },
+        json,
+      );
+      return 1;
+    }
+    writeError(
+      {
+        type: "storage",
+        message: "Unexpected error.",
+        hint: "Run the command again and inspect FINBOOK_HOME.",
+      },
+      json,
     );
+    return 1;
   }
-
-  return 0;
 }
 
 process.exitCode = main();

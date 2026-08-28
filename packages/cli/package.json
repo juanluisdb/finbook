@@ -11,6 +11,7 @@
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
-    "@finbook/core": "workspace:*"
+    "@finbook/core": "workspace:*",
+    "commander": "15.0.0"
   }
 }
