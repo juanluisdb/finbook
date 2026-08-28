@@ -1,12 +1,14 @@
 {
-  "name": "finbook",
+  "name": "@finbook/cli",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": {
-    "node": "^24.19.0"
+  "bin": {
+    "finbook": "dist/main.js"
   },
-  "packageManager": "pnpm@11.24.0",
+  "dependencies": {
+    "@finbook/core": "workspace:*"
+  },
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b --pretty false"
