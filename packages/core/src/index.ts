@@ -1,4 +1,10 @@
 export { CURRENT_SCHEMA_VERSION } from "./version.js";
+export * from "./domain/apply.js";
+export * from "./domain/money.js";
+export * from "./domain/queries.js";
+export * from "./domain/replay.js";
 export * from "./domain/result.js";
 export * from "./domain/scalars.js";
 export * from "./domain/schemas.js";
+export * from "./domain/snapshot.js";
+export * from "./domain/state.js";

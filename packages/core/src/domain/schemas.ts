@@ -1,5 +1,6 @@
-import { Decimal } from "decimal.js";
 import { z } from "zod";
+
+import { DecimalMath } from "./decimal.js";
 
 import {
   AccountIdSchema,
@@ -21,12 +22,12 @@ export const MoneySchema = z
   .strict();
 
 export const PositiveMoneySchema = MoneySchema.refine(
-  (money) => new Decimal(money.amount).greaterThan(0),
+  (money) => new DecimalMath(money.amount).greaterThan(0),
   { path: ["amount"], message: "Expected a positive amount" },
 );
 
 export const NonNegativeMoneySchema = MoneySchema.refine(
-  (money) => new Decimal(money.amount).greaterThanOrEqualTo(0),
+  (money) => new DecimalMath(money.amount).greaterThanOrEqualTo(0),
   { path: ["amount"], message: "Expected a non-negative amount" },
 );
 

@@ -1,5 +1,6 @@
-import { Decimal } from "decimal.js";
 import { z } from "zod";
+
+import { DecimalMath } from "./decimal.js";
 
 const DECIMAL_PATTERN = /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/u;
 const CURRENCY_PATTERN = /^[A-Z][A-Z0-9-]{2,9}$/u;
@@ -10,15 +11,15 @@ const ISO_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/u;
 export const DecimalStringSchema = z
   .string()
   .regex(DECIMAL_PATTERN, "Expected a plain decimal string")
-  .transform((value) => new Decimal(value).toFixed());
+  .transform((value) => new DecimalMath(value).toFixed());
 
 export const PositiveDecimalStringSchema = DecimalStringSchema.refine(
-  (value) => new Decimal(value).greaterThan(0),
+  (value) => new DecimalMath(value).greaterThan(0),
   "Expected a positive decimal",
 );
 
 export const NonNegativeDecimalStringSchema = DecimalStringSchema.refine(
-  (value) => new Decimal(value).greaterThanOrEqualTo(0),
+  (value) => new DecimalMath(value).greaterThanOrEqualTo(0),
   "Expected a non-negative decimal",
 );
 
