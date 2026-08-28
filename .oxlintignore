@@ -1,0 +1,5 @@
+dist/
+coverage/
+node_modules/
+.pi/
+tools/oxlint/anti-slop/

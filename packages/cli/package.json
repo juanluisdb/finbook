@@ -2,15 +2,15 @@
   "name": "@finbook/cli",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
   "bin": {
     "finbook": "dist/main.js"
   },
-  "dependencies": {
-    "@finbook/core": "workspace:*"
-  },
+  "type": "module",
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@finbook/core": "workspace:*"
   }
 }

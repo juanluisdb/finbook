@@ -2,6 +2,7 @@ node_modules/
 dist/
 coverage/
 *.tsbuildinfo
+.pi/
 .finbook/
 
 # Local data should live outside the checkout.
