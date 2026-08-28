@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.finbook/
+
+# Local data should live outside the checkout.
+.env
+.DS_Store
