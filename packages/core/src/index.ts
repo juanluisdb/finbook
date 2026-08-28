@@ -8,3 +8,4 @@ export * from "./domain/scalars.js";
 export * from "./domain/schemas.js";
 export * from "./domain/snapshot.js";
 export * from "./domain/state.js";
+export * from "./domain/store.js";
