@@ -74,21 +74,35 @@ const AccountEventSchema = BaseEventSchema.extend({
 
 const EurRateSchema = PositiveDecimalStringSchema;
 
+export const EurRateProvenanceSchema = z
+  .object({
+    source: NonEmptyStringSchema,
+    effectiveDate: IsoDateSchema,
+    retrievedAt: IsoInstantSchema,
+  })
+  .strict();
+
 const DepositSchema = AccountEventSchema.extend({
   type: z.literal("deposit"),
   amount: PositiveMoneySchema,
   eurPerUnit: EurRateSchema,
-}).superRefine((deposit, context) =>
-  validateEurPerUnit(deposit.amount.currency, deposit.eurPerUnit, context),
-);
+  eurRateProvenance: EurRateProvenanceSchema.optional(),
+})
+  .superRefine((deposit, context) =>
+    validateEurPerUnit(deposit.amount.currency, deposit.eurPerUnit, context),
+  )
+  .superRefine(validateEurRateProvenance);
 
 const WithdrawalSchema = AccountEventSchema.extend({
   type: z.literal("withdrawal"),
   amount: PositiveMoneySchema,
   eurPerUnit: EurRateSchema,
-}).superRefine((withdrawal, context) =>
-  validateEurPerUnit(withdrawal.amount.currency, withdrawal.eurPerUnit, context),
-);
+  eurRateProvenance: EurRateProvenanceSchema.optional(),
+})
+  .superRefine((withdrawal, context) =>
+    validateEurPerUnit(withdrawal.amount.currency, withdrawal.eurPerUnit, context),
+  )
+  .superRefine(validateEurRateProvenance);
 
 const TransferSchema = BaseEventSchema.extend({
   type: z.literal("transfer"),
@@ -133,6 +147,7 @@ const TradeFields = {
   price: PositiveMoneySchema,
   fee: NonNegativeMoneySchema.optional(),
   eurPerUnit: EurRateSchema,
+  eurRateProvenance: EurRateProvenanceSchema.optional(),
 };
 
 const BuySchema = AccountEventSchema.extend({
@@ -140,16 +155,16 @@ const BuySchema = AccountEventSchema.extend({
   ...TradeFields,
 })
   .superRefine(validateTradeCurrencies)
-  .superRefine((buy, context) => validateEurPerUnit(buy.price.currency, buy.eurPerUnit, context));
+  .superRefine((buy, context) => validateEurPerUnit(buy.price.currency, buy.eurPerUnit, context))
+  .superRefine(validateEurRateProvenance);
 
 const SellSchema = AccountEventSchema.extend({
   type: z.literal("sell"),
   ...TradeFields,
 })
   .superRefine(validateTradeCurrencies)
-  .superRefine((sell, context) =>
-    validateEurPerUnit(sell.price.currency, sell.eurPerUnit, context),
-  );
+  .superRefine((sell, context) => validateEurPerUnit(sell.price.currency, sell.eurPerUnit, context))
+  .superRefine(validateEurRateProvenance);
 
 const DividendSchema = AccountEventSchema.extend({
   type: z.literal("dividend"),
@@ -158,11 +173,13 @@ const DividendSchema = AccountEventSchema.extend({
   withholdingForeign: NonNegativeMoneySchema.optional(),
   withholdingDomestic: NonNegativeMoneySchema.optional(),
   eurPerUnit: EurRateSchema,
+  eurRateProvenance: EurRateProvenanceSchema.optional(),
 })
   .superRefine(validateWithholdingCurrencies)
   .superRefine((dividend, context) =>
     validateEurPerUnit(dividend.gross.currency, dividend.eurPerUnit, context),
-  );
+  )
+  .superRefine(validateEurRateProvenance);
 
 const InterestSchema = AccountEventSchema.extend({
   type: z.literal("interest"),
@@ -170,17 +187,22 @@ const InterestSchema = AccountEventSchema.extend({
   withholdingForeign: NonNegativeMoneySchema.optional(),
   withholdingDomestic: NonNegativeMoneySchema.optional(),
   eurPerUnit: EurRateSchema,
+  eurRateProvenance: EurRateProvenanceSchema.optional(),
 })
   .superRefine(validateWithholdingCurrencies)
   .superRefine((interest, context) =>
     validateEurPerUnit(interest.gross.currency, interest.eurPerUnit, context),
-  );
+  )
+  .superRefine(validateEurRateProvenance);
 
 const FeeEventSchema = AccountEventSchema.extend({
   type: z.literal("fee"),
   amount: PositiveMoneySchema,
   eurPerUnit: EurRateSchema,
-}).superRefine((fee, context) => validateEurPerUnit(fee.amount.currency, fee.eurPerUnit, context));
+  eurRateProvenance: EurRateProvenanceSchema.optional(),
+})
+  .superRefine((fee, context) => validateEurPerUnit(fee.amount.currency, fee.eurPerUnit, context))
+  .superRefine(validateEurRateProvenance);
 
 export const EventSchema = z.discriminatedUnion("type", [
   DepositSchema,
@@ -233,6 +255,19 @@ function validateEurPerUnit(currency: string, eurPerUnit: string, context: z.Ref
   }
 }
 
+function validateEurRateProvenance(
+  event: { date: string; eurRateProvenance?: { effectiveDate: string } | undefined },
+  context: z.RefinementCtx,
+): void {
+  if (event.eurRateProvenance !== undefined && event.eurRateProvenance.effectiveDate > event.date) {
+    context.addIssue({
+      code: "custom",
+      path: ["eurRateProvenance", "effectiveDate"],
+      message: "The effective EUR rate date cannot be after the event date",
+    });
+  }
+}
+
 function validateTradeCurrencies(
   trade: { price: { currency: string }; fee?: { currency: string } | undefined },
   context: z.RefinementCtx,
@@ -276,6 +311,7 @@ export type Event = z.infer<typeof EventSchema>;
 export type PriceStamp = z.infer<typeof PriceStampSchema>;
 export type FxStamp = z.infer<typeof FxStampSchema>;
 export type Provenance = z.infer<typeof ProvenanceSchema>;
+export type EurRateProvenance = z.infer<typeof EurRateProvenanceSchema>;
 export type DecimalString = z.infer<typeof DecimalStringSchema>;
 export type PositiveDecimalString = z.infer<typeof PositiveDecimalStringSchema>;
 export type NonNegativeDecimalString = z.infer<typeof NonNegativeDecimalStringSchema>;

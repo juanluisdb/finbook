@@ -105,6 +105,39 @@ describe("event schemas", () => {
     expect(() => EventSchema.parse({ ...event, eurPerUnit: "0.9" })).toThrow();
   });
 
+  it("retains provenance for an explicitly fetched event rate", () => {
+    const event = EventSchema.parse({
+      ...base,
+      type: "deposit",
+      account: "ib",
+      amount: { amount: "100", currency: "USD" },
+      eurPerUnit: "0.9",
+      eurRateProvenance: {
+        source: "ecb",
+        effectiveDate: "2026-03-02",
+        retrievedAt: "2026-03-03T12:00:00.000Z",
+      },
+    });
+
+    expect(event).toMatchObject({
+      eurPerUnit: "0.9",
+      eurRateProvenance: {
+        source: "ecb",
+        effectiveDate: "2026-03-02",
+      },
+    });
+    expect(() =>
+      EventSchema.parse({
+        ...event,
+        eurRateProvenance: {
+          source: "ecb",
+          effectiveDate: "2026-03-04",
+          retrievedAt: "2026-03-03T12:00:00.000Z",
+        },
+      }),
+    ).toThrow();
+  });
+
   it("keeps a trade fee attached to the trade and in its price currency", () => {
     const buy = EventSchema.parse({
       ...base,
