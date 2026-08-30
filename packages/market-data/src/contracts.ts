@@ -148,12 +148,12 @@ export interface PriceSource {
 
 export interface FxSource {
   readonly id: ProviderId;
-  fetchRates(needs: readonly FxNeed[]): Promise<readonly FxOutcome[]>;
+  fetchFxRates(needs: readonly FxNeed[]): Promise<readonly FxOutcome[]>;
 }
 
 export interface HistoricalEurRateSource {
   readonly id: ProviderId;
-  fetchRates(needs: readonly EurRateNeed[]): Promise<readonly EurRateOutcome[]>;
+  fetchHistoricalEurRates(needs: readonly EurRateNeed[]): Promise<readonly EurRateOutcome[]>;
 }
 
 export type PriceFetchFailure = {
