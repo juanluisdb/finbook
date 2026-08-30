@@ -1,11 +1,13 @@
 import {
   FileBookStore,
+  FxStampSchema,
   IsoDateSchema,
   PositiveDecimalStringSchema,
   PriceStampSchema,
   fail,
   succeed,
   type DomainError,
+  type FxStamp,
   type PriceStamp,
   type Result,
 } from "@finbook/core";
@@ -16,6 +18,12 @@ import {
   type EurRateNeed,
   type EurRateOutcome,
   type EurRateResolution,
+  type FxFetchFailure,
+  type FxFetchReport,
+  type FxNeed,
+  type FxObservation,
+  type FxOutcome,
+  type FxSource,
   type HistoricalEurRateSource,
   type PriceFetchFailure,
   type PriceFetchReport,
@@ -27,12 +35,13 @@ import {
   type ProviderId,
 } from "./contracts.js";
 
-export type MarketDataStore = Pick<FileBookStore, "load" | "appendPrice">;
+export type MarketDataStore = Pick<FileBookStore, "load" | "appendPrice" | "appendFx">;
 
 export type MarketDataCoordinatorOptions = {
   store: MarketDataStore;
   config: MarketDataConfig;
   priceSources: readonly PriceSource[];
+  fxSources: readonly FxSource[];
   eurRateSources: readonly HistoricalEurRateSource[];
   now?: () => Date;
 };
@@ -48,10 +57,18 @@ type PendingPrice = {
   lastFailure: ProviderFailure | undefined;
 };
 
+type PendingFx = {
+  need: FxNeed;
+  providers: readonly ProviderId[];
+  providerIndex: number;
+  lastFailure: ProviderFailure | undefined;
+};
+
 export class MarketDataCoordinator {
   private readonly store: MarketDataStore;
   private readonly config: MarketDataConfig;
   private readonly priceSources: readonly PriceSource[];
+  private readonly fxSources: readonly FxSource[];
   private readonly eurRateSources: readonly HistoricalEurRateSource[];
   private readonly now: () => Date;
 
@@ -59,6 +76,7 @@ export class MarketDataCoordinator {
     this.store = options.store;
     this.config = options.config;
     this.priceSources = options.priceSources;
+    this.fxSources = options.fxSources;
     this.eurRateSources = options.eurRateSources;
     this.now = options.now ?? (() => new Date());
   }
@@ -100,6 +118,52 @@ export class MarketDataCoordinator {
       for (const [provider, group] of groups) {
         try {
           await this.resolvePriceGroup(provider, group, pending, fetched, failures);
+        } catch (error) {
+          if (error instanceof CoordinatorStorageError) return fail(error.domainError);
+          throw error;
+        }
+      }
+    }
+
+    return succeed({ requested: needs.length, cached, fetched, failures });
+  }
+
+  async resolveFxRates(
+    requestedNeeds: readonly FxNeed[],
+    options: ResolvePriceOptions = {},
+  ): Promise<Result<FxFetchReport>> {
+    const snapshot = this.store.load();
+    if (!snapshot.ok) return fail(snapshot.error);
+
+    const needs = uniqueFxNeeds(requestedNeeds);
+    const today = this.now().toISOString().slice(0, 10);
+    const pending = new Map<string, PendingFx>();
+    let cached = 0;
+
+    for (const need of needs) {
+      if (fxIsCached(snapshot.data.fx, need, today)) {
+        cached += 1;
+        continue;
+      }
+      pending.set(fxNeedKey(need), {
+        need,
+        providers: fxProviders(need, this.config, options.provider),
+        providerIndex: 0,
+        lastFailure: undefined,
+      });
+    }
+
+    const fetched: FxObservation[] = [];
+    const failures: FxFetchFailure[] = [];
+    while (pending.size > 0) {
+      const groups = groupPendingFx(pending);
+      if (groups.size === 0) {
+        collectExhaustedFxFailures(pending, failures);
+        break;
+      }
+      for (const [provider, group] of groups) {
+        try {
+          await this.resolveFxGroup(provider, group, pending, fetched, failures);
         } catch (error) {
           if (error instanceof CoordinatorStorageError) return fail(error.domainError);
           throw error;
@@ -198,6 +262,75 @@ export class MarketDataCoordinator {
     };
   }
 
+  private async resolveFxGroup(
+    provider: ProviderId,
+    group: readonly PendingFx[],
+    pending: Map<string, PendingFx>,
+    fetched: FxObservation[],
+    failures: FxFetchFailure[],
+  ): Promise<void> {
+    const source = this.fxSources.find((candidate) => candidate.id === provider);
+    if (source === undefined) {
+      for (const item of group)
+        advanceFx(item, {
+          kind: "unavailable",
+          message: `Provider ${provider} is not available in this build.`,
+        });
+      return;
+    }
+
+    const needs = group.map((item) => providerFxNeed(item.need, provider, this.config));
+    let outcomes: readonly FxOutcome[];
+    try {
+      outcomes = await source.fetchFxRates(needs);
+    } catch (error) {
+      const failure: ProviderFailure = {
+        kind: "unavailable",
+        message: error instanceof Error ? error.message : "Provider request failed.",
+      };
+      for (const item of group) advanceFx(item, failure);
+      return;
+    }
+
+    const outcomeByKey = new Map(outcomes.map((outcome) => [fxNeedKey(outcome.need), outcome]));
+    for (const item of group) {
+      const key = fxNeedKey(item.need);
+      const outcome = outcomeByKey.get(key);
+      if (outcome === undefined) {
+        advanceFx(item, {
+          kind: "invalid-response",
+          message: `Provider ${provider} omitted ${item.need.currency}.`,
+        });
+        continue;
+      }
+      if (!outcome.ok) {
+        advanceFx(item, outcome.error);
+        continue;
+      }
+
+      const observation = validateFxObservation(item.need, outcome.data);
+      if (!observation.ok) {
+        advanceFx(item, { kind: "invalid-response", message: observation.error.message });
+        continue;
+      }
+      const appended = this.store.appendFx(observation.data);
+      if (!appended.ok) throw new CoordinatorStorageError(appended.error);
+      pending.delete(key);
+      fetched.push(observation.data);
+    }
+
+    for (const item of group) {
+      if (!pending.has(fxNeedKey(item.need))) continue;
+      if (item.providerIndex < item.providers.length) continue;
+      const failure = item.lastFailure ?? {
+        kind: "unavailable" as const,
+        message: `No provider returned ${item.need.currency}.`,
+      };
+      failures.push({ need: item.need, provider, error: failure });
+      pending.delete(fxNeedKey(item.need));
+    }
+  }
+
   private async resolvePriceGroup(
     provider: ProviderId,
     group: readonly PendingPrice[],
@@ -294,6 +427,22 @@ function priceProviders(
   return effectiveRoute(`price:${need.instrument.type}`, config);
 }
 
+function fxProviders(
+  need: FxNeed,
+  config: MarketDataConfig,
+  providerOverride: ProviderId | undefined,
+): readonly ProviderId[] {
+  if (providerOverride !== undefined) return [providerOverride];
+  const binding = findBinding(config, "currency", need.currency);
+  if (binding !== undefined) return [binding.provider];
+  return effectiveRoute("fx", config);
+}
+
+function providerFxNeed(need: FxNeed, provider: ProviderId, config: MarketDataConfig): FxNeed {
+  const binding = findBinding(config, "currency", need.currency);
+  return binding?.provider === provider ? { ...need, identifier: binding.identifier } : need;
+}
+
 function providerPriceNeed(
   need: PriceNeed,
   provider: ProviderId,
@@ -301,6 +450,18 @@ function providerPriceNeed(
 ): PriceNeed {
   const binding = findBinding(config, "instrument", need.instrument.id);
   return binding?.provider === provider ? { ...need, identifier: binding.identifier } : need;
+}
+
+function groupPendingFx(pending: Map<string, PendingFx>): Map<ProviderId, PendingFx[]> {
+  const groups = new Map<ProviderId, PendingFx[]>();
+  for (const item of pending.values()) {
+    const provider = item.providers[item.providerIndex];
+    if (provider === undefined) continue;
+    const group = groups.get(provider) ?? [];
+    group.push(item);
+    groups.set(provider, group);
+  }
+  return groups;
 }
 
 function groupPendingPrices(pending: Map<string, PendingPrice>): Map<ProviderId, PendingPrice[]> {
@@ -313,6 +474,23 @@ function groupPendingPrices(pending: Map<string, PendingPrice>): Map<ProviderId,
     groups.set(provider, group);
   }
   return groups;
+}
+
+function collectExhaustedFxFailures(
+  pending: Map<string, PendingFx>,
+  failures: FxFetchFailure[],
+): void {
+  for (const item of pending.values()) {
+    failures.push({
+      need: item.need,
+      provider: item.providers[item.providerIndex - 1] ?? "none",
+      error: item.lastFailure ?? {
+        kind: "unavailable",
+        message: "No provider is configured for this FX request.",
+      },
+    });
+  }
+  pending.clear();
 }
 
 function collectExhaustedFailures(
@@ -332,9 +510,48 @@ function collectExhaustedFailures(
   pending.clear();
 }
 
+function advanceFx(item: PendingFx, failure: ProviderFailure): void {
+  item.lastFailure = failure;
+  item.providerIndex += 1;
+}
+
 function advancePrice(item: PendingPrice, failure: ProviderFailure): void {
   item.lastFailure = failure;
   item.providerIndex += 1;
+}
+
+function validateFxObservation(need: FxNeed, observation: FxObservation): Result<FxObservation> {
+  const parsed = FxStampSchema.safeParse(observation);
+  if (!parsed.success) {
+    return fail({
+      type: "validation",
+      message: "Provider returned an invalid FX mark.",
+      hint: "Inspect the provider adapter response schema.",
+    });
+  }
+  const { provenance } = parsed.data;
+  if (provenance.kind !== "fetched") {
+    return fail({
+      type: "validation",
+      message: "Provider returned a manual FX mark.",
+      hint: "Use fetched provenance for provider observations.",
+    });
+  }
+  if (parsed.data.pair !== `${need.currency}/EUR`) {
+    return fail({
+      type: "validation",
+      message: `Provider returned ${parsed.data.pair}, not ${need.currency}/EUR.`,
+      hint: "Fix the provider currency mapping.",
+    });
+  }
+  if (parsed.data.asOf > need.asOf) {
+    return fail({
+      type: "validation",
+      message: `Provider returned a future FX mark for ${need.currency}.`,
+      hint: "Use a mark dated on or before the requested date.",
+    });
+  }
+  return succeed({ ...parsed.data, provenance });
 }
 
 function validateObservation(
@@ -381,14 +598,32 @@ function validateObservation(
   return succeed({ ...parsed.data, provenance });
 }
 
+function uniqueFxNeeds(needs: readonly FxNeed[]): readonly FxNeed[] {
+  const unique = new Map<string, FxNeed>();
+  for (const need of needs) unique.set(fxNeedKey(need), need);
+  return [...unique.values()];
+}
+
 function uniquePriceNeeds(needs: readonly PriceNeed[]): readonly PriceNeed[] {
   const unique = new Map<string, PriceNeed>();
   for (const need of needs) unique.set(priceNeedKey(need), need);
   return [...unique.values()];
 }
 
+function fxNeedKey(need: FxNeed): string {
+  return `${need.currency}:${need.asOf}:${need.mode}`;
+}
+
 function priceNeedKey(need: PriceNeed): string {
   return `${need.instrument.id}:${need.asOf}:${need.mode}`;
+}
+
+function fxIsCached(fx: readonly FxStamp[], need: FxNeed, today: string): boolean {
+  return fx.some((stamp) => {
+    if (stamp.pair !== `${need.currency}/EUR`) return false;
+    if (need.mode === "historical") return stamp.asOf <= need.asOf;
+    return stamp.provenance.kind === "fetched" && stamp.provenance.retrievedAt.startsWith(today);
+  });
 }
 
 function priceIsCached(prices: readonly PriceStamp[], need: PriceNeed, today: string): boolean {

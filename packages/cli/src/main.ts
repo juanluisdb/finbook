@@ -2,7 +2,13 @@
 
 import { CommanderError } from "commander";
 import { FileBookStore } from "@finbook/core";
-import { EcbSource, MarketDataConfigStore, MarketDataCoordinator } from "@finbook/market-data";
+import {
+  CoinGeckoSource,
+  EcbSource,
+  MarketDataConfigStore,
+  MarketDataCoordinator,
+  YahooSource,
+} from "@finbook/market-data";
 
 import { currentDate } from "./dates.js";
 import { CliFailure, requireResult } from "./errors.js";
@@ -22,11 +28,17 @@ export async function main(
     assertSupportedNodeVersion();
     const runtimeConfig = loadRuntimeConfig(env, cwd);
     const config = requireResult(new MarketDataConfigStore(runtimeConfig.dataHome).load());
+    const ecb = new EcbSource();
+    const yahoo = new YahooSource();
+    const coingecko = new CoinGeckoSource({
+      demoApiKey: env.FINBOOK_COINGECKO_DEMO_API_KEY,
+    });
     const rateResolver = new MarketDataCoordinator({
       store: new FileBookStore(runtimeConfig.dataHome),
       config,
-      priceSources: [],
-      eurRateSources: [new EcbSource()],
+      priceSources: [yahoo, coingecko],
+      fxSources: [ecb, coingecko],
+      eurRateSources: [ecb, coingecko],
     });
     const program = createProgram(runtimeConfig.dataHome, currentDate(), undefined, rateResolver);
     if (argv.length === 0) {

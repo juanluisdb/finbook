@@ -92,6 +92,7 @@ export type FxNeed = {
   currency: string;
   asOf: string;
   mode: "latest" | "historical";
+  identifier?: string;
 };
 
 export type EurRateNeed = {
@@ -171,6 +172,19 @@ export type PriceFetchReport = {
   cached: number;
   fetched: readonly PriceObservation[];
   failures: readonly PriceFetchFailure[];
+};
+
+export type FxFetchFailure = {
+  need: FxNeed;
+  provider: ProviderId | "none";
+  error: ProviderFailure;
+};
+
+export type FxFetchReport = {
+  requested: number;
+  cached: number;
+  fetched: readonly FxObservation[];
+  failures: readonly FxFetchFailure[];
 };
 
 export const DateNeedSchema = z.object({

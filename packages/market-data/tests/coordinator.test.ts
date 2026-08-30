@@ -10,6 +10,9 @@ import {
   MarketDataCoordinator,
   type EurRateNeed,
   type EurRateOutcome,
+  type FxNeed,
+  type FxOutcome,
+  type FxSource,
   type HistoricalEurRateSource,
   type PriceNeed,
   type PriceOutcome,
@@ -80,6 +83,22 @@ class FixtureRateSource implements HistoricalEurRateSource {
   }
 }
 
+class FixtureFxSource implements FxSource {
+  readonly id: ProviderId;
+  readonly calls: FxNeed[][] = [];
+  private readonly behavior: (needs: readonly FxNeed[]) => readonly FxOutcome[];
+
+  constructor(id: ProviderId, behavior: (needs: readonly FxNeed[]) => readonly FxOutcome[]) {
+    this.id = id;
+    this.behavior = behavior;
+  }
+
+  fetchFxRates(needs: readonly FxNeed[]): Promise<readonly FxOutcome[]> {
+    this.calls.push([...needs]);
+    return Promise.resolve(this.behavior(needs));
+  }
+}
+
 class FixturePriceSource implements PriceSource {
   readonly id: ProviderId;
   readonly calls: PriceNeed[][] = [];
@@ -119,6 +138,7 @@ describe("market-data coordinator", () => {
       store,
       config: MarketDataConfigSchema.parse({}),
       priceSources: [source],
+      fxSources: [],
       eurRateSources: [],
     });
     const needs = instruments.map((value) => priceNeed(value));
@@ -149,6 +169,41 @@ describe("market-data coordinator", () => {
     expect(afterSecond.data.prices).toHaveLength(50);
   });
 
+  it("persists FX marks and skips cached historical needs", async () => {
+    const store = temporaryStore();
+    const source = new FixtureFxSource("ecb", (needs) =>
+      needs.map((need) => ({
+        need,
+        ok: true,
+        data: {
+          pair: `${need.currency}/EUR`,
+          rate: "0.9",
+          asOf: need.asOf,
+          provenance: {
+            kind: "fetched",
+            source: "ecb",
+            retrievedAt: "2026-03-01T12:00:00.000Z",
+          },
+        },
+      })),
+    );
+    const coordinator = new MarketDataCoordinator({
+      store,
+      config: MarketDataConfigSchema.parse({}),
+      priceSources: [],
+      fxSources: [source],
+      eurRateSources: [],
+    });
+    const needs: FxNeed[] = [{ currency: "USD", asOf: "2026-03-01", mode: "historical" }];
+
+    const first = await coordinator.resolveFxRates(needs);
+    const second = await coordinator.resolveFxRates(needs);
+
+    expect(first).toMatchObject({ ok: true, data: { fetched: [{ pair: "USD/EUR" }] } });
+    expect(second).toMatchObject({ ok: true, data: { cached: 1, fetched: [] } });
+    expect(source.calls).toHaveLength(1);
+  });
+
   it("resolves a historical EUR rate through the configured source", async () => {
     const store = temporaryStore();
     const source = new FixtureRateSource("ecb", (needs) =>
@@ -170,6 +225,7 @@ describe("market-data coordinator", () => {
       store,
       config: MarketDataConfigSchema.parse({}),
       priceSources: [],
+      fxSources: [],
       eurRateSources: [source],
     });
 
@@ -207,6 +263,7 @@ describe("market-data coordinator", () => {
       store,
       config: MarketDataConfigSchema.parse({ routes: { "price:stock": ["yahoo", "coingecko"] } }),
       priceSources: [primary, backup],
+      fxSources: [],
       eurRateSources: [],
     });
 

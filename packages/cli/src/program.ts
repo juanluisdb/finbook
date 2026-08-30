@@ -16,27 +16,35 @@ import {
   type PriceStamp,
 } from "@finbook/core";
 import { Command } from "commander";
+import {
+  MarketDataConfigStore,
+  type FxNeed,
+  type MarketDataCoordinator,
+  type PriceNeed,
+} from "@finbook/market-data";
 
+import {
+  listProviders,
+  removeSource,
+  setProviderEnabled,
+  setRoute,
+  setSource,
+  showConfig,
+} from "./config.js";
 import { requireDate } from "./dates.js";
 import { notFoundFailure, requireResult, validationFailure } from "./errors.js";
 import { createDoctor, type DoctorSummary } from "./doctor.js";
 import { formatMoney, formatRows, writeSuccess } from "./output.js";
-import {
-  addAccount,
-  addEvent,
-  addInstrument,
-  setFx,
-  setPrice,
-  type HistoricalRateResolver,
-} from "./writes.js";
+import { addAccount, addEvent, addInstrument, setFx, setPrice } from "./writes.js";
 
 export function createProgram(
   dataHome: string,
   defaultDate: string,
   generateId: () => string = randomUUID,
-  rateResolver?: HistoricalRateResolver,
+  marketData?: MarketDataCoordinator,
 ): Command {
   const store = new FileBookStore(dataHome);
+  const marketDataConfig = new MarketDataConfigStore(dataHome);
   const program = new Command()
     .name("finbook")
     .description("A local book of economic events")
@@ -51,6 +59,54 @@ export function createProgram(
   const doctor = program.command("doctor").description("report book health");
   addJsonOption(doctor);
   doctor.action((_options, command) => showDoctor(store, jsonMode(command), defaultDate));
+
+  const config = program.command("config").description("configure market-data sources");
+  const configShow = config.command("show").description("show non-secret configuration");
+  addJsonOption(configShow);
+  configShow.action((_options, command) => showConfig(marketDataConfig, jsonMode(command)));
+  const configProviders = config.command("provider").description("manage providers");
+  const providerList = configProviders.command("list").description("list providers");
+  addJsonOption(providerList);
+  providerList.action((_options, command) => listProviders(marketDataConfig, jsonMode(command)));
+  for (const [verb, enabled] of [
+    ["enable", true],
+    ["disable", false],
+  ] as const) {
+    const providerCommand = configProviders
+      .command(`${verb} <id>`)
+      .description(`${verb} a provider`);
+    addJsonOption(providerCommand);
+    providerCommand.action((id, _options, command) =>
+      setProviderEnabled(marketDataConfig, id, enabled, jsonMode(command)),
+    );
+  }
+  const route = config.command("route").description("manage provider routes");
+  const routeSet = route.command("set <kind> <providers...>").description("set a provider route");
+  addJsonOption(routeSet);
+  routeSet.action((kind, providers, _options, command) =>
+    setRoute(marketDataConfig, kind, providers, jsonMode(command)),
+  );
+  const source = config.command("source").description("manage source bindings");
+  const sourceSet = source.command("set").description("bind an instrument or currency");
+  sourceSet
+    .option("--instrument <id>", "local instrument ID")
+    .option("--currency <code>", "local currency code")
+    .requiredOption("--provider <id>", "provider ID")
+    .requiredOption("--identifier <id>", "provider identifier");
+  addJsonOption(sourceSet);
+  sourceSet.action((_options, command) =>
+    setSource(marketDataConfig, command.opts(), jsonMode(command)),
+  );
+  const sourceRemove = source
+    .command("remove")
+    .description("remove an instrument or currency binding");
+  sourceRemove
+    .option("--instrument <id>", "local instrument ID")
+    .option("--currency <code>", "local currency code");
+  addJsonOption(sourceRemove);
+  sourceRemove.action((_options, command) =>
+    removeSource(marketDataConfig, command.opts(), jsonMode(command)),
+  );
 
   const account = program.command("account").description("manage accounts");
   const accountAdd = account.command("add").description("add an account");
@@ -93,7 +149,7 @@ export function createProgram(
   addEventOptions(eventAdd);
   addJsonOption(eventAdd);
   eventAdd.action((type, _options, command) =>
-    addEvent(store, type, command.opts(), jsonMode(command), generateId, rateResolver),
+    addEvent(store, type, command.opts(), jsonMode(command), generateId, marketData),
   );
   const eventList = event.command("list").description("list events");
   eventList
@@ -135,16 +191,20 @@ export function createProgram(
 
   const show = program.command("show").description("show derived views");
   const glance = show.command("glance").description("show the portfolio glance");
-  glance.option("--as-of <date>", "valuation date");
+  glance
+    .option("--as-of <date>", "valuation date")
+    .option("--fetch", "fetch missing valuation marks before showing the view");
   addJsonOption(glance);
   glance.action((_options, command) =>
-    showGlance(store, command.opts(), jsonMode(command), defaultDate),
+    showGlance(store, command.opts(), jsonMode(command), defaultDate, marketData),
   );
   const positions = show.command("positions").description("show current positions");
-  positions.option("--as-of <date>", "valuation date");
+  positions
+    .option("--as-of <date>", "valuation date")
+    .option("--fetch", "fetch missing valuation marks before showing the view");
   addJsonOption(positions);
   positions.action((_options, command) =>
-    showPositions(store, command.opts(), jsonMode(command), defaultDate),
+    showPositions(store, command.opts(), jsonMode(command), defaultDate, marketData),
   );
 
   return program;
@@ -162,6 +222,7 @@ type EventListOptions = JsonOptions & {
 
 type AsOfOptions = JsonOptions & {
   asOf?: string | undefined;
+  fetch?: boolean | undefined;
 };
 
 function addEventOptions(command: Command): void {
@@ -285,26 +346,66 @@ function listFx(store: FileBookStore, json: boolean): void {
   writeSuccess(fx, json, renderFx(fx));
 }
 
-function showGlance(
+async function showGlance(
   store: FileBookStore,
   options: AsOfOptions,
   json: boolean,
   defaultDate: string,
-): void {
+  marketData?: MarketDataCoordinator,
+): Promise<void> {
   const asOf = requireDate(options.asOf, "--as-of", defaultDate);
-  const glance = requireResult(getGlance(loadSnapshot(store), asOf));
+  const snapshot = await awaitSnapshot(store, options, asOf, defaultDate, marketData);
+  const glance = requireResult(getGlance(snapshot, asOf));
   writeSuccess(glance, json, renderGlance(glance));
 }
 
-function showPositions(
+async function showPositions(
   store: FileBookStore,
   options: AsOfOptions,
   json: boolean,
   defaultDate: string,
-): void {
+  marketData?: MarketDataCoordinator,
+): Promise<void> {
   const asOf = requireDate(options.asOf, "--as-of", defaultDate);
-  const positions = requireResult(getPositions(loadSnapshot(store), asOf));
+  const snapshot = await awaitSnapshot(store, options, asOf, defaultDate, marketData);
+  const positions = requireResult(getPositions(snapshot, asOf));
   writeSuccess(positions, json, renderPositions(positions.positions, positions.cash));
+}
+
+async function awaitSnapshot(
+  store: FileBookStore,
+  options: AsOfOptions,
+  asOf: string,
+  defaultDate: string,
+  marketData: MarketDataCoordinator | undefined,
+): Promise<BookSnapshot> {
+  const snapshot = loadSnapshot(store);
+  if (options.fetch !== true) return snapshot;
+  if (marketData === undefined) {
+    throw validationFailure(
+      "Valuation fetching is not configured.",
+      "Configure a market-data provider before using --fetch.",
+    );
+  }
+  const positions = requireResult(getPositions(snapshot, asOf));
+  const mode = asOf === defaultDate ? "latest" : "historical";
+  const priceNeeds: PriceNeed[] = [];
+  const currencies = new Set<string>();
+  for (const position of positions.positions) {
+    const instrument = snapshot.instruments.find(
+      (candidate) => candidate.id === position.instrument,
+    );
+    if (instrument === undefined) continue;
+    priceNeeds.push({ instrument, asOf, mode, identifier: instrument.id });
+    if (instrument.quoteCurrency !== "EUR") currencies.add(instrument.quoteCurrency);
+  }
+  for (const entry of positions.cash) {
+    if (entry.currency !== "EUR") currencies.add(entry.currency);
+  }
+  requireResult(await marketData.resolvePrices(priceNeeds));
+  const fxNeeds: FxNeed[] = [...currencies].map((currency) => ({ currency, asOf, mode }));
+  requireResult(await marketData.resolveFxRates(fxNeeds));
+  return loadSnapshot(store);
 }
 
 function eventBelongsToAccount(event: Event, accountId: string): boolean {

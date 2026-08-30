@@ -1,0 +1,223 @@
+import { CurrencySchema, InstrumentIdSchema } from "@finbook/core";
+import {
+  MarketDataConfigSchema,
+  MarketDataConfigStore,
+  ProviderIdSchema,
+  RouteKeySchema,
+  defaultRoute,
+  effectiveRoute,
+  type MarketDataConfig,
+  type ProviderId,
+  type RouteKey,
+  type SourceBinding,
+} from "@finbook/market-data";
+
+import { requireResult, validationFailure } from "./errors.js";
+import { formatRows, writeSuccess } from "./output.js";
+
+export type SourceConfigOptions = {
+  instrument?: string | undefined;
+  currency?: string | undefined;
+  provider?: string | undefined;
+  identifier?: string | undefined;
+};
+
+export function showConfig(store: MarketDataConfigStore, json: boolean): void {
+  const config = requireResult(store.load());
+  writeSuccess(config, json, JSON.stringify(config, null, 2));
+}
+
+export function listProviders(store: MarketDataConfigStore, json: boolean): void {
+  const config = requireResult(store.load());
+  const providers = ProviderIdSchema.options.map((provider) => ({
+    id: provider,
+    enabled: !config.disabledProviders.includes(provider),
+    credentialEnv: credentialEnv(provider),
+    defaultRoutes: routeNames(provider, config),
+  }));
+  writeSuccess(
+    providers,
+    json,
+    formatRows(
+      ["PROVIDER", "ENABLED", "CREDENTIAL ENV", "DEFAULT ROUTES"],
+      providers.map((provider) => [
+        provider.id,
+        provider.enabled ? "yes" : "no",
+        provider.credentialEnv ?? "none",
+        provider.defaultRoutes.join(", "),
+      ]),
+    ),
+  );
+}
+
+export function setProviderEnabled(
+  store: MarketDataConfigStore,
+  value: string,
+  enabled: boolean,
+  json: boolean,
+): void {
+  const provider = parseProvider(value);
+  const config = requireResult(store.load());
+  const disabledProviders = enabled
+    ? config.disabledProviders.filter((candidate) => candidate !== provider)
+    : [...new Set([...config.disabledProviders, provider])];
+  const updated = parseConfig({ ...config, disabledProviders });
+  requireResult(store.save(updated));
+  writeSuccess(updated, json, `${provider} ${enabled ? "enabled" : "disabled"}`);
+}
+
+export function setRoute(
+  store: MarketDataConfigStore,
+  routeValue: string,
+  providerValues: readonly string[],
+  json: boolean,
+): void {
+  const route = parseRoute(routeValue);
+  if (providerValues.length === 0) {
+    throw validationFailure("Missing providers", "Provide at least one provider for the route.");
+  }
+  const providers = providerValues.map(parseProvider);
+  if (new Set(providers).size !== providers.length) {
+    throw validationFailure("Duplicate providers", "List each route provider once.");
+  }
+  const config = requireResult(store.load());
+  const updated = parseConfig({ ...config, routes: { ...config.routes, [route]: providers } });
+  requireResult(store.save(updated));
+  writeSuccess(updated, json, `${route} route updated`);
+}
+
+export function setSource(
+  store: MarketDataConfigStore,
+  options: SourceConfigOptions,
+  json: boolean,
+): void {
+  const binding = sourceBinding(options);
+  const config = requireResult(store.load());
+  const bindings = config.bindings.filter((candidate) => !sameSubject(candidate, binding));
+  const updated = parseConfig({ ...config, bindings: [...bindings, binding] });
+  requireResult(store.save(updated));
+  writeSuccess(binding, json, `${binding.kind} source binding saved`);
+}
+
+export function removeSource(
+  store: MarketDataConfigStore,
+  options: Pick<SourceConfigOptions, "instrument" | "currency">,
+  json: boolean,
+): void {
+  const subject = sourceSubject(options);
+  const config = requireResult(store.load());
+  const updated = parseConfig({
+    ...config,
+    bindings: config.bindings.filter((candidate) => !sameSubject(candidate, subject)),
+  });
+  requireResult(store.save(updated));
+  writeSuccess(updated, json, `${subject.kind} source binding removed`);
+}
+
+function sourceBinding(options: SourceConfigOptions): SourceBinding {
+  const subject = sourceSubject(options);
+  return {
+    ...subject,
+    provider: parseProvider(required(options.provider, "--provider")),
+    identifier: required(options.identifier, "--identifier"),
+  };
+}
+
+type SourceSubject =
+  | { kind: "instrument"; instrument: string }
+  | { kind: "currency"; currency: string };
+
+function sourceSubject(
+  options: Pick<SourceConfigOptions, "instrument" | "currency">,
+): SourceSubject {
+  const hasInstrument = options.instrument !== undefined;
+  const hasCurrency = options.currency !== undefined;
+  if (hasInstrument === hasCurrency) {
+    throw validationFailure(
+      "Provide exactly one source subject",
+      "Use either --instrument or --currency.",
+    );
+  }
+  if (hasInstrument) {
+    return {
+      kind: "instrument",
+      instrument: parseInstrument(options.instrument),
+    };
+  }
+  return {
+    kind: "currency",
+    currency: parseCurrency(options.currency),
+  };
+}
+
+function sameSubject(left: SourceBinding, right: SourceSubject): boolean {
+  if (left.kind !== right.kind) return false;
+  return left.kind === "instrument"
+    ? right.kind === "instrument" && left.instrument === right.instrument
+    : right.kind === "currency" && left.currency === right.currency;
+}
+
+function parseConfig(value: Parameters<typeof MarketDataConfigSchema.parse>[0]): MarketDataConfig {
+  return MarketDataConfigSchema.parse(value);
+}
+
+function parseProvider(value: string): ProviderId {
+  const parsed = ProviderIdSchema.safeParse(value);
+  if (!parsed.success) {
+    throw validationFailure(
+      `Unknown provider: ${value}.`,
+      "Use a provider supported by the build.",
+    );
+  }
+  return parsed.data;
+}
+
+function parseRoute(value: string): RouteKey {
+  const parsed = RouteKeySchema.safeParse(value);
+  if (!parsed.success) {
+    throw validationFailure(`Unknown route: ${value}.`, "Use a documented market-data route.");
+  }
+  return parsed.data;
+}
+
+function parseInstrument(value: string | undefined): string {
+  const parsed = InstrumentIdSchema.safeParse(value);
+  if (!parsed.success)
+    throw validationFailure("Invalid instrument ID", "Use a valid instrument ID.");
+  return parsed.data;
+}
+
+function parseCurrency(value: string | undefined): string {
+  const parsed = CurrencySchema.safeParse(value);
+  if (!parsed.success)
+    throw validationFailure("Invalid currency", "Use an uppercase currency code.");
+  return parsed.data;
+}
+
+function required(value: string | undefined, flag: string): string {
+  if (value === undefined || value.trim() === "") {
+    throw validationFailure(`Missing ${flag}.`, `Provide ${flag}.`);
+  }
+  return value;
+}
+
+function credentialEnv(provider: ProviderId): string | null {
+  return provider === "coingecko" ? "FINBOOK_COINGECKO_DEMO_API_KEY" : null;
+}
+
+function routeNames(provider: ProviderId, config: MarketDataConfig): string[] {
+  const routes: RouteKey[] = [
+    "price:stock",
+    "price:etf",
+    "price:fund",
+    "price:crypto",
+    "fx",
+    "eur-rate:fiat",
+    "eur-rate:crypto",
+  ];
+  return routes
+    .filter((route) => effectiveRoute(route, config).includes(provider))
+    .map(
+      (route) => `${route} (${defaultRoute(route).includes(provider) ? "default" : "override"})`,
+    );
+}

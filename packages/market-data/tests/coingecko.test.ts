@@ -8,6 +8,7 @@ import {
   type CoinGeckoHistoryPoint,
   type CoinGeckoPrice,
   type EurRateNeed,
+  type FxNeed,
   type PriceNeed,
 } from "../src/index.js";
 
@@ -92,6 +93,30 @@ describe("CoinGecko source", () => {
       { ok: true, data: { price: { amount: "59000", currency: "EUR" }, asOf: "2026-03-02" } },
     ]);
     expect(gateway.historyCalls).toEqual([{ id: "bitcoin", currency: "eur", asOf: "2026-03-02" }]);
+  });
+
+  it("returns crypto FX marks for configured coin identifiers", async () => {
+    const gateway = new FixtureGateway();
+    const need: FxNeed = {
+      currency: "BTC",
+      asOf: "2026-03-03",
+      mode: "latest",
+      identifier: "bitcoin",
+    };
+
+    const result = await source(gateway).fetchFxRates([need]);
+
+    expect(result).toMatchObject([
+      {
+        ok: true,
+        data: {
+          pair: "BTC/EUR",
+          rate: "60000",
+          asOf: "2026-03-03",
+          provenance: { kind: "fetched", source: "coingecko" },
+        },
+      },
+    ]);
   });
 
   it("uses historical EUR prices for event rates", async () => {

@@ -7,6 +7,9 @@ import { createRetryingFetch } from "./http.js";
 import {
   type EurRateNeed,
   type EurRateOutcome,
+  type FxNeed,
+  type FxOutcome,
+  type FxSource,
   type HistoricalEurRateSource,
   type PriceNeed,
   type PriceOutcome,
@@ -41,12 +44,12 @@ export type CoinGeckoGateway = {
 
 export type CoinGeckoSourceOptions = {
   gateway?: CoinGeckoGateway;
-  demoApiKey?: string;
+  demoApiKey?: string | undefined;
   fetchImplementation?: typeof fetch;
   now?: () => Date;
 };
 
-export class CoinGeckoSource implements PriceSource, HistoricalEurRateSource {
+export class CoinGeckoSource implements PriceSource, FxSource, HistoricalEurRateSource {
   readonly id = "coingecko" as const;
   private readonly gateway: CoinGeckoGateway;
   private readonly now: () => Date;
@@ -68,6 +71,22 @@ export class CoinGeckoSource implements PriceSource, HistoricalEurRateSource {
           need,
           ok: false,
           error: { kind: "invalid-response", message: "CoinGecko omitted a requested price." },
+        },
+    );
+  }
+
+  async fetchFxRates(needs: readonly FxNeed[]): Promise<readonly FxOutcome[]> {
+    const outcomes = new Map<string, FxOutcome>();
+    const current = needs.filter((need) => need.mode === "latest");
+    const historical = needs.filter((need) => need.mode === "historical");
+    if (current.length > 0) await this.fetchCurrentFx(current, outcomes);
+    await Promise.all(historical.map(async (need) => this.fetchHistoricalFx(need, outcomes)));
+    return needs.map(
+      (need) =>
+        outcomes.get(fxNeedKey(need)) ?? {
+          need,
+          ok: false,
+          error: { kind: "invalid-response", message: "CoinGecko omitted a requested FX rate." },
         },
     );
   }
@@ -137,6 +156,130 @@ export class CoinGeckoSource implements PriceSource, HistoricalEurRateSource {
         };
       }),
     );
+  }
+
+  private async fetchCurrentFx(
+    needs: readonly FxNeed[],
+    outcomes: Map<string, FxOutcome>,
+  ): Promise<void> {
+    const supported: Array<{ need: FxNeed; identifier: string }> = [];
+    for (const need of needs) {
+      if (need.identifier === undefined) {
+        outcomes.set(fxNeedKey(need), {
+          need,
+          ok: false,
+          error: { kind: "unsupported", message: "CoinGecko requires a currency binding." },
+        });
+      } else {
+        supported.push({ need, identifier: need.identifier });
+      }
+    }
+    if (supported.length === 0) return;
+    const currency = "eur";
+    let prices: readonly CoinGeckoPrice[];
+    try {
+      prices = await this.gateway.pricesFor(
+        supported.map(({ identifier }) => identifier),
+        currency,
+      );
+    } catch (error) {
+      const failure: ProviderFailure = {
+        kind: "unavailable",
+        message: error instanceof Error ? error.message : "CoinGecko FX request failed.",
+      };
+      for (const { need } of supported)
+        outcomes.set(fxNeedKey(need), { need, ok: false, error: failure });
+      return;
+    }
+    for (const { need, identifier } of supported) {
+      const price = prices.find((candidate) => candidate.id === identifier);
+      const asOf = price?.asOf === undefined ? dateOnly(this.now()) : dateOnly(price.asOf);
+      if (price === undefined) {
+        outcomes.set(fxNeedKey(need), {
+          need,
+          ok: false,
+          error: { kind: "not-found", message: `CoinGecko returned no price for ${identifier}.` },
+        });
+      } else if (asOf === undefined || !Number.isFinite(price.price) || price.price <= 0) {
+        outcomes.set(fxNeedKey(need), {
+          need,
+          ok: false,
+          error: {
+            kind: "invalid-response",
+            message: `CoinGecko returned an invalid FX price for ${identifier}.`,
+          },
+        });
+      } else {
+        outcomes.set(fxNeedKey(need), {
+          need,
+          ok: true,
+          data: {
+            pair: `${need.currency}/EUR`,
+            rate: plainAmount(price.price, "EUR"),
+            asOf,
+            provenance: {
+              kind: "fetched",
+              source: "coingecko",
+              retrievedAt: this.now().toISOString(),
+            },
+          },
+        });
+      }
+    }
+  }
+
+  private async fetchHistoricalFx(need: FxNeed, outcomes: Map<string, FxOutcome>): Promise<void> {
+    if (need.identifier === undefined) {
+      outcomes.set(fxNeedKey(need), {
+        need,
+        ok: false,
+        error: { kind: "unsupported", message: "CoinGecko requires a currency binding." },
+      });
+      return;
+    }
+    let points: readonly CoinGeckoHistoryPoint[];
+    try {
+      points = await this.gateway.historyFor(need.identifier, "eur", need.asOf);
+    } catch (error) {
+      outcomes.set(fxNeedKey(need), {
+        need,
+        ok: false,
+        error: {
+          kind: "unavailable",
+          message:
+            error instanceof Error ? error.message : "CoinGecko historical FX request failed.",
+        },
+      });
+      return;
+    }
+    const selected = latestPoint(points, need.asOf);
+    const asOf = selected === undefined ? undefined : dateOnly(new Date(selected.timestamp));
+    if (
+      selected === undefined ||
+      asOf === undefined ||
+      !Number.isFinite(selected.price) ||
+      selected.price <= 0
+    ) {
+      outcomes.set(fxNeedKey(need), {
+        need,
+        ok: false,
+        error: {
+          kind: "not-found",
+          message: `CoinGecko returned no FX history for ${need.identifier}.`,
+        },
+      });
+      return;
+    }
+    outcomes.set(fxNeedKey(need), {
+      need,
+      ok: true,
+      data: {
+        pair: `${need.currency}/EUR`,
+        rate: plainAmount(selected.price, "EUR"),
+        asOf,
+        provenance: { kind: "fetched", source: "coingecko", retrievedAt: this.now().toISOString() },
+      },
+    });
   }
 
   private async fetchCurrent(
@@ -343,6 +486,10 @@ function dateOnly(value: Date): string | undefined {
   if (!Number.isFinite(value.getTime())) return undefined;
   const date = value.toISOString().slice(0, 10);
   return IsoDateSchema.safeParse(date).success ? date : undefined;
+}
+
+function fxNeedKey(need: FxNeed): string {
+  return `${need.currency}:${need.asOf}:${need.mode}`;
 }
 
 function priceNeedKey(need: PriceNeed): string {
