@@ -8,6 +8,9 @@ import { FileBookStore, InstrumentSchema, type Instrument } from "@finbook/core"
 import {
   MarketDataConfigSchema,
   MarketDataCoordinator,
+  type EurRateNeed,
+  type EurRateOutcome,
+  type HistoricalEurRateSource,
   type PriceNeed,
   type PriceOutcome,
   type PriceSource,
@@ -58,6 +61,25 @@ function success(need: PriceNeed): PriceOutcome {
   };
 }
 
+class FixtureRateSource implements HistoricalEurRateSource {
+  readonly id: ProviderId;
+  readonly calls: EurRateNeed[][] = [];
+  private readonly behavior: (needs: readonly EurRateNeed[]) => readonly EurRateOutcome[];
+
+  constructor(
+    id: ProviderId,
+    behavior: (needs: readonly EurRateNeed[]) => readonly EurRateOutcome[],
+  ) {
+    this.id = id;
+    this.behavior = behavior;
+  }
+
+  fetchHistoricalEurRates(needs: readonly EurRateNeed[]): Promise<readonly EurRateOutcome[]> {
+    this.calls.push([...needs]);
+    return Promise.resolve(this.behavior(needs));
+  }
+}
+
 class FixturePriceSource implements PriceSource {
   readonly id: ProviderId;
   readonly calls: PriceNeed[][] = [];
@@ -97,7 +119,6 @@ describe("market-data coordinator", () => {
       store,
       config: MarketDataConfigSchema.parse({}),
       priceSources: [source],
-      fxSources: [],
       eurRateSources: [],
     });
     const needs = instruments.map((value) => priceNeed(value));
@@ -128,6 +149,46 @@ describe("market-data coordinator", () => {
     expect(afterSecond.data.prices).toHaveLength(50);
   });
 
+  it("resolves a historical EUR rate through the configured source", async () => {
+    const store = temporaryStore();
+    const source = new FixtureRateSource("ecb", (needs) =>
+      needs.map((need) => ({
+        need,
+        ok: true,
+        data: {
+          rate: "0.9",
+          effectiveDate: need.date,
+          provenance: {
+            kind: "fetched",
+            source: "ecb",
+            retrievedAt: "2026-03-01T12:00:00.000Z",
+          },
+        },
+      })),
+    );
+    const coordinator = new MarketDataCoordinator({
+      store,
+      config: MarketDataConfigSchema.parse({}),
+      priceSources: [],
+      eurRateSources: [source],
+    });
+
+    const result = await coordinator.resolveHistoricalEurRate({
+      currency: "USD",
+      date: "2026-03-01",
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        rate: "0.9",
+        effectiveDate: "2026-03-01",
+        provenance: { kind: "fetched", source: "ecb" },
+      },
+    });
+    expect(source.calls).toHaveLength(1);
+  });
+
   it("uses configured fallback providers but honors an explicit provider pin", async () => {
     const store = temporaryStore();
     const value = instrument("stock-1");
@@ -146,7 +207,6 @@ describe("market-data coordinator", () => {
       store,
       config: MarketDataConfigSchema.parse({ routes: { "price:stock": ["yahoo", "coingecko"] } }),
       priceSources: [primary, backup],
-      fxSources: [],
       eurRateSources: [],
     });
 

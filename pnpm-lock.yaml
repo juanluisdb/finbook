@@ -35,6 +35,9 @@ importers:
       '@finbook/core':
         specifier: workspace:*
         version: link:../core
+      '@finbook/market-data':
+        specifier: workspace:*
+        version: link:../market-data
       commander:
         specifier: 15.0.0
         version: 15.0.0

@@ -27,6 +27,10 @@ export function validationFailure(message: string, hint: string): CliFailure {
   return new CliFailure({ type: "validation", message, hint });
 }
 
+export function externalFailure(message: string, hint: string): CliFailure {
+  return new CliFailure({ type: "external", message, hint });
+}
+
 export function notFoundFailure(kind: string, id: string): CliFailure {
   return new CliFailure({
     type: "not-found",

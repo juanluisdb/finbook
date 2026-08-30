@@ -1,30 +1,39 @@
 #!/usr/bin/env node
 
 import { CommanderError } from "commander";
+import { FileBookStore } from "@finbook/core";
+import { EcbSource, MarketDataConfigStore, MarketDataCoordinator } from "@finbook/market-data";
 
 import { currentDate } from "./dates.js";
-import { CliFailure } from "./errors.js";
+import { CliFailure, requireResult } from "./errors.js";
 import { loadRuntimeConfig } from "./environment.js";
 import { writeError } from "./output.js";
 import { createProgram } from "./program.js";
 import { assertSupportedNodeVersion } from "./runtime.js";
 
-export function main(
+export async function main(
   argv: readonly string[] = process.argv.slice(2),
   env: NodeJS.ProcessEnv = process.env,
   cwd: string = process.cwd(),
-): number {
+): Promise<number> {
   const json = argv.includes("--json");
 
   try {
     assertSupportedNodeVersion();
     const runtimeConfig = loadRuntimeConfig(env, cwd);
-    const program = createProgram(runtimeConfig.dataHome, currentDate());
+    const config = requireResult(new MarketDataConfigStore(runtimeConfig.dataHome).load());
+    const rateResolver = new MarketDataCoordinator({
+      store: new FileBookStore(runtimeConfig.dataHome),
+      config,
+      priceSources: [],
+      eurRateSources: [new EcbSource()],
+    });
+    const program = createProgram(runtimeConfig.dataHome, currentDate(), undefined, rateResolver);
     if (argv.length === 0) {
       program.outputHelp();
       return 0;
     }
-    program.parse([process.execPath, "finbook", ...argv]);
+    await program.parseAsync([process.execPath, "finbook", ...argv]);
     return 0;
   } catch (error) {
     if (error instanceof CliFailure) {
@@ -69,4 +78,4 @@ export function main(
   }
 }
 
-process.exitCode = main();
+process.exitCode = await main();

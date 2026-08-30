@@ -21,12 +21,20 @@ import { requireDate } from "./dates.js";
 import { notFoundFailure, requireResult, validationFailure } from "./errors.js";
 import { createDoctor, type DoctorSummary } from "./doctor.js";
 import { formatMoney, formatRows, writeSuccess } from "./output.js";
-import { addAccount, addEvent, addInstrument, setFx, setPrice } from "./writes.js";
+import {
+  addAccount,
+  addEvent,
+  addInstrument,
+  setFx,
+  setPrice,
+  type HistoricalRateResolver,
+} from "./writes.js";
 
 export function createProgram(
   dataHome: string,
   defaultDate: string,
   generateId: () => string = randomUUID,
+  rateResolver?: HistoricalRateResolver,
 ): Command {
   const store = new FileBookStore(dataHome);
   const program = new Command()
@@ -85,7 +93,7 @@ export function createProgram(
   addEventOptions(eventAdd);
   addJsonOption(eventAdd);
   eventAdd.action((type, _options, command) =>
-    addEvent(store, type, command.opts(), jsonMode(command), generateId),
+    addEvent(store, type, command.opts(), jsonMode(command), generateId, rateResolver),
   );
   const eventList = event.command("list").description("list events");
   eventList
@@ -183,7 +191,9 @@ function addEventOptions(command: Command): void {
     .option("--gross-currency <code>", "gross income currency")
     .option("--withholding-foreign-amount <decimal>", "foreign withholding")
     .option("--withholding-domestic-amount <decimal>", "domestic withholding")
-    .option("--eur-per-unit <decimal>", "historical EUR per unit rate");
+    .option("--eur-per-unit <decimal>", "historical EUR per unit rate")
+    .option("--fetch-rate", "fetch the historical EUR rate before writing")
+    .option("--provider <id>", "pin the historical-rate provider");
 }
 
 function addJsonOption(command: Command): void {

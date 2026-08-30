@@ -1,5 +1,7 @@
 import {
   FileBookStore,
+  IsoDateSchema,
+  PositiveDecimalStringSchema,
   PriceStampSchema,
   fail,
   succeed,
@@ -11,6 +13,10 @@ import {
 import { effectiveRoute, findBinding } from "./config.js";
 import type { MarketDataConfig } from "./contracts.js";
 import {
+  type EurRateNeed,
+  type EurRateOutcome,
+  type EurRateResolution,
+  type HistoricalEurRateSource,
   type PriceFetchFailure,
   type PriceFetchReport,
   type PriceNeed,
@@ -27,6 +33,7 @@ export type MarketDataCoordinatorOptions = {
   store: MarketDataStore;
   config: MarketDataConfig;
   priceSources: readonly PriceSource[];
+  eurRateSources: readonly HistoricalEurRateSource[];
   now?: () => Date;
 };
 
@@ -45,12 +52,14 @@ export class MarketDataCoordinator {
   private readonly store: MarketDataStore;
   private readonly config: MarketDataConfig;
   private readonly priceSources: readonly PriceSource[];
+  private readonly eurRateSources: readonly HistoricalEurRateSource[];
   private readonly now: () => Date;
 
   constructor(options: MarketDataCoordinatorOptions) {
     this.store = options.store;
     this.config = options.config;
     this.priceSources = options.priceSources;
+    this.eurRateSources = options.eurRateSources;
     this.now = options.now ?? (() => new Date());
   }
 
@@ -99,6 +108,94 @@ export class MarketDataCoordinator {
     }
 
     return succeed({ requested: needs.length, cached, fetched, failures });
+  }
+
+  async resolveHistoricalEurRate(
+    need: EurRateNeed,
+    options: ResolvePriceOptions = {},
+  ): Promise<EurRateResolution> {
+    const binding = findBinding(this.config, "currency", need.currency);
+    const providers =
+      options.provider !== undefined
+        ? [options.provider]
+        : binding === undefined
+          ? effectiveRoute("eur-rate:fiat", this.config)
+          : [binding.provider];
+    let lastFailure: ProviderFailure | undefined;
+
+    for (const provider of providers) {
+      const source = this.eurRateSources.find((candidate) => candidate.id === provider);
+      if (source === undefined) {
+        lastFailure = {
+          kind: "unavailable",
+          message: `Provider ${provider} is not available in this build.`,
+        };
+        continue;
+      }
+      const providerNeed =
+        binding?.provider === provider ? { ...need, identifier: binding.identifier } : need;
+      let outcomes: readonly EurRateOutcome[];
+      try {
+        outcomes = await source.fetchHistoricalEurRates([providerNeed]);
+      } catch (error) {
+        lastFailure = {
+          kind: "unavailable",
+          message: error instanceof Error ? error.message : "Provider request failed.",
+        };
+        continue;
+      }
+      const outcome = outcomes[0];
+      if (outcome === undefined) {
+        lastFailure = {
+          kind: "invalid-response",
+          message: `Provider ${provider} omitted ${need.currency}.`,
+        };
+        continue;
+      }
+      if (!outcome.ok) {
+        lastFailure = outcome.error;
+        continue;
+      }
+      const rate = PositiveDecimalStringSchema.safeParse(outcome.data.rate);
+      const effectiveDate = IsoDateSchema.safeParse(outcome.data.effectiveDate);
+      if (!rate.success || !effectiveDate.success) {
+        lastFailure = {
+          kind: "invalid-response",
+          message: `Provider ${provider} returned an invalid EUR rate.`,
+        };
+        continue;
+      }
+      if (effectiveDate.data > need.date) {
+        lastFailure = {
+          kind: "invalid-response",
+          message: `Provider ${provider} returned a future EUR rate.`,
+        };
+        continue;
+      }
+      if (outcome.data.provenance.kind !== "fetched") {
+        lastFailure = {
+          kind: "invalid-response",
+          message: `Provider ${provider} returned a non-fetched EUR rate.`,
+        };
+        continue;
+      }
+      return {
+        ok: true,
+        data: {
+          rate: rate.data,
+          effectiveDate: effectiveDate.data,
+          provenance: outcome.data.provenance,
+        },
+      };
+    }
+
+    return {
+      ok: false,
+      error: lastFailure ?? {
+        kind: "unavailable",
+        message: `No provider is configured for ${need.currency}.`,
+      },
+    };
   }
 
   private async resolvePriceGroup(

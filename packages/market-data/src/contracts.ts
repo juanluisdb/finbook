@@ -112,6 +112,10 @@ export type EurRateOutcome =
   | { need: EurRateNeed; ok: true; data: EurRateObservation }
   | { need: EurRateNeed; ok: false; error: ProviderFailure };
 
+export type EurRateResolution =
+  | { ok: true; data: EurRateObservation }
+  | { ok: false; error: ProviderFailure };
+
 export type PriceObservation = Omit<PriceStamp, "provenance"> & {
   provenance: Extract<Provenance, { kind: "fetched" }>;
 };

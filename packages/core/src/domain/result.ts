@@ -1,4 +1,4 @@
-export type DomainErrorType = "validation" | "not-found" | "invariant" | "storage";
+export type DomainErrorType = "validation" | "not-found" | "invariant" | "storage" | "external";
 
 export type DomainError = {
   type: DomainErrorType;
