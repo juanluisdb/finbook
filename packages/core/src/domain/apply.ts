@@ -2,7 +2,7 @@ import { DecimalMath } from "./decimal.js";
 import { MoneyValue } from "./money.js";
 import { fail, succeed, type DomainError, type Result } from "./result.js";
 import { type Account, type Event, type Instrument, type Money } from "./schemas.js";
-import { cloneState, type BookState, type Hole, type Lot } from "./state.js";
+import { cloneState, type BookState, type Lot } from "./state.js";
 
 export function apply(state: BookState, event: Event): Result<BookState> {
   const nextState = cloneState(state);
@@ -39,7 +39,7 @@ function applyDeposit(
   const cashError = adjustCash(state, event.account, event.amount, "add");
   if (cashError !== undefined) return fail(cashError);
 
-  applyContribution(state, event.amount, event.eurPerUnit, event.id, "add");
+  applyContribution(state, event.amount, event.eurPerUnit, "add");
   return succeed(state);
 }
 
@@ -53,7 +53,7 @@ function applyWithdrawal(
   const cashError = adjustCash(state, event.account, event.amount, "subtract");
   if (cashError !== undefined) return fail(cashError);
 
-  applyContribution(state, event.amount, event.eurPerUnit, event.id, "subtract");
+  applyContribution(state, event.amount, event.eurPerUnit, "subtract");
   return succeed(state);
 }
 
@@ -142,7 +142,6 @@ function applyBuy(state: BookState, event: Extract<Event, { type: "buy" }>): Res
   };
   accountLots[event.instrument] = [...instrumentLots, lot];
   state.lots[event.account] = accountLots;
-  recordHistoricalRateHole(state, event.id, event.price, event.eurPerUnit, false);
   return succeed(state);
 }
 
@@ -198,7 +197,6 @@ function applySell(state: BookState, event: Extract<Event, { type: "sell" }>): R
     accountLots[event.instrument] = remainingLots;
   }
   state.lots[event.account] = accountLots;
-  recordHistoricalRateHole(state, event.id, event.price, event.eurPerUnit, false);
   return succeed(state);
 }
 
@@ -220,7 +218,6 @@ function applyDividend(
   }
   const cashError = adjustCash(state, event.account, net.toMoney(), "add");
   if (cashError !== undefined) return fail(cashError);
-  recordHistoricalRateHole(state, event.id, event.gross, event.eurPerUnit, false);
   return succeed(state);
 }
 
@@ -238,7 +235,6 @@ function applyInterest(
   }
   const cashError = adjustCash(state, event.account, net.toMoney(), "add");
   if (cashError !== undefined) return fail(cashError);
-  recordHistoricalRateHole(state, event.id, event.gross, event.eurPerUnit, false);
   return succeed(state);
 }
 
@@ -247,7 +243,6 @@ function applyFee(state: BookState, event: Extract<Event, { type: "fee" }>): Res
   if (accountError !== undefined) return fail(accountError);
   const cashError = adjustCash(state, event.account, event.amount, "subtract");
   if (cashError !== undefined) return fail(cashError);
-  recordHistoricalRateHole(state, event.id, event.amount, event.eurPerUnit, false);
   return succeed(state);
 }
 
@@ -305,43 +300,16 @@ function adjustCash(
 function applyContribution(
   state: BookState,
   amount: Money,
-  eurPerUnit: string | undefined,
-  eventId: string,
+  eurPerUnit: string,
   direction: "add" | "subtract",
 ): void {
-  const eurAmount = toEur(amount, eurPerUnit);
-  if (eurAmount === undefined) {
-    recordHistoricalRateHole(state, eventId, amount, eurPerUnit, true);
-    return;
-  }
+  const eurAmount = MoneyValue.from({
+    amount: new DecimalMath(amount.amount).times(new DecimalMath(eurPerUnit)).toFixed(),
+    currency: "EUR",
+  });
   const current = MoneyValue.from(state.contributedEur);
   const next = direction === "add" ? current.add(eurAmount) : current.subtract(eurAmount);
   state.contributedEur = next.toMoney();
-}
-
-function toEur(amount: Money, eurPerUnit: string | undefined): MoneyValue | undefined {
-  if (amount.currency === "EUR") return MoneyValue.from(amount);
-  if (eurPerUnit === undefined) return undefined;
-  const converted = new DecimalMath(amount.amount).times(new DecimalMath(eurPerUnit));
-  return MoneyValue.from({ amount: converted.toFixed(), currency: "EUR" });
-}
-
-function recordHistoricalRateHole(
-  state: BookState,
-  sourceId: string,
-  amount: Money,
-  eurPerUnit: string | undefined,
-  affectsContribution: boolean,
-): void {
-  if (amount.currency === "EUR" || eurPerUnit !== undefined) return;
-  const hole: Hole = {
-    sourceId,
-    kind: "historical-rate",
-    affectsContribution,
-    currency: amount.currency,
-    message: `Missing historical EUR rate for ${amount.currency} amount.`,
-  };
-  state.holes = [...state.holes, hole];
 }
 
 function tradeValue(price: Money, quantity: string, fee: Money | undefined): MoneyValue {

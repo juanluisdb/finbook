@@ -68,6 +68,7 @@ function deposit(state: BookState, amount: string, currency = "EUR"): BookState 
           type: "deposit",
           account: "ib",
           amount: { amount, currency },
+          eurPerUnit: "1",
         })
       : EventSchema.parse({
           id: `deposit-${amount}-${currency}`,
@@ -118,6 +119,7 @@ describe("accounting engine", () => {
         type: "withdrawal",
         account: "ib",
         amount: { amount: "25", currency: "EUR" },
+        eurPerUnit: "1",
       }),
     );
 
@@ -239,6 +241,7 @@ describe("accounting engine", () => {
         instrument: "META",
         gross: { amount: "1.07", currency: "USD" },
         withholdingForeign: { amount: "0.16", currency: "USD" },
+        eurPerUnit: "0.9",
       }),
     );
     state = applyOrThrow(
@@ -251,6 +254,7 @@ describe("accounting engine", () => {
         account: "ib",
         gross: { amount: "5", currency: "EUR" },
         withholdingDomestic: { amount: "1", currency: "EUR" },
+        eurPerUnit: "1",
       }),
     );
     state = applyOrThrow(
@@ -262,6 +266,7 @@ describe("accounting engine", () => {
         type: "fee",
         account: "ib",
         amount: { amount: "2", currency: "EUR" },
+        eurPerUnit: "1",
       }),
     );
 
@@ -280,6 +285,7 @@ describe("accounting engine", () => {
       type: "deposit",
       account: "unknown",
       amount: { amount: "1", currency: "EUR" },
+      eurPerUnit: "1",
     });
     const unknownResult = apply(state, unknownAccount);
 
@@ -297,6 +303,7 @@ describe("accounting engine", () => {
         instrument: "HROW",
         qty: "1",
         price: { amount: "1", currency: "USD" },
+        eurPerUnit: "0.9",
       }),
     );
     expect(noCashResult).toMatchObject({ ok: false, error: { type: "invariant" } });
@@ -315,17 +322,18 @@ describe("accounting engine", () => {
         instrument: "HROW",
         qty: "1",
         price: { amount: "1", currency: "EUR" },
+        eurPerUnit: "1",
       }),
     );
 
     expect(result).toMatchObject({ ok: false, error: { type: "invariant" } });
   });
 
-  it("keeps a position while recording a missing historical-rate hole", () => {
+  it("does not record historical-rate holes for rated events", () => {
     const state = applyOrThrow(
       deposit(initialState(), "100", "USD"),
       EventSchema.parse({
-        id: "buy-hole",
+        id: "buy-rated",
         date: "2026-03-03",
         source: "manual",
         type: "buy",
@@ -333,13 +341,12 @@ describe("accounting engine", () => {
         instrument: "HROW",
         qty: "1",
         price: { amount: "10", currency: "USD" },
+        eurPerUnit: "0.9",
       }),
     );
 
     expect(state.lots.ib?.HROW).toHaveLength(1);
-    expect(state.holes).toContainEqual(
-      expect.objectContaining({ sourceId: "buy-hole", kind: "historical-rate" }),
-    );
+    expect(state.holes).toEqual([]);
   });
 
   it("keeps the same instrument in separate account pockets", () => {

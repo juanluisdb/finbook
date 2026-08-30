@@ -115,11 +115,11 @@ Amounts, quantities, prices, rates, and weights are decimal strings at the bound
 
 Reporting currency is **EUR**. Not a setting.
 
-Every cash movement that needs a historical EUR conversion may carry `eurPerUnit`: EUR per 1 unit of that currency **on that day**. It is `1` when the money is already EUR.
+Every rate-bearing event carries `eurPerUnit`: EUR per 1 unit of that event’s native currency **on that day**. It is `1` when the money is already EUR.
 
-- If a non-EUR event amount has no historical `eurPerUnit`, it creates a visible `historical-rate` hole. The system must not use a current `FxStamp` as that historical rate.
-- A historical-rate hole does not block current valuation when a current price/FX stamp can mark the value. It remains visible until a future explicit enrichment supplies a rate.
-- If a deposit or withdrawal is missing its historical rate, `contributedEur` and `pnlEur` are `null` because the contribution basis is incomplete.
+- A non-EUR rate-bearing event must provide a positive historical `eurPerUnit` before it is accepted. The user may enter it or explicitly request `--fetch-rate`; a missing rate is a validation failure and the event is not appended.
+- An EUR rate-bearing event stores `eurPerUnit: "1"`. A supplied value other than one is rejected.
+- `transfer` and `fx` are not contribution events and do not carry `eurPerUnit`.
 - If a live cash balance or position has no as-of valuation mark, `totalEur` is `null`; the missing mark is a `valuation` hole.
 - Event-level rates are the historical rates used for later tax readers. They are never overwritten by today’s FX stamp.
 
@@ -152,14 +152,14 @@ Variants:
 
 | Type | Extra fields | Meaning and v1 rules |
 |---|---|---|
-| `deposit` | `account`, `amount: Money`, `eurPerUnit?` | Cash in from the rest of life. **Increases contributed.** Amount is positive. |
-| `withdrawal` | `account`, `amount: Money`, `eurPerUnit?` | Cash out to the rest of life. **Decreases contributed.** Amount is positive. |
+| `deposit` | `account`, `amount: Money`, `eurPerUnit` | Cash in from the rest of life. **Increases contributed.** Amount is positive. |
+| `withdrawal` | `account`, `amount: Money`, `eurPerUnit` | Cash out to the rest of life. **Decreases contributed.** Amount is positive. |
 | `transfer` | `from`, `to`, `amount: Money` | Own account → own account. **Same currency only**, endpoints must differ, and contributed is unchanged. It has no `account` field. |
 | `fx` | `account`, `from: Money`, `to: Money`, `fee?: Money` | Currency A → B on **one** account. `from.currency !== to.currency`; a fee may use either of those currencies. Not a contribution. |
-| `buy` / `sell` | `account`, `instrument`, `qty` (decimal string), `price: Money`, `fee?: Money`, `eurPerUnit?` | Cash ↔ asset on the same account. `price.currency === instrument.quoteCurrency`; a trade fee, when present, uses that same currency. Contributed unchanged. |
-| `dividend` | `account`, `instrument`, `gross: Money`, `withholdingForeign?: Money`, `withholdingDomestic?: Money`, `eurPerUnit?` | Cash up by **net** (gross − withholdings). Store gross. All amounts use the instrument quote currency. Contributed unchanged. |
-| `interest` | `account`, `gross: Money`, `withholdingForeign?: Money`, `withholdingDomestic?: Money`, `eurPerUnit?` | Same cash rule as dividend, with no instrument. All amounts use one currency. |
-| `fee` | `account`, `amount: Money`, `eurPerUnit?` | Standalone account fee, **not** attached to a trade. Amount is positive. |
+| `buy` / `sell` | `account`, `instrument`, `qty` (decimal string), `price: Money`, `fee?: Money`, `eurPerUnit` | Cash ↔ asset on the same account. `price.currency === instrument.quoteCurrency`; a trade fee, when present, uses that same currency. Contributed unchanged. |
+| `dividend` | `account`, `instrument`, `gross: Money`, `withholdingForeign?: Money`, `withholdingDomestic?: Money`, `eurPerUnit` | Cash up by **net** (gross − withholdings). Store gross. All amounts use the instrument quote currency. Contributed unchanged. |
+| `interest` | `account`, `gross: Money`, `withholdingForeign?: Money`, `withholdingDomestic?: Money`, `eurPerUnit` | Same cash rule as dividend, with no instrument. All amounts use one currency. |
+| `fee` | `account`, `amount: Money`, `eurPerUnit` | Standalone account fee, **not** attached to a trade. Amount is positive. |
 
 All user-entered amounts, quantities, prices, and rates are positive decimal strings. Optional fees and withholdings are non-negative. Withholdings must use the gross currency. V1 rejects an oversell, any cash operation that would make a balance negative, and unknown account/instrument IDs.
 
@@ -202,8 +202,8 @@ Pure function: `(state, event) → Result<state, DomainError>`.
 state
   cash[account][currency]          // Money
   lots[account][instrument]        // qty + native cost (fee-inclusive) + event ids
-  contributedEur                   // known rated deposits − withdrawals
-  holes                            // event/valuation holes with source and reason
+  contributedEur                   // rated deposits − withdrawals
+  holes                            // valuation holes with source and reason
 ```
 
 v1 may reduce lots on sell **proportionally** so holdings look right. That is **not** the official FIFO report. FIFO matching (valores homogéneos, one instrument across accounts as required later) is a later reader of the same lots.
@@ -213,11 +213,10 @@ Glance:
 ```
 totalEur        = marked positions + cash using as-of stamps;
                   null if any live value cannot be marked
-contributedEur  = net deposits/withdrawals with historical rates;
-                  null if a deposit/withdrawal rate is missing
-pnlEur          = totalEur − contributedEur when both are known;
+contributedEur  = net deposits/withdrawals with required historical rates
+pnlEur          = totalEur − contributedEur when totalEur is known;
                   otherwise null
-holes           = historical-rate and valuation holes
+holes           = valuation holes
 byPlatform       = marked EUR value grouped by account platform
 byAssetType      = marked EUR value grouped by position type
 byCurrency       = marked EUR value grouped by native cash/quote currency
@@ -264,9 +263,9 @@ Two different numbers must not be mixed:
 
 If you convert P&L to EUR on the buy date *and* again when you sell the dollars, you count the same move twice.
 
-**Future historical-rate enrichment.** A future parser may supply `eurPerUnit` before emitting an event. A future explicit enrichment command may fetch a historical rate from an API for an existing hole. That enrichment must retain the event id, effective date, source, and retrieval time; it must not silently rewrite the original event, use a current `FxStamp` as the historical rate, or present the result as an official tax calculation. Until then, v1 leaves the hole visible.
+A future parser may supply `eurPerUnit` before emitting an event. The explicit `--fetch-rate` path may obtain it before the event is appended. It must retain the event’s rate provenance, never use a current `FxStamp` as the historical rate, and never present the result as an official tax calculation.
 
-v1 already stores enough raw shape for a later V0282-22 reader: every cash delta has `date + native money + optional eurPerUnit`. Do not add a `currency_lot` event type. Do not show those figures on the glance.
+v1 already stores enough raw shape for a later V0282-22 reader: every rate-bearing cash delta has `date + native money + eurPerUnit`. Do not add a `currency_lot` event type. Do not show those figures on the glance.
 
 References the planner used (informal, not law):
 https://bovedainversion.com/declaracion-de-irpf-multidivisa/
@@ -439,8 +438,8 @@ Dependency strategy:
 | A8 | Standalone account fee | Cash decreases; it is not attached to a lot or trade. |
 | A9 | Unknown account/instrument, oversell, or operation that makes cash negative | Returns an expected domain error and does not mutate state. |
 | A10 | Same instrument held on two accounts | One instrument is grouped across two account holdings; account and instrument weights are correct. |
-| A11 | Non-EUR buy without historical `eurPerUnit`, with a current price/FX stamp | Native position remains; current mark is possible; a `historical-rate` hole is visible. |
-| A12 | Deposit/withdrawal without historical `eurPerUnit` | Current cash may be marked, but `contributedEur` and `pnlEur` are `null` and the hole identifies the event. |
+| A11 | Non-EUR rate-bearing event without historical `eurPerUnit` | Rejected at the input boundary; no event is appended. |
+| A12 | EUR rate-bearing event with a rate other than `1` | Rejected at the input boundary; no event is appended. |
 | A13 | `show ... --as-of D` with later price/FX stamps and later-dated events | Only events dated ≤ D and the last stamps dated ≤ D are used. |
 | A14 | Events appended in June then May | Replay orders them by event date, using append order for same-date ties; the late May event is included correctly. |
 | A15 | Missing price fallback and missing FX stamp | Last trade price may provide the documented price fallback; missing non-EUR FX creates a valuation hole. |

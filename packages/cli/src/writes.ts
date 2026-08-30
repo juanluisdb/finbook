@@ -198,7 +198,7 @@ function buildEvent(
         type,
         account: required(options.account, "--account"),
         amount: requiredMoney(options.amount, options.currency, "--amount", "--currency"),
-        eurPerUnit: options.eurPerUnit,
+        eurPerUnit: requiredEurPerUnit(options.currency, options.eurPerUnit),
       });
     case "withdrawal":
       return parseEvent({
@@ -206,7 +206,7 @@ function buildEvent(
         type,
         account: required(options.account, "--account"),
         amount: requiredMoney(options.amount, options.currency, "--amount", "--currency"),
-        eurPerUnit: options.eurPerUnit,
+        eurPerUnit: requiredEurPerUnit(options.currency, options.eurPerUnit),
       });
     case "transfer":
       return parseEvent({
@@ -255,7 +255,7 @@ function buildEvent(
           "--fee-amount",
           "--fee-currency",
         ),
-        eurPerUnit: options.eurPerUnit,
+        eurPerUnit: requiredEurPerUnit(options.priceCurrency, options.eurPerUnit),
       });
     case "dividend":
       return parseEvent({
@@ -281,7 +281,7 @@ function buildEvent(
           "--withholding-domestic-amount",
           "--gross-currency",
         ),
-        eurPerUnit: options.eurPerUnit,
+        eurPerUnit: requiredEurPerUnit(options.grossCurrency, options.eurPerUnit),
       });
     case "interest":
       return parseEvent({
@@ -306,7 +306,7 @@ function buildEvent(
           "--withholding-domestic-amount",
           "--gross-currency",
         ),
-        eurPerUnit: options.eurPerUnit,
+        eurPerUnit: requiredEurPerUnit(options.grossCurrency, options.eurPerUnit),
       });
     case "fee":
       return parseEvent({
@@ -314,7 +314,7 @@ function buildEvent(
         type,
         account: required(options.account, "--account"),
         amount: requiredMoney(options.amount, options.currency, "--amount", "--currency"),
-        eurPerUnit: options.eurPerUnit,
+        eurPerUnit: requiredEurPerUnit(options.currency, options.eurPerUnit),
       });
     default:
       throw validationFailure(
@@ -381,6 +381,11 @@ function required(value: string | undefined, flag: string): string {
     throw validationFailure(`Missing required ${flag}.`, `Provide ${flag}.`);
   }
   return value;
+}
+
+function requiredEurPerUnit(currency: string | undefined, value: string | undefined): string {
+  if (currency === "EUR") return value ?? "1";
+  return required(value, "--eur-per-unit");
 }
 
 function requiredMoney(

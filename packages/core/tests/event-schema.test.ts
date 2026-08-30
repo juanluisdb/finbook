@@ -75,6 +75,36 @@ describe("event schemas", () => {
     ).toThrow();
   });
 
+  it("requires an EUR rate for rate-bearing events", () => {
+    const deposit = {
+      ...base,
+      type: "deposit",
+      account: "ib",
+      amount: { amount: "100", currency: "USD" },
+    };
+
+    expect(() => EventSchema.parse(deposit)).toThrow();
+    expect(EventSchema.parse({ ...deposit, eurPerUnit: "0.9" })).toMatchObject({
+      type: "deposit",
+      eurPerUnit: "0.9",
+    });
+  });
+
+  it("requires EUR events to use an EUR-per-unit rate of one", () => {
+    const event = {
+      ...base,
+      type: "interest",
+      account: "ib",
+      gross: { amount: "5", currency: "EUR" },
+    };
+
+    expect(EventSchema.parse({ ...event, eurPerUnit: "1" })).toMatchObject({
+      type: "interest",
+      eurPerUnit: "1",
+    });
+    expect(() => EventSchema.parse({ ...event, eurPerUnit: "0.9" })).toThrow();
+  });
+
   it("keeps a trade fee attached to the trade and in its price currency", () => {
     const buy = EventSchema.parse({
       ...base,
@@ -109,6 +139,7 @@ describe("event schemas", () => {
         instrument: "META",
         gross: { amount: "1.07", currency: "USD" },
         withholdingForeign: { amount: "0.16", currency: "USD" },
+        eurPerUnit: "0.9",
       }),
     ).toMatchObject({ type: "dividend", gross: { currency: "USD" } });
 
@@ -119,6 +150,7 @@ describe("event schemas", () => {
         account: "ib",
         gross: { amount: "1.07", currency: "USD" },
         withholdingDomestic: { amount: "0.16", currency: "EUR" },
+        eurPerUnit: "0.9",
       }),
     ).toThrow();
   });

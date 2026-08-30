@@ -95,6 +95,66 @@ describe("write CLI", () => {
     });
   });
 
+  it("requires an event rate and rejects a non-one EUR rate", () => {
+    const dataHome = temporaryHome();
+    runCli(dataHome, [
+      "account",
+      "add",
+      "--id",
+      "ib",
+      "--name",
+      "Interactive Brokers",
+      "--platform",
+      "interactive-brokers",
+      "--country",
+      "IE",
+      "--custodial",
+      "broker",
+    ]);
+
+    const missingRate = runCli(dataHome, [
+      "event",
+      "add",
+      "deposit",
+      "--date",
+      "2026-03-01",
+      "--account",
+      "ib",
+      "--amount",
+      "100",
+      "--currency",
+      "USD",
+      "--json",
+    ]);
+    const wrongEurRate = runCli(dataHome, [
+      "event",
+      "add",
+      "deposit",
+      "--date",
+      "2026-03-01",
+      "--account",
+      "ib",
+      "--amount",
+      "100",
+      "--currency",
+      "EUR",
+      "--eur-per-unit",
+      "0.9",
+      "--json",
+    ]);
+
+    expect(missingRate.status).toBe(2);
+    expect(JSON.parse(missingRate.stdout)).toMatchObject({
+      ok: false,
+      error: { type: "validation" },
+    });
+    expect(wrongEurRate.status).toBe(2);
+    expect(JSON.parse(wrongEurRate.stdout)).toMatchObject({
+      ok: false,
+      error: { type: "validation" },
+    });
+  });
+
   it("accepts the same event through flags and a JSON file", () => {
     const dataHome = temporaryHome();
     runCli(dataHome, [
@@ -135,6 +195,7 @@ describe("write CLI", () => {
         date: "2026-03-02",
         account: "ib",
         amount: { amount: "50.00", currency: "EUR" },
+        eurPerUnit: "1",
         source: "manual",
         type: "deposit",
       }),

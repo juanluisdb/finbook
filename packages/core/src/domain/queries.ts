@@ -40,7 +40,7 @@ export type WeightMap = Record<string, string | null>;
 export type Glance = {
   asOf: string;
   totalEur: Money | null;
-  contributedEur: Money | null;
+  contributedEur: Money;
   pnlEur: Money | null;
   holes: readonly Hole[];
   byPlatform: readonly Breakdown[];
@@ -90,13 +90,13 @@ export function getGlance(snapshot: BookSnapshot, asOf: string): Result<Glance> 
   const valuation = deriveValuation(snapshot, asOf);
   if (!valuation.ok) return fail(valuation.error);
 
-  const contributedEur = valuation.data.holes.some((hole) => hole.affectsContribution)
-    ? null
-    : valuation.data.dataState.contributedEur;
+  const contributedEur = valuation.data.dataState.contributedEur;
   const pnlEur =
-    valuation.data.totalEur !== null && contributedEur !== null
-      ? MoneyValue.from(valuation.data.totalEur).subtract(MoneyValue.from(contributedEur)).toMoney()
-      : null;
+    valuation.data.totalEur === null
+      ? null
+      : MoneyValue.from(valuation.data.totalEur)
+          .subtract(MoneyValue.from(contributedEur))
+          .toMoney();
 
   return {
     ok: true,
@@ -369,7 +369,7 @@ function addHole(holes: Hole[], hole: Hole): void {
 }
 
 function valuationHole(sourceId: string, currency: string, message: string): Hole {
-  return { sourceId, kind: "valuation", affectsContribution: false, currency, message };
+  return { sourceId, kind: "valuation", currency, message };
 }
 
 function validationError(message: string, hint: string): DomainError {

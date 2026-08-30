@@ -82,6 +82,7 @@ describe("read CLI", () => {
       type: "deposit",
       account: "ib",
       amount: { amount: "100", currency: "EUR" },
+      eurPerUnit: "1",
     });
     const second = EventSchema.parse({
       id: "deposit-2",
@@ -90,6 +91,7 @@ describe("read CLI", () => {
       type: "deposit",
       account: "ib",
       amount: { amount: "50", currency: "EUR" },
+      eurPerUnit: "1",
     });
     expect(store.appendEvent(first).ok).toBe(true);
     expect(store.appendEvent(second).ok).toBe(true);
@@ -135,6 +137,7 @@ describe("read CLI", () => {
           type: "deposit",
           account: "ib",
           amount: { amount: "100", currency: "EUR" },
+          eurPerUnit: "1",
         }),
       ).ok,
     ).toBe(true);

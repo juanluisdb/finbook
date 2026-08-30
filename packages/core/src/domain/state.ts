@@ -8,12 +8,10 @@ export type Lot = {
 };
 export type LotBalances = Record<string, Record<string, Lot[]>>;
 
-export type HoleKind = "historical-rate" | "valuation";
 export type Hole = {
   sourceId: string;
-  kind: HoleKind;
-  affectsContribution: boolean;
-  currency?: string;
+  kind: "valuation";
+  currency: string;
   message: string;
 };
 

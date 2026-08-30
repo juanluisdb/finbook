@@ -133,29 +133,21 @@ describe("replay and queries", () => {
     });
   });
 
-  it("keeps a currently markable position while exposing its historical-rate hole", () => {
+  it("keeps contribution known without historical-rate holes", () => {
     const result = getGlance(
       snapshot({
         events: [
           EventSchema.parse({
-            id: "deposit-eur",
+            id: "deposit-rated",
             date: "2026-03-01",
             source: "manual",
             type: "deposit",
             account: "ib",
-            amount: { amount: "100", currency: "EUR" },
+            amount: { amount: "100", currency: "USD" },
+            eurPerUnit: "0.9",
           }),
           EventSchema.parse({
-            id: "fx-1",
-            date: "2026-03-01",
-            source: "manual",
-            type: "fx",
-            account: "ib",
-            from: { amount: "90", currency: "EUR" },
-            to: { amount: "100", currency: "USD" },
-          }),
-          EventSchema.parse({
-            id: "buy-hole",
+            id: "buy-rated",
             date: "2026-03-02",
             source: "manual",
             type: "buy",
@@ -163,6 +155,7 @@ describe("replay and queries", () => {
             instrument: "HROW",
             qty: "1",
             price: { amount: "40", currency: "USD" },
+            eurPerUnit: "0.9",
           }),
         ],
       }),
@@ -172,10 +165,10 @@ describe("replay and queries", () => {
     expect(result).toMatchObject({
       ok: true,
       data: {
-        totalEur: { amount: "100", currency: "EUR" },
-        contributedEur: { amount: "100", currency: "EUR" },
+        totalEur: { amount: "90", currency: "EUR" },
+        contributedEur: { amount: "90", currency: "EUR" },
         pnlEur: { amount: "0", currency: "EUR" },
-        holes: [expect.objectContaining({ sourceId: "buy-hole", kind: "historical-rate" })],
+        holes: [],
       },
     });
   });
@@ -238,6 +231,7 @@ describe("replay and queries", () => {
             type: "deposit",
             account: "ib",
             amount: { amount: "100", currency: "EUR" },
+            eurPerUnit: "1",
           }),
           EventSchema.parse({
             id: "deposit-myinvestor",
@@ -246,6 +240,7 @@ describe("replay and queries", () => {
             type: "deposit",
             account: "myinvestor",
             amount: { amount: "300", currency: "EUR" },
+            eurPerUnit: "1",
           }),
         ],
       }),
@@ -268,19 +263,21 @@ describe("replay and queries", () => {
     });
   });
 
-  it("marks contribution and P&L unavailable when a deposit rate is missing", () => {
+  it("keeps contribution known when valuation data is missing", () => {
     const result = getGlance(
       snapshot({
         events: [
           EventSchema.parse({
-            id: "deposit-hole",
+            id: "deposit-rated",
             date: "2026-03-01",
             source: "manual",
             type: "deposit",
             account: "ib",
             amount: { amount: "100", currency: "USD" },
+            eurPerUnit: "0.9",
           }),
         ],
+        fx: [],
       }),
       "2026-05-01",
     );
@@ -288,10 +285,10 @@ describe("replay and queries", () => {
     expect(result).toMatchObject({
       ok: true,
       data: {
-        totalEur: { amount: "90", currency: "EUR" },
-        contributedEur: null,
+        totalEur: null,
+        contributedEur: { amount: "90", currency: "EUR" },
         pnlEur: null,
-        holes: [expect.objectContaining({ sourceId: "deposit-hole", kind: "historical-rate" })],
+        holes: [expect.objectContaining({ sourceId: "fx:USD/EUR", kind: "valuation" })],
       },
     });
   });
