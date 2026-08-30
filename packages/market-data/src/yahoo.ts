@@ -163,6 +163,7 @@ function createYahooGateway(fetchImplementation: typeof fetch = globalThis.fetch
   const client = new YahooFinance({
     fetch: createRetryingFetch(fetchImplementation),
     versionCheck: false,
+    suppressNotices: ["yahooSurvey"],
     queue: { concurrency: 4 },
   });
   return {

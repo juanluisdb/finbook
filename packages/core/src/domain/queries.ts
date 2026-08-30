@@ -1,4 +1,4 @@
-import { DecimalMath } from "./decimal.js";
+import { calculatedDecimal, DecimalMath } from "./decimal.js";
 import { fail, type DomainError, type Result } from "./result.js";
 import { replayEvents } from "./replay.js";
 import type { Event, FxStamp, Instrument, Money, PriceStamp } from "./schemas.js";
@@ -355,7 +355,7 @@ function weight(bucket: Bucket, total: Money | null): string | null {
   if (!bucket.complete || total === null) return null;
   const totalValue = MoneyValue.from(total);
   if (totalValue.isZero()) return "0";
-  return bucket.value.amount.dividedBy(totalValue.amount).toFixed();
+  return calculatedDecimal(bucket.value.amount.dividedBy(totalValue.amount));
 }
 
 function weightMap(rows: readonly Breakdown[]): WeightMap {

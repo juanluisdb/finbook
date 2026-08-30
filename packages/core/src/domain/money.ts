@@ -1,4 +1,4 @@
-import { DecimalMath } from "./decimal.js";
+import { calculatedDecimal, DecimalMath } from "./decimal.js";
 import type { Money } from "./schemas.js";
 
 export class CurrencyMismatchError extends Error {
@@ -40,7 +40,8 @@ export class MoneyValue {
   }
 
   divide(divisor: string): MoneyValue {
-    return new MoneyValue(this.amount.dividedBy(new DecimalMath(divisor)), this.currency);
+    const quotient = this.amount.dividedBy(new DecimalMath(divisor));
+    return new MoneyValue(new DecimalMath(calculatedDecimal(quotient)), this.currency);
   }
 
   isNegative(): boolean {

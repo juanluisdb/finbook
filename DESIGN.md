@@ -111,7 +111,7 @@ On disk and on the wire, decimal values never use IEEE `number`:
 Money = { amount: string /* decimal */, currency: string /* ISO 4217 or crypto ticker */ }
 ```
 
-Amounts, quantities, prices, rates, and weights are decimal strings at the boundary. Decimal input uses plain notation without exponents; serialization canonicalizes it without rounding. Counts may be normal integers. In core, parse decimal strings with `decimal.js`; a `Money` wrapper **refuses** to add different currencies.
+Amounts, quantities, prices, rates, and weights are decimal strings at the boundary. Decimal input uses plain notation without exponents; serialization canonicalizes user input without rounding. Calculated non-terminating values use 18 decimal places. Counts may be normal integers. In core, parse decimal strings with `decimal.js`; a `Money` wrapper **refuses** to add different currencies.
 
 Reporting currency is **EUR**. Not a setting.
 

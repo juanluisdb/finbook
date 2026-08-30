@@ -18,4 +18,11 @@ describe("MoneyValue", () => {
       ),
     ).toThrow("different currencies");
   });
+
+  it("bounds calculated division to the accounting decimal scale", () => {
+    expect(MoneyValue.from({ amount: "1", currency: "EUR" }).divide("3").toMoney()).toEqual({
+      amount: "0.333333333333333333",
+      currency: "EUR",
+    });
+  });
 });

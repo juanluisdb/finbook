@@ -1,4 +1,4 @@
-import { DecimalMath } from "./decimal.js";
+import { calculatedDecimal, DecimalMath } from "./decimal.js";
 import { MoneyValue } from "./money.js";
 import { fail, succeed, type DomainError, type Result } from "./result.js";
 import { type Account, type Event, type Instrument, type Money } from "./schemas.js";
@@ -181,9 +181,9 @@ function applySell(state: BookState, event: Extract<Event, { type: "sell" }>): R
   const cashError = adjustCash(state, event.account, proceeds.toMoney(), "add");
   if (cashError !== undefined) return fail(cashError);
 
-  const remainingFactor = new DecimalMath(1)
-    .minus(requestedQuantity.dividedBy(totalQuantity))
-    .toFixed();
+  const remainingFactor = calculatedDecimal(
+    new DecimalMath(1).minus(requestedQuantity.dividedBy(totalQuantity)),
+  );
   const remainingLots = instrumentLots
     .map((lot) => ({
       ...lot,
