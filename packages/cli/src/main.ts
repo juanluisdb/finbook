@@ -33,14 +33,14 @@ export async function main(
     const coingecko = new CoinGeckoSource({
       demoApiKey: env.FINBOOK_COINGECKO_DEMO_API_KEY,
     });
-    const rateResolver = new MarketDataCoordinator({
+    const marketData = new MarketDataCoordinator({
       store: new FileBookStore(runtimeConfig.dataHome),
       config,
       priceSources: [yahoo, coingecko],
       fxSources: [ecb, coingecko],
       eurRateSources: [ecb, coingecko],
     });
-    const program = createProgram(runtimeConfig.dataHome, currentDate(), undefined, rateResolver);
+    const program = createProgram(runtimeConfig.dataHome, currentDate(), undefined, marketData);
     if (argv.length === 0) {
       program.outputHelp();
       return 0;

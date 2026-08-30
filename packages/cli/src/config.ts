@@ -33,18 +33,18 @@ export function listProviders(store: MarketDataConfigStore, json: boolean): void
     id: provider,
     enabled: !config.disabledProviders.includes(provider),
     credentialEnv: credentialEnv(provider),
-    defaultRoutes: routeNames(provider, config),
+    routes: configuredRoutes(provider, config),
   }));
   writeSuccess(
     providers,
     json,
     formatRows(
-      ["PROVIDER", "ENABLED", "CREDENTIAL ENV", "DEFAULT ROUTES"],
+      ["PROVIDER", "ENABLED", "CREDENTIAL ENV", "ROUTES"],
       providers.map((provider) => [
         provider.id,
         provider.enabled ? "yes" : "no",
         provider.credentialEnv ?? "none",
-        provider.defaultRoutes.join(", "),
+        provider.routes.join(", "),
       ]),
     ),
   );
@@ -205,7 +205,7 @@ function credentialEnv(provider: ProviderId): string | null {
   return provider === "coingecko" ? "FINBOOK_COINGECKO_DEMO_API_KEY" : null;
 }
 
-function routeNames(provider: ProviderId, config: MarketDataConfig): string[] {
+function configuredRoutes(provider: ProviderId, config: MarketDataConfig): string[] {
   const routes: RouteKey[] = [
     "price:stock",
     "price:etf",
