@@ -275,7 +275,12 @@ describe("write CLI", () => {
     expect(fx.status).toBe(0);
     expect(JSON.parse(fx.stdout)).toEqual({
       ok: true,
-      data: { pair: "USD/EUR", rate: "0.9", asOf: "2026-03-01" },
+      data: {
+        pair: "USD/EUR",
+        rate: "0.9",
+        asOf: "2026-03-01",
+        provenance: { kind: "manual" },
+      },
     });
   });
 });

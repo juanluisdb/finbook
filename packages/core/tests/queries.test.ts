@@ -56,12 +56,22 @@ function snapshot(overrides: Partial<BookSnapshot> = {}): BookSnapshot {
       }),
     ],
     prices: [
-      { instrument: "HROW", price: { amount: "40", currency: "USD" }, asOf: "2026-04-01" },
-      { instrument: "HROW", price: { amount: "50", currency: "USD" }, asOf: "2026-06-01" },
+      {
+        instrument: "HROW",
+        price: { amount: "40", currency: "USD" },
+        asOf: "2026-04-01",
+        provenance: { kind: "manual" },
+      },
+      {
+        instrument: "HROW",
+        price: { amount: "50", currency: "USD" },
+        asOf: "2026-06-01",
+        provenance: { kind: "manual" },
+      },
     ],
     fx: [
-      { pair: "USD/EUR", rate: "0.9", asOf: "2026-04-01" },
-      { pair: "USD/EUR", rate: "0.8", asOf: "2026-06-01" },
+      { pair: "USD/EUR", rate: "0.9", asOf: "2026-04-01", provenance: { kind: "manual" } },
+      { pair: "USD/EUR", rate: "0.8", asOf: "2026-06-01", provenance: { kind: "manual" } },
     ],
     ...overrides,
   };

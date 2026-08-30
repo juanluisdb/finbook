@@ -7,6 +7,7 @@ const CURRENCY_PATTERN = /^[A-Z][A-Z0-9-]{2,9}$/u;
 const ACCOUNT_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const INSTRUMENT_ID_PATTERN = /^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/u;
 const ISO_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/u;
+const ISO_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/u;
 
 export const DecimalStringSchema = z
   .string()
@@ -41,6 +42,11 @@ export const IsoDateSchema = z
   .string()
   .regex(ISO_DATE_PATTERN, "Expected an ISO date (YYYY-MM-DD)")
   .refine(isCalendarDate, "Expected a real calendar date");
+
+export const IsoInstantSchema = z
+  .string()
+  .regex(ISO_INSTANT_PATTERN, "Expected a UTC ISO instant")
+  .refine((value) => Number.isFinite(Date.parse(value)), "Expected a real UTC ISO instant");
 
 export const CountryCodeSchema = z
   .string()

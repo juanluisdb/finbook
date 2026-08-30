@@ -77,18 +77,38 @@ describe("FileBookStore", () => {
         instrument: "HROW",
         price: { amount: "40", currency: "USD" },
         asOf: "2026-03-01",
+        provenance: { kind: "manual" },
       }).ok,
     ).toBe(true);
-    expect(store.appendFx({ pair: "USD/EUR", rate: "0.9", asOf: "2026-03-01" }).ok).toBe(true);
+    expect(
+      store.appendFx({
+        pair: "USD/EUR",
+        rate: "0.9",
+        asOf: "2026-03-01",
+        provenance: { kind: "manual" },
+      }).ok,
+    ).toBe(true);
 
     expect(loaded(store)).toEqual({
       accounts: [account],
       instruments: [instrument],
       events: [event],
       prices: [
-        { instrument: "HROW", price: { amount: "40", currency: "USD" }, asOf: "2026-03-01" },
+        {
+          instrument: "HROW",
+          price: { amount: "40", currency: "USD" },
+          asOf: "2026-03-01",
+          provenance: { kind: "manual" },
+        },
       ],
-      fx: [{ pair: "USD/EUR", rate: "0.9", asOf: "2026-03-01" }],
+      fx: [
+        {
+          pair: "USD/EUR",
+          rate: "0.9",
+          asOf: "2026-03-01",
+          provenance: { kind: "manual" },
+        },
+      ],
     });
   });
 
@@ -151,6 +171,7 @@ describe("FileBookStore", () => {
         instrument: "HROW",
         price: { amount: "40", currency: "USD" },
         asOf: "2026-03-01",
+        provenance: { kind: "manual" },
       }).ok,
     ).toBe(true);
     expect(
@@ -158,9 +179,17 @@ describe("FileBookStore", () => {
         instrument: "HROW",
         price: { amount: "41", currency: "USD" },
         asOf: "2026-03-01",
+        provenance: { kind: "manual" },
       }).ok,
     ).toBe(true);
-    expect(store.appendFx({ pair: "USD/EUR", rate: "0.9", asOf: "2026-03-01" }).ok).toBe(true);
+    expect(
+      store.appendFx({
+        pair: "USD/EUR",
+        rate: "0.9",
+        asOf: "2026-03-01",
+        provenance: { kind: "manual" },
+      }).ok,
+    ).toBe(true);
 
     const result = getGlance(
       {

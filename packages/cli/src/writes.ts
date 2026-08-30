@@ -145,6 +145,7 @@ export function setPrice(store: FileBookStore, options: PriceWriteOptions, json:
       currency: required(options.currency, "--currency"),
     },
     asOf: required(options.asOf, "--as-of"),
+    provenance: { kind: "manual" },
   });
   requireResult(store.appendPrice(stamp));
   writeSuccess(
@@ -159,6 +160,7 @@ export function setFx(store: FileBookStore, options: FxWriteOptions, json: boole
     pair: required(options.pair, "--pair"),
     rate: required(options.rate, "--rate"),
     asOf: required(options.asOf, "--as-of"),
+    provenance: { kind: "manual" },
   });
   requireResult(store.appendFx(stamp));
   writeSuccess(stamp, json, `${stamp.pair} FX set to ${stamp.rate}`);

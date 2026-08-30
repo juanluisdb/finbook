@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { AccountSchema, InstrumentSchema, MetaSchema, MoneySchema } from "../src/index.js";
+import {
+  AccountSchema,
+  FxStampSchema,
+  InstrumentSchema,
+  MetaSchema,
+  MoneySchema,
+  PriceStampSchema,
+} from "../src/index.js";
 
 describe("core schemas", () => {
   it("canonicalizes a decimal money amount without changing its type", () => {
@@ -27,6 +34,43 @@ describe("core schemas", () => {
         quoteCurrency: "EUR",
       }),
     ).toMatchObject({ id: "VWCE", quoteCurrency: "EUR" });
+  });
+
+  it("requires compact provenance on valuation stamps", () => {
+    const manual = PriceStampSchema.parse({
+      instrument: "VWCE",
+      price: { amount: "100", currency: "EUR" },
+      asOf: "2026-03-01",
+      provenance: { kind: "manual" },
+    });
+    const fetched = FxStampSchema.parse({
+      pair: "USD/EUR",
+      rate: "0.9",
+      asOf: "2026-03-01",
+      provenance: {
+        kind: "fetched",
+        source: "ecb",
+        retrievedAt: "2026-03-01T12:00:00.000Z",
+      },
+    });
+
+    expect(manual.provenance).toEqual({ kind: "manual" });
+    expect(fetched.provenance).toMatchObject({ kind: "fetched", source: "ecb" });
+    expect(() =>
+      PriceStampSchema.parse({
+        instrument: "VWCE",
+        price: { amount: "100", currency: "EUR" },
+        asOf: "2026-03-01",
+      }),
+    ).toThrow();
+    expect(() =>
+      FxStampSchema.parse({
+        pair: "USD/EUR",
+        rate: "0.9",
+        asOf: "2026-03-01",
+        provenance: { kind: "fetched", source: "ecb" },
+      }),
+    ).toThrow();
   });
 
   it("parses config and meta values at the boundary", () => {

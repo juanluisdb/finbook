@@ -223,9 +223,17 @@ describe("read CLI", () => {
         instrument: "HROW",
         price: { amount: "45", currency: "USD" },
         asOf: "2026-03-03",
+        provenance: { kind: "manual" },
       }).ok,
     ).toBe(true);
-    expect(store.appendFx({ pair: "USD/EUR", rate: "0.9", asOf: "2026-03-03" }).ok).toBe(true);
+    expect(
+      store.appendFx({
+        pair: "USD/EUR",
+        rate: "0.9",
+        asOf: "2026-03-03",
+        provenance: { kind: "manual" },
+      }).ok,
+    ).toBe(true);
 
     const prices = runCli(dataHome, ["price", "list", "--json"]);
     const fx = runCli(dataHome, ["fx", "list", "--json"]);

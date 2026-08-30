@@ -184,13 +184,14 @@ All user-entered amounts, quantities, prices, and rates are positive decimal str
 ### 4.4 Stamps (not events)
 
 ```ts
-PriceStamp = { instrument, price: Money, asOf: date }
-FxStamp    = { pair: "USD/EUR" /* quote = EUR per 1 USD */, rate: string, asOf: date }
+PriceStamp = { instrument, price: Money, asOf: date, provenance }
+FxStamp    = { pair: "USD/EUR" /* quote = EUR per 1 USD */, rate: string, asOf: date, provenance }
+provenance = { kind: "manual" } | { kind: "fetched", source: string, retrievedAt: instant }
 ```
 
 A `PriceStamp.price.currency` must equal the instrument’s `quoteCurrency`. EUR has an implicit FX rate of `1`; every other currency needs an `FxStamp` to be valued in EUR.
 
-Glance and positions as-of `D` use the last stamp with `asOf <= D`. A buy’s price is **not** a mark unless no earlier price stamp exists; then the last trade price may be used as a fallback, still dated. If no price or FX mark exists, the affected value is a valuation hole.
+Glance and positions as-of `D` use the last stamp with `asOf <= D`. A buy’s price is **not** a mark unless no earlier price stamp exists; then the last trade price may be used as a fallback, still dated. Manual stamps carry `provenance.kind = "manual"`; fetched stamps carry the provider and retrieval instant. If no price or FX mark exists, the affected value is a valuation hole.
 
 Events are also filtered by `event.date <= D` before replay. Same-date events use their append order as the stable tie-breaker.
 
@@ -308,6 +309,7 @@ $FINBOOK_HOME/          # default ~/.finbook
 - A corrupt JSONL line fails that line and identifies its file and line number; do not silently skip.
 - File mode: owner-only where the OS allows (`0600`).
 - Parse at the boundary with Zod. Downstream sees the parsed type, never the raw line.
+- Fetched stamps retain only normalized values and compact provenance; raw provider responses are not book data.
 
 Override `FINBOOK_HOME` for tests (temp dir) and if the owner later keeps the folder in a sync path. v1 is still **one live copy**. Sync conflicts are out of scope.
 

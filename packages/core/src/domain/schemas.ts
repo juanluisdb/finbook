@@ -9,6 +9,7 @@ import {
   DecimalStringSchema,
   InstrumentIdSchema,
   IsoDateSchema,
+  IsoInstantSchema,
   NonEmptyStringSchema,
   NonNegativeDecimalStringSchema,
   PositiveDecimalStringSchema,
@@ -193,11 +194,23 @@ export const EventSchema = z.discriminatedUnion("type", [
   FeeEventSchema,
 ]);
 
+export const ProvenanceSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("manual") }).strict(),
+  z
+    .object({
+      kind: z.literal("fetched"),
+      source: NonEmptyStringSchema,
+      retrievedAt: IsoInstantSchema,
+    })
+    .strict(),
+]);
+
 export const PriceStampSchema = z
   .object({
     instrument: InstrumentIdSchema,
     price: PositiveMoneySchema,
     asOf: IsoDateSchema,
+    provenance: ProvenanceSchema,
   })
   .strict();
 
@@ -206,6 +219,7 @@ export const FxStampSchema = z
     pair: z.string().regex(/^[A-Z][A-Z0-9-]{2,9}\/EUR$/u, "Expected a currency/EUR pair"),
     rate: PositiveDecimalStringSchema,
     asOf: IsoDateSchema,
+    provenance: ProvenanceSchema,
   })
   .strict();
 
@@ -261,6 +275,7 @@ export type Meta = z.infer<typeof MetaSchema>;
 export type Event = z.infer<typeof EventSchema>;
 export type PriceStamp = z.infer<typeof PriceStampSchema>;
 export type FxStamp = z.infer<typeof FxStampSchema>;
+export type Provenance = z.infer<typeof ProvenanceSchema>;
 export type DecimalString = z.infer<typeof DecimalStringSchema>;
 export type PositiveDecimalString = z.infer<typeof PositiveDecimalStringSchema>;
 export type NonNegativeDecimalString = z.infer<typeof NonNegativeDecimalStringSchema>;
