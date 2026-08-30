@@ -1,0 +1,20 @@
+{
+  "name": "@finbook/market-data",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@finbook/core": "workspace:*",
+    "zod": "4.4.3"
+  }
+}
