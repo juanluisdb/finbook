@@ -108,11 +108,10 @@ export class CoinGeckoSource implements PriceSource, FxSource, HistoricalEurRate
           return {
             need,
             ok: false,
-            error: {
-              kind: "unavailable",
-              message:
-                error instanceof Error ? error.message : "CoinGecko historical request failed.",
-            },
+            error:
+              error instanceof Error
+                ? coingeckoFailure(error, "CoinGecko historical request failed.")
+                : { kind: "unavailable", message: "CoinGecko historical request failed." },
           };
         }
         const selected = latestPoint(points, need.date);
@@ -183,10 +182,10 @@ export class CoinGeckoSource implements PriceSource, FxSource, HistoricalEurRate
         currency,
       );
     } catch (error) {
-      const failure: ProviderFailure = {
-        kind: "unavailable",
-        message: error instanceof Error ? error.message : "CoinGecko FX request failed.",
-      };
+      const failure: ProviderFailure =
+        error instanceof Error
+          ? coingeckoFailure(error, "CoinGecko FX request failed.")
+          : { kind: "unavailable", message: "CoinGecko FX request failed." };
       for (const { need } of supported)
         outcomes.set(fxNeedKey(need), { need, ok: false, error: failure });
       return;
@@ -244,11 +243,10 @@ export class CoinGeckoSource implements PriceSource, FxSource, HistoricalEurRate
       outcomes.set(fxNeedKey(need), {
         need,
         ok: false,
-        error: {
-          kind: "unavailable",
-          message:
-            error instanceof Error ? error.message : "CoinGecko historical FX request failed.",
-        },
+        error:
+          error instanceof Error
+            ? coingeckoFailure(error, "CoinGecko historical FX request failed.")
+            : { kind: "unavailable", message: "CoinGecko historical FX request failed." },
       });
       return;
     }
@@ -310,10 +308,10 @@ export class CoinGeckoSource implements PriceSource, FxSource, HistoricalEurRate
         currency.toLowerCase(),
       );
     } catch (error) {
-      const failure: ProviderFailure = {
-        kind: "unavailable",
-        message: error instanceof Error ? error.message : "CoinGecko price request failed.",
-      };
+      const failure: ProviderFailure =
+        error instanceof Error
+          ? coingeckoFailure(error, "CoinGecko price request failed.")
+          : { kind: "unavailable", message: "CoinGecko price request failed." };
       for (const need of needs)
         outcomes.set(priceNeedKey(need), { need, ok: false, error: failure });
       return;
@@ -378,10 +376,10 @@ export class CoinGeckoSource implements PriceSource, FxSource, HistoricalEurRate
       outcomes.set(priceNeedKey(need), {
         need,
         ok: false,
-        error: {
-          kind: "unavailable",
-          message: error instanceof Error ? error.message : "CoinGecko historical request failed.",
-        },
+        error:
+          error instanceof Error
+            ? coingeckoFailure(error, "CoinGecko historical request failed.")
+            : { kind: "unavailable", message: "CoinGecko historical request failed." },
       });
       return;
     }
@@ -486,6 +484,32 @@ function dateOnly(value: Date): string | undefined {
   if (!Number.isFinite(value.getTime())) return undefined;
   const date = value.toISOString().slice(0, 10);
   return IsoDateSchema.safeParse(date).success ? date : undefined;
+}
+
+function coingeckoFailure(error: Error, fallback: string): ProviderFailure {
+  if (error instanceof Coingecko.APIError) {
+    const status = error.status;
+    if (status === 401 || status === 403) {
+      return {
+        kind: "unauthorized",
+        status,
+        message: `CoinGecko rejected the request with HTTP ${status}.`,
+      };
+    }
+    if (status === 404)
+      return { kind: "not-found", status, message: "CoinGecko resource was not found." };
+    if (status === 429)
+      return { kind: "rate-limited", status, message: "CoinGecko rate-limited the request." };
+    if (status !== undefined && status >= 500) {
+      return { kind: "unavailable", status, message: `CoinGecko returned HTTP ${status}.` };
+    }
+    return {
+      kind: "invalid-response",
+      status,
+      message: `CoinGecko returned HTTP ${status ?? "unknown"}.`,
+    };
+  }
+  return { kind: "unavailable", message: error.message || fallback };
 }
 
 function fxNeedKey(need: FxNeed): string {
