@@ -141,6 +141,34 @@ export type ProviderFailure = {
   retryAfterMs?: number;
 };
 
+export interface PriceSource {
+  readonly id: ProviderId;
+  fetchPrices(needs: readonly PriceNeed[]): Promise<readonly PriceOutcome[]>;
+}
+
+export interface FxSource {
+  readonly id: ProviderId;
+  fetchRates(needs: readonly FxNeed[]): Promise<readonly FxOutcome[]>;
+}
+
+export interface HistoricalEurRateSource {
+  readonly id: ProviderId;
+  fetchRates(needs: readonly EurRateNeed[]): Promise<readonly EurRateOutcome[]>;
+}
+
+export type PriceFetchFailure = {
+  need: PriceNeed;
+  provider: ProviderId | "none";
+  error: ProviderFailure;
+};
+
+export type PriceFetchReport = {
+  requested: number;
+  cached: number;
+  fetched: readonly PriceObservation[];
+  failures: readonly PriceFetchFailure[];
+};
+
 export const DateNeedSchema = z.object({
   asOf: IsoDateSchema,
 });
