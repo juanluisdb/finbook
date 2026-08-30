@@ -2,7 +2,7 @@
 
 finbook is a local, CLI-first book of economic events. It derives cash, positions, contributions, and a EUR glance from an append-only event ledger. It is not a broker, trading tool, or tax-filing product.
 
-`DESIGN.md` is the source of truth for v1 scope, domain rules, CLI contracts, tests, and milestones.
+`DESIGN.md` is the source of truth for scope, domain rules, CLI contracts, tests, and milestones.
 
 ## Development
 
@@ -19,6 +19,38 @@ Build the CLI and run it from the emitted `dist` path:
 corepack pnpm build
 FINBOOK_HOME=/tmp/finbook-data node packages/cli/dist/main.js --help
 FINBOOK_HOME=/tmp/finbook-data node packages/cli/dist/main.js doctor --json
+```
+
+## Market data
+
+Events that affect EUR accounting require `eurPerUnit`. Enter it directly, or explicitly fetch it while creating the event:
+
+```sh
+finbook event add buy ... --eur-per-unit 0.925
+finbook event add buy ... --fetch-rate
+```
+
+Current and historical visualization marks can be fetched explicitly:
+
+```sh
+finbook show glance --fetch
+finbook show glance --as-of 2026-08-05 --fetch
+```
+
+Fetched prices and FX marks are cached one observation at a time. If a command stops part-way through a batch, rerunning it naturally reuses the successful cached marks.
+
+Provider configuration is non-secret:
+
+```sh
+finbook config provider list
+finbook config source set --instrument VWCE --provider yahoo --identifier VWCE.DE
+finbook config source set --currency BTC --provider coingecko --identifier bitcoin
+```
+
+Provider credentials use environment variables and are never stored in the book. For example:
+
+```sh
+export FINBOOK_COINGECKO_DEMO_API_KEY=...
 ```
 
 The CLI is non-interactive. Use `--json` for the stable `{ ok, data }` or `{ ok, error }` envelope. Monetary values are decimal strings inside `Money` objects.

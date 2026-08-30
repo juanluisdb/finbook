@@ -300,6 +300,7 @@ $FINBOOK_HOME/          # default ~/.finbook
   events.jsonl          # append-only book
   prices.jsonl
   fx.jsonl
+  market-data.json       # non-secret provider routes and bindings
 ```
 
 - Inspectable files. Backup = copy this folder.
@@ -310,6 +311,7 @@ $FINBOOK_HOME/          # default ~/.finbook
 - File mode: owner-only where the OS allows (`0600`).
 - Parse at the boundary with Zod. Downstream sees the parsed type, never the raw line.
 - Fetched stamps retain only normalized values and compact provenance; raw provider responses are not book data.
+- `market-data.json` contains no credentials. Provider API keys come from environment variables.
 
 Override `FINBOOK_HOME` for tests (temp dir) and if the owner later keeps the folder in a sync path. v1 is still **one live copy**. Sync conflicts are out of scope.
 
@@ -321,16 +323,20 @@ Agent-friendly. Noun → verb. **No prompts.** Every command accepts `--json`. D
 
 ```
 finbook doctor
+finbook config show
+finbook config provider list|enable|disable
+finbook config route set
+finbook config source set|remove
 finbook account add|list|get
 finbook instrument add|list|get
-finbook event add <type> …          # flags
-finbook event add --file …          # same object
+finbook event add <type> …          # flags, --eur-per-unit or --fetch-rate
+finbook event add --file …          # canonical event object
 finbook event list [--account] [--from] [--to]
 finbook event get <id>
 finbook price set|list
 finbook fx set|list                 # glance rates, not tax rates
-finbook show glance [--as-of]
-finbook show positions [--as-of]
+finbook show glance [--as-of] [--fetch]
+finbook show positions [--as-of] [--fetch]
 ```
 
 Human tables by default. JSON envelope is stable (additive only):
@@ -347,23 +353,30 @@ Flags and `--file` share **one** Zod object per command. `--file` contains one c
 
 `doctor`: schema version, event count, hole count, data path. Works even if the book is empty. Does not dump holdings unless asked.
 
+`--fetch` is the explicit visualization network path. It fetches only the marks needed by the requested view and caches each successful mark immediately. It never changes events.
+
+For rate-bearing event types, `--eur-per-unit` and `--fetch-rate` are mutually exclusive. The latter resolves the historical rate before append; a failed fetch leaves the book unchanged.
+
 ---
 
 ## 9. Architecture
 
 ```
 finbook/
-  packages/core     # schema, Money, apply, queries
-  packages/cli      # finbook binary
-  packages/app      # reserved, empty until a later design
+  packages/core        # schema, Money, apply, queries, local file adapter
+  packages/market-data # normalized provider contracts, routing, cache, adapters
+  packages/cli         # finbook binary
+  packages/app         # reserved, empty until a later design
 ```
 
 - `core` is in-process, deterministic, no I/O in apply/query.
 - Filesystem adapter is a **local-substitutable** dependency (real temp dir in tests). Not a port with a fake in-memory repo unless a second store appears.
-- Brokers and HTTP prices are **not** ports in v1. One adapter is a hypothetical seam.
-- When a second price source exists: `Prices.asOf(instrument, date)` with file adapter + HTTP adapter. HTTP stays in the adapter. Core does not get rewritten. Fetchers emit **stamps**, not events.
-- When a parser exists: it emits **events**. Same rule.
-- **Do not add Effect** for a future API. v1 is parse → apply → append → print. Thrown exceptions = bugs. Expected failures = the `ok: false` union, one shape from core to `--json`.
+- External prices and FX are true provider dependencies. `packages/market-data` owns narrow price, FX, and historical-rate ports; HTTP and provider SDKs stay behind adapters. Core receives normalized stamps and events only.
+- Fetchers emit **stamps**, not events. The explicit event `--fetch-rate` path resolves the rate before appending the event.
+- Default routing is deterministic: stocks/ETFs/funds → Yahoo, crypto → CoinGecko, fiat FX/rates → ECB. Config can disable providers, override route order, or bind one local instrument/currency to one provider identifier.
+- A default route may fall back after a bounded retry; an explicit provider selection is pinned. Ambiguous identifiers fail rather than guess.
+- Fetched marks are appended one at a time to the existing JSONL cache. A stopped batch resumes from successful records already persisted.
+- **Do not add Effect** for this boundary. Keep the existing `Result` model and use Ky’s HTTP retry behavior; Effect remains a future option if the application becomes a larger workflow runtime.
 
 Clock and ID generation are injected (or passed in) so tests do not freeze global time.
 
@@ -385,6 +398,10 @@ Clock and ID generation are injected (or passed in) so tests do not freeze globa
 | Schema | Zod `4.4.3`. Types inferred from schemas. One library. |
 | Money | decimal.js `10.6.0` |
 | CLI parser | commander `15.0.0` (argv + help only; Zod still owns the object). Optional flip: drop commander for `util.parseArgs`. |
+| HTTP | ky `2.1.0` (Fetch-based transport, timeout, bounded retries, and `Retry-After`). |
+| Yahoo | yahoo-finance2 `4.0.2` (unofficial, isolated adapter for quote/chart data). |
+| CoinGecko | `@coingecko/coingecko-typescript` `7.1.0` (official SDK, isolated adapter). |
+| ECB parsing | fast-xml-parser `5.11.1` against the official ECB endpoint; preserve rates as decimal strings. |
 | Dates | ISO `YYYY-MM-DD` + injected clock. No luxon. |
 | Monorepo | pnpm workspaces only. No Turbo. |
 
@@ -396,7 +413,7 @@ Gate: `pnpm check` = `tsc -b && oxlint --type-aware && oxfmt --check && vitest`.
 
 No CI until someone wants it; then it runs the **same** command. Until then the gate is mandatory locally (say so in `AGENTS.md` when that file is written — last, from what the gates cannot hold).
 
-**Not in the install:** Effect, neverthrow, citty, clipanion, eslint next to oxlint, Clack/inquirer, ora, dotenv (parse `FINBOOK_HOME` once at boot).
+**Not in the install:** Effect, neverthrow, citty, clipanion, eslint next to oxlint, Clack/inquirer, ora, dotenv, axios, got, and p-retry. Parse environment once at boot; provider credentials use environment variables.
 
 The developer’s unqualified `node` on this machine may be 26. The **project** pins 24 (`node@24` is installed keg-only). Fail loudly on the wrong major.
 
@@ -587,10 +604,13 @@ finbook/
 
 ## 13. Security and privacy (v1)
 
-Threat: the owner’s disk, a copy of the folder, or an agent echoing `--json` into a chat.
+Threat: the owner’s disk, a copy of the folder, an external provider, or an agent echoing `--json` into a chat.
 
-- Single user, no auth, no network in v1.
-- Do not log secrets (there are none) or dump the full book in `doctor`.
+- Single user and no auth. Network access exists only behind explicit market-data fetching.
+- Provider hosts and paths are built into adapters; the user cannot supply arbitrary URLs.
+- Validate every provider response with Zod before it reaches the normalized contract.
+- API keys are environment variables only. Never log, print, or write them to `FINBOOK_HOME`.
+- Do not log secrets or dump the full book in `doctor`.
 - Data classification: financial holdings. Collect only what the book needs.
 - No multi-tenant anything.
 
@@ -606,8 +626,8 @@ Do not reopen these without changing this file.
 - Price/FX stamps ≠ events; tax FX lives on the event.
 - One instrument, many holdings; cash implied.
 - One `quoteCurrency` per instrument in v1.
-- EUR reporting; current stamps never replace historical event rates.
-- Missing historical rates remain visible holes until explicit future enrichment.
+- EUR reporting; current stamps never replace required historical event rates.
+- Every accepted rate-bearing event has `eurPerUnit`; missing rates fail input.
 - Native amounts always stored as decimal strings on disk and wire.
 - Transfer ≠ contribution ≠ sale; transfer has `from`/`to`, not `account`.
 - Trade fees are nested on `buy`/`sell`; standalone `fee` is unrelated to a trade.
@@ -615,7 +635,8 @@ Do not reopen these without changing this file.
 - No short positions or negative cash in v1.
 - Events replay by date, with append order as the same-date tie-breaker.
 - Withholding is a field, not a second event.
-- No Effect, no parsers, no live prices, no scheduler in v1.
+- No Effect, no broker parsers, no scheduler, and no tax reports in the current phase.
+- Explicit market-data fetching is allowed for visualization and complete event input; it never changes event facts implicitly.
 - Name is **finbook**, English throughout (code, CLI, docs).
 - Stack as in §10.
 
@@ -623,10 +644,56 @@ Do not reopen these without changing this file.
 
 ## 15. Open only if implementation forces it
 
-- Exact storage and provenance model for future historical-FX enrichment. The v1 rule is fixed: no network, no silent rate substitution, visible hole.
 - Multiple quote currencies/listings for one instrument.
+- Morningstar, EODHD, and OpenFIGI adapters after the initial provider set.
+- A secure OS keychain command if environment credentials become insufficient.
 - Commander → `parseArgs` if the extra dependency is hated.
 - TypeScript 7 → 5.9.3 if the toolchain is broken.
 - oxfmt → Prettier 3.9.6 if oxfmt is painful.
 
-Everything required for v1 is decided. These are either explicit future work or toolchain contingencies. Build milestone M0.
+Everything required for the current CLI and initial market-data phase is decided. Build milestone M0.
+
+---
+
+## 16. Market-data phase
+
+This phase extends the completed offline v1 without changing the accounting model.
+
+**Minimum provider response**
+
+```ts
+PriceMark = { instrument, price: Money, asOf: date, provenance }
+FxMark    = { pair, rate: string, asOf: date, provenance }
+EurRate   = { rate: string, effectiveDate: date, provenance }
+```
+
+Provider adapters may use richer SDK responses internally, but only these normalized values reach the coordinator or core. No raw responses, OHLC data, volume, fundamentals, or quota counters are stored.
+
+**Initial providers**
+
+- `yahoo-finance2` for stock, ETF, and initial fund price/history data. It is unofficial and isolated behind the Yahoo adapter.
+- `@coingecko/coingecko-typescript` for crypto price/history data and crypto EUR rates.
+- The official ECB endpoint, parsed with `fast-xml-parser`, for fiat FX and historical EUR rates. ECB’s currency-per-EUR values are inverted with `decimal.js` into finbook’s EUR-per-currency convention.
+- `ky` is the shared Fetch-based transport for timeout, retry, and `Retry-After` handling. Effect is deferred.
+
+**Routing**
+
+```text
+stock / ETF prices → yahoo
+fund prices         → yahoo
+crypto prices       → coingecko
+fiat FX/rates       → ecb
+crypto rates        → coingecko with a currency binding
+```
+
+Defaults are deterministic and code-owned. `market-data.json` may disable providers, override route order, or bind one local instrument/currency to one provider identifier. An explicit provider selection is pinned; only default routes may fall back.
+
+**Fetch behavior**
+
+- `event add --fetch-rate` resolves the historical rate before appending the event. A failure writes nothing.
+- `show ... --fetch` resolves only marks needed by that view and never changes events.
+- Every successful fetched mark is appended immediately to `prices.jsonl` or `fx.jsonl`. A stopped batch naturally resumes from successful records already cached.
+- `429` honors `Retry-After` within a bounded wait budget, then retries or falls back according to the route.
+- Credentials are environment variables. Provider HTTP and response parsing stay outside `packages/core`.
+
+**M7 stop condition:** manual and explicit fetched rates produce complete events; current and historical visualization can fetch Yahoo, CoinGecko, and ECB marks; interrupted fetches resume from the append-only cache; provider configuration is inspectable without secrets; and `pnpm check` remains the gate.
