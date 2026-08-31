@@ -1,9 +1,16 @@
-export type DomainErrorType = "validation" | "not-found" | "invariant" | "storage" | "external";
+export type DomainErrorType =
+  | "validation"
+  | "not-found"
+  | "invariant"
+  | "storage"
+  | "external"
+  | "internal";
 
 export type DomainError = {
   type: DomainErrorType;
   message: string;
   hint: string;
+  details?: unknown;
 };
 
 export type Result<T, E = DomainError> = { ok: true; data: T } | { ok: false; error: E };

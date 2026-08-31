@@ -37,6 +37,8 @@ finbook show glance --fetch
 finbook show glance --as-of 2026-08-05 --fetch
 ```
 
+With all requested providers available, the first command exits `0` and returns the ordinary glance success envelope (or the compact human view). A partial fetch keeps every successful mark, shows the usable partial view, reports each failed need, and exits `1`; JSON mode keeps one `ok: false` envelope with the partial view under `error.details` so scripts can retry safely.
+
 Fetched prices and FX marks are cached one observation at a time. If a command stops part-way through a batch, rerunning it naturally reuses the successful cached marks.
 
 Provider configuration is non-secret:

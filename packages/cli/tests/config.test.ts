@@ -37,15 +37,7 @@ describe("provider configuration CLI", () => {
     const dataHome = temporaryHome();
     const defaults = runCli(dataHome, ["config", "show", "--json"]);
     const disabled = runCli(dataHome, ["config", "provider", "disable", "yahoo", "--json"]);
-    const route = runCli(dataHome, [
-      "config",
-      "route",
-      "set",
-      "price:fund",
-      "yahoo",
-      "coingecko",
-      "--json",
-    ]);
+    const route = runCli(dataHome, ["config", "route", "set", "price:fund", "yahoo", "--json"]);
     const binding = runCli(dataHome, [
       "config",
       "source",
@@ -72,7 +64,7 @@ describe("provider configuration CLI", () => {
       ok: true,
       data: {
         disabledProviders: ["yahoo"],
-        routes: { "price:fund": ["yahoo", "coingecko"] },
+        routes: { "price:fund": ["yahoo"] },
         bindings: [
           { kind: "instrument", instrument: "fund-x", provider: "yahoo", identifier: "FUND.X" },
         ],

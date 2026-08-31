@@ -342,18 +342,26 @@ finbook show positions [--as-of] [--fetch]
 Human tables by default. JSON envelope is stable (additive only):
 
 ```ts
-{ ok: true, data: T } | { ok: false, error: { type: string, message: string, hint: string } }
+{ ok: true, data: T } | { ok: false, error: { type: string, message: string, hint: string, details?: unknown } }
 ```
 
 Monetary fields in `data` use `Money` (`amount` is a decimal string). Quantities, rates, and weights are decimal strings; counts may be integers. A `null` EUR total means the corresponding value is incomplete under §4.5. Human tables may format these values for readability.
 
-Exit codes: `0` success (including empty lists), `2` validation, `3` not found, `1` unexpected bug.
+Exit codes: `0` success (including empty lists), `1` external/provider failure or unexpected bug, `2` validation, `3` not found.
 
 Flags and `--file` share **one** Zod object per command. `--file` contains one canonical command object. The CLI does not re-implement domain rules; it calls core.
 
 `doctor`: schema version, event count, hole count, data path. Works even if the book is empty. Does not dump holdings unless asked.
 
-`--fetch` is the explicit visualization network path. It fetches only the marks needed by the requested view and caches each successful mark immediately. It never changes events.
+`--fetch` is the explicit visualization network path. It fetches only the marks needed by the requested view and caches each successful mark immediately. A latest request (an omitted or current-date view) always calls its provider; historical requests reuse any valid cached mark with `asOf <= requested asOf`. It never changes events.
+
+Event dates, mark dates, and `asOf` values are timezone-free economic calendar dates. An omitted current-view date uses the machine-local calendar day; fetched `retrievedAt` values remain UTC instants.
+
+Provider capabilities are defined once: Yahoo serves price routes, CoinGecko serves crypto prices, crypto FX/rates, and bound crypto currencies, and ECB serves fiat FX/rates. Configured routes are rejected when their provider is incapable, disabled providers are removed from fallback routes and rejected through bindings or explicit pins, and a crypto currency binding selects the crypto EUR-rate route with its provider identifier.
+
+Historical Yahoo requests cover a bounded ten-calendar-day window ending on the requested date and select the last close on or before that date. CoinGecko partitions current price requests by quote currency inside its adapter.
+
+If a fetch is incomplete, every successful mark remains cached, the usable partial view is returned, and the command exits `1`. Human mode writes the view to stdout and one grouped failure report to stderr. JSON mode writes one `ok: false` envelope whose `error.details` contains requested/saved counts, per-need failures, and the partial view.
 
 For rate-bearing event types, `--eur-per-unit` and `--fetch-rate` are mutually exclusive. The latter resolves the historical rate before append; a failed fetch leaves the book unchanged.
 
@@ -373,9 +381,9 @@ finbook/
 - Filesystem adapter is a **local-substitutable** dependency (real temp dir in tests). Not a port with a fake in-memory repo unless a second store appears.
 - External prices and FX are true provider dependencies. `packages/market-data` owns narrow price, FX, and historical-rate ports; HTTP and provider SDKs stay behind adapters. Core receives normalized stamps and events only.
 - Fetchers emit **stamps**, not events. The explicit event `--fetch-rate` path resolves the rate before appending the event.
-- Default routing is deterministic: stocks/ETFs/funds → Yahoo, crypto → CoinGecko, fiat FX/rates → ECB. Config can disable providers, override route order, or bind one local instrument/currency to one provider identifier.
+- Default routing is deterministic: stocks/ETFs/funds → Yahoo, crypto → CoinGecko, fiat FX/rates → ECB. One capability registry validates defaults, overrides, bindings, disabled state, and explicit pins. Config can disable providers, override route order, or bind one local instrument/currency to one provider identifier.
 - A default route may fall back after a bounded retry; an explicit provider selection is pinned. Ambiguous identifiers fail rather than guess.
-- Fetched marks are appended one at a time to the existing JSONL cache. A stopped batch resumes from successful records already persisted.
+- Fetched marks are appended one at a time to the existing JSONL cache. A stopped historical batch resumes from successful records already persisted; latest fetches intentionally call providers again.
 - **Do not add Effect** for this boundary. Keep the existing `Result` model and use Ky’s HTTP retry behavior; Effect remains a future option if the application becomes a larger workflow runtime.
 
 Clock and ID generation are injected (or passed in) so tests do not freeze global time.

@@ -6,6 +6,7 @@ import {
   YahooSource,
   type PriceNeed,
   type YahooGateway,
+  type YahooChartWindow,
   type YahooHistoryPoint,
   type YahooQuote,
 } from "../src/index.js";
@@ -24,6 +25,7 @@ function need(mode: PriceNeed["mode"], asOf = "2026-03-03"): PriceNeed {
 class FixtureGateway implements YahooGateway {
   readonly quotedSymbols: string[][] = [];
   readonly chartedSymbols: string[] = [];
+  readonly chartWindows: YahooChartWindow[] = [];
   readonly quotes: readonly YahooQuote[];
   readonly history: readonly YahooHistoryPoint[];
 
@@ -50,8 +52,9 @@ class FixtureGateway implements YahooGateway {
     return Promise.resolve(this.quotes);
   }
 
-  chart(symbol: string, _asOf: string): Promise<readonly YahooHistoryPoint[]> {
+  chart(symbol: string, window: YahooChartWindow): Promise<readonly YahooHistoryPoint[]> {
     this.chartedSymbols.push(symbol);
+    this.chartWindows.push(window);
     return Promise.resolve(this.history);
   }
 }
@@ -103,6 +106,40 @@ describe("Yahoo source", () => {
       },
     ]);
     expect(gateway.chartedSymbols).toEqual(["HROW"]);
+  });
+
+  it("searches a ten-calendar-day window for a prior close", async () => {
+    const gateway = new FixtureGateway(
+      [
+        {
+          symbol: "HROW",
+          currency: "USD",
+          regularMarketPrice: 40.5,
+          regularMarketTime: new Date("2026-03-03T21:00:00.000Z"),
+        },
+      ],
+      [{ date: new Date("2026-03-06T21:00:00.000Z"), close: 39.8 }],
+    );
+
+    const result = await source(gateway).fetchPrices([need("historical", "2026-03-07")]);
+
+    expect(result).toMatchObject([
+      { ok: true, data: { asOf: "2026-03-06", price: { amount: "39.8" } } },
+    ]);
+    expect(gateway.chartWindows).toEqual([
+      { from: "2026-02-26T00:00:00.000Z", to: "2026-03-08T00:00:00.000Z" },
+    ]);
+  });
+
+  it("ignores future history and reports not-found when no prior close exists", async () => {
+    const gateway = new FixtureGateway(
+      [],
+      [{ date: new Date("2026-03-08T21:00:00.000Z"), close: 40 }],
+    );
+
+    const result = await source(gateway).fetchPrices([need("historical", "2026-03-07")]);
+
+    expect(result).toMatchObject([{ ok: false, error: { kind: "not-found" } }]);
   });
 
   it("reports missing and mismatched provider data per quote", async () => {

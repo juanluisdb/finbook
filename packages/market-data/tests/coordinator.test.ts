@@ -204,6 +204,91 @@ describe("market-data coordinator", () => {
     expect(source.calls).toHaveLength(1);
   });
 
+  it("does not let a historical mark retrieved today satisfy a latest price need", async () => {
+    const store = temporaryStore();
+    const value = instrument("stock-latest");
+    expect(store.appendInstrument(value).ok).toBe(true);
+    expect(
+      store.appendPrice({
+        instrument: value.id,
+        price: { amount: "99", currency: "USD" },
+        asOf: "2026-03-01",
+        provenance: {
+          kind: "fetched",
+          source: "yahoo",
+          retrievedAt: "2026-03-03T12:00:00.000Z",
+        },
+      }).ok,
+    ).toBe(true);
+    const source = new FixturePriceSource("yahoo", (needs) => needs.map((need) => success(need)));
+    const coordinator = new MarketDataCoordinator({
+      store,
+      config: MarketDataConfigSchema.parse({}),
+      priceSources: [source],
+      fxSources: [],
+      eurRateSources: [],
+    });
+    const need: PriceNeed = {
+      instrument: value,
+      asOf: "2026-03-03",
+      mode: "latest",
+      identifier: value.id,
+    };
+
+    const result = await coordinator.resolvePrices([need]);
+
+    expect(result).toMatchObject({ ok: true, data: { cached: 0, fetched: [success(need).data] } });
+    expect(source.calls).toEqual([[need]]);
+  });
+
+  it("does not let a historical mark retrieved today satisfy a latest FX need", async () => {
+    const store = temporaryStore();
+    expect(
+      store.appendFx({
+        pair: "USD/EUR",
+        rate: "0.9",
+        asOf: "2026-03-01",
+        provenance: {
+          kind: "fetched",
+          source: "ecb",
+          retrievedAt: "2026-03-03T12:00:00.000Z",
+        },
+      }).ok,
+    ).toBe(true);
+    const source = new FixtureFxSource("ecb", (needs) =>
+      needs.map((need) => ({
+        need,
+        ok: true,
+        data: {
+          pair: `${need.currency}/EUR`,
+          rate: "0.91",
+          asOf: need.asOf,
+          provenance: {
+            kind: "fetched",
+            source: "ecb",
+            retrievedAt: "2026-03-03T13:00:00.000Z",
+          },
+        },
+      })),
+    );
+    const coordinator = new MarketDataCoordinator({
+      store,
+      config: MarketDataConfigSchema.parse({}),
+      priceSources: [],
+      fxSources: [source],
+      eurRateSources: [],
+    });
+    const need: FxNeed = { currency: "USD", asOf: "2026-03-03", mode: "latest" };
+
+    const result = await coordinator.resolveFxRates([need]);
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: { cached: 0, fetched: [{ pair: "USD/EUR", rate: "0.91" }] },
+    });
+    expect(source.calls).toEqual([[need]]);
+  });
+
   it("resolves a historical EUR rate through the configured source", async () => {
     const store = temporaryStore();
     const source = new FixtureRateSource("ecb", (needs) =>
@@ -245,9 +330,128 @@ describe("market-data coordinator", () => {
     expect(source.calls).toHaveLength(1);
   });
 
+  it("selects a crypto binding and rejects it before I/O when disabled", async () => {
+    const store = temporaryStore();
+    const source = new FixtureRateSource("coingecko", (needs) =>
+      needs.map((need) => ({
+        need,
+        ok: true,
+        data: {
+          rate: "60000",
+          effectiveDate: need.date,
+          provenance: {
+            kind: "fetched",
+            source: "coingecko",
+            retrievedAt: "2026-03-03T12:00:00.000Z",
+          },
+        },
+      })),
+    );
+    const coordinator = new MarketDataCoordinator({
+      store,
+      config: MarketDataConfigSchema.parse({
+        disabledProviders: ["coingecko"],
+        bindings: [
+          { kind: "currency", currency: "BTC", provider: "coingecko", identifier: "bitcoin" },
+        ],
+      }),
+      priceSources: [],
+      fxSources: [],
+      eurRateSources: [source],
+    });
+
+    const result = await coordinator.resolveHistoricalEurRate({
+      currency: "BTC",
+      date: "2026-03-03",
+    });
+
+    expect(result).toMatchObject({ ok: false, error: { kind: "unsupported" } });
+    expect(result.ok ? "" : result.error.message).toContain("disabled");
+    expect(source.calls).toHaveLength(0);
+  });
+
+  it("explains how to bind an unsupported unbound currency", async () => {
+    const store = temporaryStore();
+    const source = new FixtureRateSource("ecb", (needs) =>
+      needs.map((need) => ({
+        need,
+        ok: false,
+        error: { kind: "unsupported", message: "ECB only supports fiat currencies." },
+      })),
+    );
+    const coordinator = new MarketDataCoordinator({
+      store,
+      config: MarketDataConfigSchema.parse({}),
+      priceSources: [],
+      fxSources: [],
+      eurRateSources: [source],
+    });
+
+    const result = await coordinator.resolveHistoricalEurRate({
+      currency: "BTC",
+      date: "2026-03-03",
+    });
+
+    expect(result).toMatchObject({ ok: false, error: { kind: "unsupported" } });
+    expect(result.ok ? "" : result.error.message).toContain("config source set --currency BTC");
+  });
+
+  it("rejects an incapable historical-rate pin before I/O", async () => {
+    const store = temporaryStore();
+    const source = new FixtureRateSource("coingecko", (needs) =>
+      needs.map((need) => ({
+        need,
+        ok: false,
+        error: { kind: "unavailable", message: "should not be called" },
+      })),
+    );
+    const coordinator = new MarketDataCoordinator({
+      store,
+      config: MarketDataConfigSchema.parse({}),
+      priceSources: [],
+      fxSources: [],
+      eurRateSources: [source],
+    });
+
+    const result = await coordinator.resolveHistoricalEurRate(
+      { currency: "USD", date: "2026-03-03" },
+      { provider: "coingecko" },
+    );
+
+    expect(result).toMatchObject({ ok: false, error: { kind: "unsupported" } });
+    expect(source.calls).toHaveLength(0);
+  });
+
+  it("does not call an incapable provider selected by an explicit price pin", async () => {
+    const store = temporaryStore();
+    const value = instrument("stock-pinned");
+    expect(store.appendInstrument(value).ok).toBe(true);
+    const source = new FixturePriceSource("ecb", (needs) => needs.map((need) => success(need)));
+    const coordinator = new MarketDataCoordinator({
+      store,
+      config: MarketDataConfigSchema.parse({}),
+      priceSources: [source],
+      fxSources: [],
+      eurRateSources: [],
+    });
+
+    const result = await coordinator.resolvePrices([priceNeed(value)], { provider: "ecb" });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: { failures: [{ provider: "ecb", error: { kind: "unsupported" } }] },
+    });
+    expect(source.calls).toHaveLength(0);
+  });
+
   it("uses configured fallback providers but honors an explicit provider pin", async () => {
     const store = temporaryStore();
-    const value = instrument("stock-1");
+    const value = InstrumentSchema.parse({
+      id: "crypto-1",
+      name: "Crypto 1",
+      type: "crypto",
+      quoteCurrency: "USD",
+    });
     expect(store.appendInstrument(value).ok).toBe(true);
     const primary = new FixturePriceSource("yahoo", (needs) =>
       needs.map((need) => ({
@@ -261,7 +465,7 @@ describe("market-data coordinator", () => {
     );
     const coordinator = new MarketDataCoordinator({
       store,
-      config: MarketDataConfigSchema.parse({ routes: { "price:stock": ["yahoo", "coingecko"] } }),
+      config: MarketDataConfigSchema.parse({ routes: { "price:crypto": ["yahoo", "coingecko"] } }),
       priceSources: [primary, backup],
       fxSources: [],
       eurRateSources: [],

@@ -17,6 +17,7 @@ import {
   type ProviderId,
   type RouteKey,
   type SourceBinding,
+  providerSupportsRoute,
 } from "./contracts.js";
 
 const CONFIG_FILE = "market-data.json";
@@ -45,7 +46,10 @@ export function defaultRoute(key: RouteKey): readonly ProviderId[] {
 
 export function effectiveRoute(key: RouteKey, config: MarketDataConfig): readonly ProviderId[] {
   const configured = config.routes[key] ?? defaultRoute(key);
-  return configured.filter((provider) => !config.disabledProviders.includes(provider));
+  return configured.filter(
+    (provider) =>
+      providerSupportsRoute(provider, key) && !config.disabledProviders.includes(provider),
+  );
 }
 
 export function findBinding(

@@ -284,23 +284,22 @@ export class CoinGeckoSource implements PriceSource, FxSource, HistoricalEurRate
     needs: readonly PriceNeed[],
     outcomes: Map<string, PriceOutcome>,
   ): Promise<void> {
-    const currency = needs[0]?.instrument.quoteCurrency;
-    if (
-      currency === undefined ||
-      needs.some((need) => need.instrument.quoteCurrency !== currency)
-    ) {
-      for (const need of needs) {
-        outcomes.set(priceNeedKey(need), {
-          need,
-          ok: false,
-          error: {
-            kind: "invalid-response",
-            message: "CoinGecko batches one quote currency at a time.",
-          },
-        });
-      }
-      return;
+    const groups = new Map<string, PriceNeed[]>();
+    for (const need of needs) {
+      const currency = need.instrument.quoteCurrency;
+      const group = groups.get(currency) ?? [];
+      group.push(need);
+      groups.set(currency, group);
     }
+    await Promise.all([...groups.values()].map((group) => this.fetchCurrentBatch(group, outcomes)));
+  }
+
+  private async fetchCurrentBatch(
+    needs: readonly PriceNeed[],
+    outcomes: Map<string, PriceOutcome>,
+  ): Promise<void> {
+    const currency = needs[0]?.instrument.quoteCurrency;
+    if (currency === undefined) return;
     let prices: readonly CoinGeckoPrice[];
     try {
       prices = await this.gateway.pricesFor(

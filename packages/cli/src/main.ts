@@ -11,7 +11,7 @@ import {
 } from "@finbook/market-data";
 
 import { currentDate } from "./dates.js";
-import { CliFailure, requireResult } from "./errors.js";
+import { CliFailure, requireResult, validationFailure } from "./errors.js";
 import { loadRuntimeConfig } from "./environment.js";
 import { writeError } from "./output.js";
 import { createProgram } from "./program.js";
@@ -27,29 +27,37 @@ export async function main(
   try {
     assertSupportedNodeVersion();
     const runtimeConfig = loadRuntimeConfig(env, cwd);
-    const config = requireResult(new MarketDataConfigStore(runtimeConfig.dataHome).load());
-    const ecb = new EcbSource();
-    const yahoo = new YahooSource();
-    const coingecko = new CoinGeckoSource({
-      demoApiKey: env.FINBOOK_COINGECKO_DEMO_API_KEY,
-    });
-    const marketData = new MarketDataCoordinator({
-      store: new FileBookStore(runtimeConfig.dataHome),
-      config,
-      priceSources: [yahoo, coingecko],
-      fxSources: [ecb, coingecko],
-      eurRateSources: [ecb, coingecko],
-    });
+    const marketData = () => {
+      const config = requireResult(new MarketDataConfigStore(runtimeConfig.dataHome).load());
+      const ecb = new EcbSource();
+      const yahoo = new YahooSource();
+      const coingecko = new CoinGeckoSource({
+        demoApiKey: env.FINBOOK_COINGECKO_DEMO_API_KEY,
+      });
+      return new MarketDataCoordinator({
+        store: new FileBookStore(runtimeConfig.dataHome),
+        config,
+        priceSources: [yahoo, coingecko],
+        fxSources: [ecb, coingecko],
+        eurRateSources: [ecb, coingecko],
+      });
+    };
     const program = createProgram(runtimeConfig.dataHome, currentDate(), undefined, marketData);
     if (argv.length === 0) {
       program.outputHelp();
       return 0;
     }
+    if (argv.length === 1 && argv[0] === "--json") {
+      throw validationFailure(
+        "A command is required when using `--json`.",
+        "Provide a command or remove --json to see help.",
+      );
+    }
     await program.parseAsync([process.execPath, "finbook", ...argv]);
     return 0;
   } catch (error) {
     if (error instanceof CliFailure) {
-      writeError(error.domainError, json);
+      writeError(error.domainError, json, error.externalDetails);
       return error.exitCode;
     }
     if (error instanceof CommanderError) {
@@ -70,9 +78,9 @@ export async function main(
     if (error instanceof Error) {
       writeError(
         {
-          type: "storage",
+          type: "internal",
           message: error.message,
-          hint: "Check the runtime and FINBOOK_HOME configuration.",
+          hint: "Run the command again; if it persists, report the command and runtime.",
         },
         json,
       );
@@ -80,9 +88,9 @@ export async function main(
     }
     writeError(
       {
-        type: "storage",
+        type: "internal",
         message: "Unexpected error.",
-        hint: "Run the command again and inspect FINBOOK_HOME.",
+        hint: "Run the command again; if it persists, report the command and runtime.",
       },
       json,
     );

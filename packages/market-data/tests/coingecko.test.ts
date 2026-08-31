@@ -18,9 +18,20 @@ const bitcoin = InstrumentSchema.parse({
   type: "crypto",
   quoteCurrency: "EUR",
 });
+const ethereum = InstrumentSchema.parse({
+  id: "ETH",
+  name: "Ethereum",
+  type: "crypto",
+  quoteCurrency: "USD",
+});
 
-function priceNeed(mode: PriceNeed["mode"], asOf = "2026-03-03"): PriceNeed {
-  return { instrument: bitcoin, asOf, mode, identifier: "bitcoin" };
+function priceNeed(
+  mode: PriceNeed["mode"],
+  asOf = "2026-03-03",
+  instrument = bitcoin,
+  identifier = "bitcoin",
+): PriceNeed {
+  return { instrument, asOf, mode, identifier };
 }
 
 class FixtureGateway implements CoinGeckoGateway {
@@ -93,6 +104,27 @@ describe("CoinGecko source", () => {
       { ok: true, data: { price: { amount: "59000", currency: "EUR" }, asOf: "2026-03-02" } },
     ]);
     expect(gateway.historyCalls).toEqual([{ id: "bitcoin", currency: "eur", asOf: "2026-03-02" }]);
+  });
+
+  it("partitions current prices by quote currency", async () => {
+    const gateway = new FixtureGateway([
+      { id: "bitcoin", price: 60_000, asOf: new Date("2026-03-03T12:00:00.000Z") },
+      { id: "ethereum", price: 3_000, asOf: new Date("2026-03-03T12:00:00.000Z") },
+    ]);
+
+    const result = await source(gateway).fetchPrices([
+      priceNeed("latest"),
+      priceNeed("latest", "2026-03-03", ethereum, "ethereum"),
+    ]);
+
+    expect(result).toMatchObject([
+      { ok: true, data: { instrument: "BTC", price: { amount: "60000", currency: "EUR" } } },
+      { ok: true, data: { instrument: "ETH", price: { amount: "3000", currency: "USD" } } },
+    ]);
+    expect(gateway.priceCalls).toEqual([
+      { ids: ["bitcoin"], currency: "eur" },
+      { ids: ["ethereum"], currency: "usd" },
+    ]);
   });
 
   it("returns crypto FX marks for configured coin identifiers", async () => {
