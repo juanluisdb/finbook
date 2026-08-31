@@ -60,16 +60,6 @@ describe("read CLI", () => {
     const dataHome = temporaryHome();
     const store = new FileBookStore(dataHome);
     seedAccount(store);
-    expect(
-      store.appendInstrument(
-        InstrumentSchema.parse({
-          id: "EUROW",
-          name: "Euro instrument",
-          type: "stock",
-          quoteCurrency: "EUR",
-        }),
-      ).ok,
-    ).toBe(true);
 
     const list = runCli(dataHome, ["account", "list", "--json"]);
     const get = runCli(dataHome, ["account", "get", "ib", "--json"]);
@@ -124,14 +114,20 @@ describe("read CLI", () => {
 
   it("returns not-found errors with exit code 3", () => {
     const dataHome = temporaryHome();
-    const result = runCli(dataHome, ["account", "get", "missing", "--json"]);
+    const jsonResult = runCli(dataHome, ["account", "get", "missing", "--json"]);
+    const humanResult = runCli(dataHome, ["account", "get", "missing"]);
 
-    expect(result.status).toBe(3);
-    expect(result.stderr).toBe("");
-    expect(JSON.parse(result.stdout)).toMatchObject({
+    expect(jsonResult.status).toBe(3);
+    expect(jsonResult.stderr).toBe("");
+    expect(JSON.parse(jsonResult.stdout)).toMatchObject({
       ok: false,
       error: { type: "not-found" },
     });
+    expect(humanResult.status).toBe(3);
+    expect(humanResult.stdout).toBe("");
+    expect(humanResult.stderr).toBe(
+      "error: Unknown account ID: missing.\nhint: Add or select an existing account.\n",
+    );
   });
 
   it("shows a complete glance using current cash valuation", () => {
@@ -189,6 +185,36 @@ describe("read CLI", () => {
     expect(readdirSync(dataHome)).toEqual([]);
   });
 
+  it("reports an invalid FINBOOK_HOME as a validation failure", () => {
+    const jsonResult = runCli("", ["account", "list", "--json"]);
+    const humanResult = runCli("", ["account", "list"]);
+
+    expect(jsonResult.status).toBe(2);
+    expect(jsonResult.stderr).toBe("");
+    expect(JSON.parse(jsonResult.stdout)).toMatchObject({
+      ok: false,
+      error: { type: "validation", message: "FINBOOK_HOME must not be empty." },
+    });
+    expect(humanResult.status).toBe(2);
+    expect(humanResult.stdout).toBe("");
+    expect(humanResult.stderr).toBe(
+      "error: FINBOOK_HOME must not be empty.\n" +
+        "hint: Set FINBOOK_HOME to a writable path outside the checkout.\n",
+    );
+  });
+
+  it("keeps help and version available with an invalid FINBOOK_HOME", () => {
+    const help = runCli("", ["--help"]);
+    const version = runCli("", ["--version"]);
+
+    expect(help.status).toBe(0);
+    expect(help.stderr).toBe("");
+    expect(help.stdout).toContain("Usage: finbook");
+    expect(version.status).toBe(0);
+    expect(version.stderr).toBe("");
+    expect(version.stdout.trim()).toBe("0.1.0");
+  });
+
   it("shows help without initializing the book when no command is provided", () => {
     const dataHome = temporaryHome();
     const result = runCli(dataHome, []);
@@ -207,7 +233,6 @@ describe("read CLI", () => {
     expect(result.status).toBe(2);
     expect(result.stderr).toBe("");
     expect(body).toMatchObject({ ok: false, error: { type: "validation" } });
-    expect(result.stdout).not.toContain("outputHelp");
     expect(readdirSync(dataHome)).toEqual([]);
   });
 
@@ -343,9 +368,11 @@ describe("read CLI", () => {
 
     expect(result.status).toBe(1);
     expect(result.stdout).toContain("as of: 2026-03-03");
-    expect(result.stderr).toContain("Could not fetch every requested market-data observation.");
-    expect(result.stderr).toContain("EUROW");
-    expect(result.stderr).toContain("Retry the command or add the missing marks manually.");
+    expect(result.stderr).toBe(
+      "error: Could not fetch every requested market-data observation.\n" +
+        "- price EUROW via none: unavailable: No enabled provider is configured for price:stock.\n" +
+        "hint: Retry the command or add the missing marks manually.\n",
+    );
   });
 
   it("rejects an inverted event date range as validation", () => {

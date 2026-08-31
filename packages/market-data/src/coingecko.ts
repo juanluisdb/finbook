@@ -192,14 +192,14 @@ export class CoinGeckoSource implements PriceSource, FxSource, HistoricalEurRate
     }
     for (const { need, identifier } of supported) {
       const price = prices.find((candidate) => candidate.id === identifier);
-      const asOf = price?.asOf === undefined ? dateOnly(this.now()) : dateOnly(price.asOf);
+      const asOf = need.asOf;
       if (price === undefined) {
         outcomes.set(fxNeedKey(need), {
           need,
           ok: false,
           error: { kind: "not-found", message: `CoinGecko returned no price for ${identifier}.` },
         });
-      } else if (asOf === undefined || !Number.isFinite(price.price) || price.price <= 0) {
+      } else if (!Number.isFinite(price.price) || price.price <= 0) {
         outcomes.set(fxNeedKey(need), {
           need,
           ok: false,
@@ -328,8 +328,8 @@ export class CoinGeckoSource implements PriceSource, FxSource, HistoricalEurRate
         });
         continue;
       }
-      const asOf = price.asOf === undefined ? dateOnly(this.now()) : dateOnly(price.asOf);
-      if (asOf === undefined || !Number.isFinite(price.price) || price.price <= 0) {
+      const asOf = need.asOf;
+      if (!Number.isFinite(price.price) || price.price <= 0) {
         outcomes.set(priceNeedKey(need), {
           need,
           ok: false,

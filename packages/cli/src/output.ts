@@ -20,8 +20,8 @@ export function writeError(
     return;
   }
   const failures = details?.failures.map(formatPartialFailure) ?? [];
-  const report = failures.length === 0 ? "" : `\n${failures.join("\n")}\n`;
-  process.stderr.write(`error: ${error.message}${report}hint: ${error.hint}\n`);
+  const report = failures.length === 0 ? "" : `${failures.join("\n")}\n`;
+  process.stderr.write(`error: ${error.message}\n${report}hint: ${error.hint}\n`);
 }
 
 export function formatMoney(money: Money | null): string {

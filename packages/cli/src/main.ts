@@ -26,23 +26,23 @@ export async function main(
 
   try {
     assertSupportedNodeVersion();
-    const runtimeConfig = loadRuntimeConfig(env, cwd);
+    const dataHome = resolveDataHome(argv, env, cwd);
     const marketData = () => {
-      const config = requireResult(new MarketDataConfigStore(runtimeConfig.dataHome).load());
+      const config = requireResult(new MarketDataConfigStore(dataHome).load());
       const ecb = new EcbSource();
       const yahoo = new YahooSource();
       const coingecko = new CoinGeckoSource({
         demoApiKey: env.FINBOOK_COINGECKO_DEMO_API_KEY,
       });
       return new MarketDataCoordinator({
-        store: new FileBookStore(runtimeConfig.dataHome),
+        store: new FileBookStore(dataHome),
         config,
         priceSources: [yahoo, coingecko],
         fxSources: [ecb, coingecko],
         eurRateSources: [ecb, coingecko],
       });
     };
-    const program = createProgram(runtimeConfig.dataHome, currentDate(), undefined, marketData);
+    const program = createProgram(dataHome, currentDate(), undefined, marketData);
     if (argv.length === 0) {
       program.outputHelp();
       return 0;
@@ -96,6 +96,28 @@ export async function main(
     );
     return 1;
   }
+}
+
+function resolveDataHome(argv: readonly string[], env: NodeJS.ProcessEnv, cwd: string): string {
+  if (canRunWithoutDataHome(argv)) return cwd;
+  try {
+    return loadRuntimeConfig(env, cwd).dataHome;
+  } catch (error) {
+    throw validationFailure(
+      error instanceof Error ? error.message : "Invalid FINBOOK_HOME.",
+      "Set FINBOOK_HOME to a writable path outside the checkout.",
+    );
+  }
+}
+
+function canRunWithoutDataHome(argv: readonly string[]): boolean {
+  return (
+    argv.length === 0 ||
+    argv.includes("--help") ||
+    argv.includes("-h") ||
+    argv.includes("--version") ||
+    (argv.length === 1 && argv[0] === "--json")
+  );
 }
 
 process.exitCode = await main();

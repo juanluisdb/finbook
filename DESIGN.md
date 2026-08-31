@@ -357,7 +357,7 @@ Flags and `--file` share **one** Zod object per command. `--file` contains one c
 
 Event dates, mark dates, and `asOf` values are timezone-free economic calendar dates. An omitted current-view date uses the machine-local calendar day; fetched `retrievedAt` values remain UTC instants.
 
-Provider capabilities are defined once: Yahoo serves price routes, CoinGecko serves crypto prices, crypto FX/rates, and bound crypto currencies, and ECB serves fiat FX/rates. Configured routes are rejected when their provider is incapable, disabled providers are removed from fallback routes and rejected through bindings or explicit pins, and a crypto currency binding selects the crypto EUR-rate route with its provider identifier.
+Provider capabilities are defined once: Yahoo serves price routes, including explicitly selected or configured-fallback crypto symbols, CoinGecko is the default crypto provider and also serves crypto FX/rates and bound crypto currencies, and ECB serves fiat FX/rates. Configured routes are rejected when their provider is incapable, disabled providers are removed from fallback routes and rejected through bindings or explicit pins, and a crypto currency binding selects the crypto EUR-rate route with its provider identifier.
 
 Historical Yahoo requests cover a bounded ten-calendar-day window ending on the requested date and select the last close on or before that date. CoinGecko partitions current price requests by quote currency inside its adapter.
 
