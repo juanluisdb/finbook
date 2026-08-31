@@ -7,19 +7,20 @@ import {
   type Account,
   type BookSnapshot,
   type Breakdown,
-  type CashPosition,
   type Event,
   type FxStamp,
   type Glance,
   type Instrument,
-  type Position,
+  type PositionsResult,
   type PriceStamp,
 } from "@finbook/core";
 import { Command } from "commander";
 import {
   MarketDataConfigStore,
+  type FxFetchReport,
   type FxNeed,
   type MarketDataCoordinator,
+  type PriceFetchReport,
   type PriceNeed,
 } from "@finbook/market-data";
 
@@ -32,7 +33,13 @@ import {
   showConfig,
 } from "./config.js";
 import { requireDate } from "./dates.js";
-import { notFoundFailure, requireResult, validationFailure } from "./errors.js";
+import {
+  externalFailure,
+  notFoundFailure,
+  requireResult,
+  type ExternalFailureDetails,
+  validationFailure,
+} from "./errors.js";
 import { createDoctor, type DoctorSummary } from "./doctor.js";
 import { formatMoney, formatRows, writeSuccess } from "./output.js";
 import { addAccount, addEvent, addInstrument, setFx, setPrice } from "./writes.js";
@@ -41,13 +48,14 @@ export function createProgram(
   dataHome: string,
   defaultDate: string,
   generateId: () => string = randomUUID,
-  marketData?: MarketDataCoordinator,
+  marketDataFactory?: () => MarketDataCoordinator,
 ): Command {
   const store = new FileBookStore(dataHome);
   const marketDataConfig = new MarketDataConfigStore(dataHome);
   const program = new Command()
     .name("finbook")
     .description("A local book of economic events")
+    .version("0.1.0")
     .option("--json", "return the stable JSON envelope");
 
   program.exitOverride();
@@ -148,9 +156,13 @@ export function createProgram(
   const eventAdd = event.command("add [type]").description("add an event from flags or --file");
   addEventOptions(eventAdd);
   addJsonOption(eventAdd);
-  eventAdd.action((type, _options, command) =>
-    addEvent(store, type, command.opts(), jsonMode(command), generateId, marketData),
-  );
+  eventAdd.action((type, _options, command) => {
+    const resolver =
+      command.opts().fetchRate === true && marketDataFactory !== undefined
+        ? marketDataFactory()
+        : undefined;
+    return addEvent(store, type, command.opts(), jsonMode(command), generateId, resolver);
+  });
   const eventList = event.command("list").description("list events");
   eventList
     .option("--account <id>", "filter by account")
@@ -196,7 +208,7 @@ export function createProgram(
     .option("--fetch", "fetch missing valuation marks before showing the view");
   addJsonOption(glance);
   glance.action((_options, command) =>
-    showGlance(store, command.opts(), jsonMode(command), defaultDate, marketData),
+    showGlance(store, command.opts(), jsonMode(command), defaultDate, marketDataFactory),
   );
   const positions = show.command("positions").description("show current positions");
   positions
@@ -204,7 +216,7 @@ export function createProgram(
     .option("--fetch", "fetch missing valuation marks before showing the view");
   addJsonOption(positions);
   positions.action((_options, command) =>
-    showPositions(store, command.opts(), jsonMode(command), defaultDate, marketData),
+    showPositions(store, command.opts(), jsonMode(command), defaultDate, marketDataFactory),
   );
 
   return program;
@@ -351,11 +363,15 @@ async function showGlance(
   options: AsOfOptions,
   json: boolean,
   defaultDate: string,
-  marketData?: MarketDataCoordinator,
+  marketDataFactory?: () => MarketDataCoordinator,
 ): Promise<void> {
   const asOf = requireDate(options.asOf, "--as-of", defaultDate);
-  const snapshot = await awaitSnapshot(store, options, asOf, defaultDate, marketData);
-  const glance = requireResult(getGlance(snapshot, asOf));
+  const fetched = await awaitSnapshot(store, options, asOf, defaultDate, marketDataFactory);
+  const glance = requireResult(getGlance(fetched.snapshot, asOf));
+  if (hasFetchFailures(fetched.reports)) {
+    if (!json) writeSuccess(glance, false, renderGlance(glance));
+    throw partialFetchFailure(fetched.reports, glance);
+  }
   writeSuccess(glance, json, renderGlance(glance));
 }
 
@@ -364,29 +380,44 @@ async function showPositions(
   options: AsOfOptions,
   json: boolean,
   defaultDate: string,
-  marketData?: MarketDataCoordinator,
+  marketDataFactory?: () => MarketDataCoordinator,
 ): Promise<void> {
   const asOf = requireDate(options.asOf, "--as-of", defaultDate);
-  const snapshot = await awaitSnapshot(store, options, asOf, defaultDate, marketData);
-  const positions = requireResult(getPositions(snapshot, asOf));
-  writeSuccess(positions, json, renderPositions(positions.positions, positions.cash));
+  const fetched = await awaitSnapshot(store, options, asOf, defaultDate, marketDataFactory);
+  const positions = requireResult(getPositions(fetched.snapshot, asOf));
+  if (hasFetchFailures(fetched.reports)) {
+    if (!json) writeSuccess(positions, false, renderPositions(positions));
+    throw partialFetchFailure(fetched.reports, positions);
+  }
+  writeSuccess(positions, json, renderPositions(positions));
 }
+
+type FetchReports = {
+  prices: PriceFetchReport;
+  fx: FxFetchReport;
+};
+
+type FetchedSnapshot = {
+  snapshot: BookSnapshot;
+  reports: FetchReports;
+};
 
 async function awaitSnapshot(
   store: FileBookStore,
   options: AsOfOptions,
   asOf: string,
   defaultDate: string,
-  marketData: MarketDataCoordinator | undefined,
-): Promise<BookSnapshot> {
+  marketDataFactory: (() => MarketDataCoordinator) | undefined,
+): Promise<FetchedSnapshot> {
   const snapshot = loadSnapshot(store);
-  if (options.fetch !== true) return snapshot;
-  if (marketData === undefined) {
+  if (options.fetch !== true) return { snapshot, reports: emptyFetchReports() };
+  if (marketDataFactory === undefined) {
     throw validationFailure(
       "Valuation fetching is not configured.",
       "Configure a market-data provider before using --fetch.",
     );
   }
+  const marketData = marketDataFactory();
   const positions = requireResult(getPositions(snapshot, asOf));
   const mode = asOf === defaultDate ? "latest" : "historical";
   const priceNeeds: PriceNeed[] = [];
@@ -402,10 +433,53 @@ async function awaitSnapshot(
   for (const entry of positions.cash) {
     if (entry.currency !== "EUR") currencies.add(entry.currency);
   }
-  requireResult(await marketData.resolvePrices(priceNeeds));
+  const priceReport = requireResult(await marketData.resolvePrices(priceNeeds));
   const fxNeeds: FxNeed[] = [...currencies].map((currency) => ({ currency, asOf, mode }));
-  requireResult(await marketData.resolveFxRates(fxNeeds));
-  return loadSnapshot(store);
+  const fxReport = requireResult(await marketData.resolveFxRates(fxNeeds));
+  return {
+    snapshot: loadSnapshot(store),
+    reports: { prices: priceReport, fx: fxReport },
+  };
+}
+
+function emptyFetchReports(): FetchReports {
+  return {
+    prices: { requested: 0, cached: 0, fetched: [], failures: [] },
+    fx: { requested: 0, cached: 0, fetched: [], failures: [] },
+  };
+}
+
+function hasFetchFailures(reports: FetchReports): boolean {
+  return reports.prices.failures.length > 0 || reports.fx.failures.length > 0;
+}
+
+function partialFetchFailure(reports: FetchReports, partial: ExternalFailureDetails["partial"]) {
+  const failures = [
+    ...reports.prices.failures.map(({ need, provider, error }) => ({
+      kind: "price" as const,
+      subject: need.instrument.id,
+      provider,
+      reason: error.kind,
+      message: error.message,
+    })),
+    ...reports.fx.failures.map(({ need, provider, error }) => ({
+      kind: "fx" as const,
+      subject: need.currency,
+      provider,
+      reason: error.kind,
+      message: error.message,
+    })),
+  ];
+  return externalFailure(
+    "Could not fetch every requested market-data observation.",
+    "Retry the command or add the missing marks manually.",
+    {
+      requested: { prices: reports.prices.requested, fx: reports.fx.requested },
+      saved: { prices: reports.prices.fetched.length, fx: reports.fx.fetched.length },
+      failures,
+      partial,
+    },
+  );
 }
 
 function eventBelongsToAccount(event: Event, accountId: string): boolean {
@@ -492,12 +566,13 @@ function renderGlance(glance: Glance): string {
   ].join("\n");
 }
 
-function renderPositions(positions: readonly Position[], cash: readonly CashPosition[]): string {
+function renderPositions(result: PositionsResult): string {
   return [
+    `as of: ${result.asOf}`,
     "positions",
     formatRows(
       ["ACCOUNT", "INSTRUMENT", "QUANTITY", "COST", "VALUE EUR"],
-      positions.map((position) => [
+      result.positions.map((position) => [
         position.account,
         position.instrument,
         position.quantity,
@@ -509,7 +584,7 @@ function renderPositions(positions: readonly Position[], cash: readonly CashPosi
     "cash",
     formatRows(
       ["ACCOUNT", "CURRENCY", "BALANCE", "VALUE EUR"],
-      cash.map((entry) => [
+      result.cash.map((entry) => [
         entry.account,
         entry.currency,
         formatMoney(entry.balance),

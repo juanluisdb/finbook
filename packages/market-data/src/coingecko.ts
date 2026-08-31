@@ -192,14 +192,14 @@ export class CoinGeckoSource implements PriceSource, FxSource, HistoricalEurRate
     }
     for (const { need, identifier } of supported) {
       const price = prices.find((candidate) => candidate.id === identifier);
-      const asOf = price?.asOf === undefined ? dateOnly(this.now()) : dateOnly(price.asOf);
+      const asOf = need.asOf;
       if (price === undefined) {
         outcomes.set(fxNeedKey(need), {
           need,
           ok: false,
           error: { kind: "not-found", message: `CoinGecko returned no price for ${identifier}.` },
         });
-      } else if (asOf === undefined || !Number.isFinite(price.price) || price.price <= 0) {
+      } else if (!Number.isFinite(price.price) || price.price <= 0) {
         outcomes.set(fxNeedKey(need), {
           need,
           ok: false,
@@ -284,23 +284,22 @@ export class CoinGeckoSource implements PriceSource, FxSource, HistoricalEurRate
     needs: readonly PriceNeed[],
     outcomes: Map<string, PriceOutcome>,
   ): Promise<void> {
-    const currency = needs[0]?.instrument.quoteCurrency;
-    if (
-      currency === undefined ||
-      needs.some((need) => need.instrument.quoteCurrency !== currency)
-    ) {
-      for (const need of needs) {
-        outcomes.set(priceNeedKey(need), {
-          need,
-          ok: false,
-          error: {
-            kind: "invalid-response",
-            message: "CoinGecko batches one quote currency at a time.",
-          },
-        });
-      }
-      return;
+    const groups = new Map<string, PriceNeed[]>();
+    for (const need of needs) {
+      const currency = need.instrument.quoteCurrency;
+      const group = groups.get(currency) ?? [];
+      group.push(need);
+      groups.set(currency, group);
     }
+    await Promise.all([...groups.values()].map((group) => this.fetchCurrentBatch(group, outcomes)));
+  }
+
+  private async fetchCurrentBatch(
+    needs: readonly PriceNeed[],
+    outcomes: Map<string, PriceOutcome>,
+  ): Promise<void> {
+    const currency = needs[0]?.instrument.quoteCurrency;
+    if (currency === undefined) return;
     let prices: readonly CoinGeckoPrice[];
     try {
       prices = await this.gateway.pricesFor(
@@ -329,8 +328,8 @@ export class CoinGeckoSource implements PriceSource, FxSource, HistoricalEurRate
         });
         continue;
       }
-      const asOf = price.asOf === undefined ? dateOnly(this.now()) : dateOnly(price.asOf);
-      if (asOf === undefined || !Number.isFinite(price.price) || price.price <= 0) {
+      const asOf = need.asOf;
+      if (!Number.isFinite(price.price) || price.price <= 0) {
         outcomes.set(priceNeedKey(need), {
           need,
           ok: false,

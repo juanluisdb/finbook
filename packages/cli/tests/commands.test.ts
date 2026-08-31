@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
@@ -42,9 +42,13 @@ function temporaryHome(): string {
   return directory;
 }
 
-function runCli(dataHome: string, args: readonly string[]): SpawnSyncReturns<string> {
+function runCli(
+  dataHome: string,
+  args: readonly string[],
+  cwd: string = repositoryRoot,
+): SpawnSyncReturns<string> {
   return spawnSync(process.execPath, [cliPath, ...args], {
-    cwd: repositoryRoot,
+    cwd,
     encoding: "utf8",
     env: { ...process.env, FINBOOK_HOME: dataHome },
   });
@@ -114,14 +118,20 @@ describe("read CLI", () => {
 
   it("returns not-found errors with exit code 3", () => {
     const dataHome = temporaryHome();
-    const result = runCli(dataHome, ["account", "get", "missing", "--json"]);
+    const jsonResult = runCli(dataHome, ["account", "get", "missing", "--json"]);
+    const humanResult = runCli(dataHome, ["account", "get", "missing"]);
 
-    expect(result.status).toBe(3);
-    expect(result.stderr).toBe("");
-    expect(JSON.parse(result.stdout)).toMatchObject({
+    expect(jsonResult.status).toBe(3);
+    expect(jsonResult.stderr).toBe("");
+    expect(JSON.parse(jsonResult.stdout)).toMatchObject({
       ok: false,
       error: { type: "not-found" },
     });
+    expect(humanResult.status).toBe(3);
+    expect(humanResult.stdout).toBe("");
+    expect(humanResult.stderr).toBe(
+      "error: Unknown account ID: missing.\nhint: Add or select an existing account.\n",
+    );
   });
 
   it("shows a complete glance using current cash valuation", () => {
@@ -159,12 +169,231 @@ describe("read CLI", () => {
     });
   });
 
-  it("shows help when no command is provided", () => {
-    const result = runCli(temporaryHome(), []);
+  it("does not initialize the book for root help", () => {
+    const dataHome = temporaryHome();
+    const result = runCli(dataHome, ["--help"]);
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("Usage: finbook");
+    expect(readdirSync(dataHome)).toEqual([]);
+  });
+
+  it("does not initialize the book for the version path", () => {
+    const dataHome = temporaryHome();
+    const result = runCli(dataHome, ["--version"]);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout.trim()).toBe("0.1.0");
+    expect(readdirSync(dataHome)).toEqual([]);
+  });
+
+  it("does not use the working directory for a positional --help argument", () => {
+    const dataHome = temporaryHome();
+    const workingDirectory = temporaryHome();
+    const result = runCli(dataHome, ["account", "get", "--", "--help"], workingDirectory);
+
+    expect(result.status).toBe(3);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toBe(
+      "error: Unknown account ID: --help.\nhint: Add or select an existing account.\n",
+    );
+    expect(readdirSync(workingDirectory)).toEqual([]);
+  });
+
+  it("reports an invalid FINBOOK_HOME as a validation failure", () => {
+    const jsonResult = runCli("", ["account", "list", "--json"]);
+    const humanResult = runCli("", ["account", "list"]);
+
+    expect(jsonResult.status).toBe(2);
+    expect(jsonResult.stderr).toBe("");
+    expect(JSON.parse(jsonResult.stdout)).toMatchObject({
+      ok: false,
+      error: { type: "validation", message: "FINBOOK_HOME must not be empty." },
+    });
+    expect(humanResult.status).toBe(2);
+    expect(humanResult.stdout).toBe("");
+    expect(humanResult.stderr).toBe(
+      "error: FINBOOK_HOME must not be empty.\n" +
+        "hint: Set FINBOOK_HOME to a writable path outside the checkout.\n",
+    );
+  });
+
+  it("keeps help and version available with an invalid FINBOOK_HOME", () => {
+    const help = runCli("", ["--help"]);
+    const shortVersion = runCli("", ["-V"]);
+    const version = runCli("", ["--version"]);
+
+    expect(help.status).toBe(0);
+    expect(help.stderr).toBe("");
+    expect(help.stdout).toContain("Usage: finbook");
+    expect(shortVersion.status).toBe(0);
+    expect(shortVersion.stderr).toBe("");
+    expect(shortVersion.stdout.trim()).toBe("0.1.0");
+    expect(version.status).toBe(0);
+    expect(version.stderr).toBe("");
+    expect(version.stdout.trim()).toBe("0.1.0");
+  });
+
+  it("shows help without initializing the book when no command is provided", () => {
+    const dataHome = temporaryHome();
+    const result = runCli(dataHome, []);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("Usage: finbook");
+    expect(readdirSync(dataHome)).toEqual([]);
+  });
+
+  it("returns one validation envelope for root JSON mode", () => {
+    const dataHome = temporaryHome();
+    const result = runCli(dataHome, ["--json"]);
+    const body = JSON.parse(result.stdout);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toBe("");
+    expect(body).toMatchObject({ ok: false, error: { type: "validation" } });
+    expect(readdirSync(dataHome)).toEqual([]);
+  });
+
+  it("shows the resolved local date for an omitted view date", () => {
+    const dataHome = temporaryHome();
+    const result = runCli(dataHome, ["show", "glance", "--json"]);
+    const expected = new Intl.DateTimeFormat("en-CA", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+    const body = JSON.parse(result.stdout);
+
+    expect(result.status).toBe(0);
+    expect(body).toMatchObject({ ok: true, data: { asOf: expected } });
+  });
+
+  it("returns a partial JSON view and nonzero status when a price fetch fails", () => {
+    const dataHome = temporaryHome();
+    const store = new FileBookStore(dataHome);
+    seedAccount(store);
+    expect(
+      store.appendInstrument(
+        InstrumentSchema.parse({
+          id: "EUROW",
+          name: "Euro instrument",
+          type: "stock",
+          quoteCurrency: "EUR",
+        }),
+      ).ok,
+    ).toBe(true);
+    expect(
+      store.appendEvent(
+        EventSchema.parse({
+          id: "deposit-eur",
+          date: "2026-03-01",
+          source: "manual",
+          type: "deposit",
+          account: "ib",
+          amount: { amount: "100", currency: "EUR" },
+          eurPerUnit: "1",
+        }),
+      ).ok,
+    ).toBe(true);
+    expect(
+      store.appendEvent(
+        EventSchema.parse({
+          id: "buy-hrow",
+          date: "2026-03-02",
+          source: "manual",
+          type: "buy",
+          account: "ib",
+          instrument: "EUROW",
+          qty: "1",
+          price: { amount: "40", currency: "EUR" },
+          eurPerUnit: "1",
+        }),
+      ).ok,
+    ).toBe(true);
+    const disabled = runCli(dataHome, ["config", "provider", "disable", "yahoo", "--json"]);
+    const result = runCli(dataHome, [
+      "show",
+      "glance",
+      "--as-of",
+      "2026-03-03",
+      "--fetch",
+      "--json",
+    ]);
+    const body = JSON.parse(result.stdout);
+
+    expect(disabled.status).toBe(0);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toBe("");
+    expect(body).toMatchObject({
+      ok: false,
+      error: {
+        type: "external",
+        details: {
+          requested: { prices: 1, fx: 0 },
+          saved: { prices: 0, fx: 0 },
+          failures: [{ kind: "price", subject: "EUROW", reason: "unavailable" }],
+          partial: { asOf: "2026-03-03" },
+        },
+      },
+    });
+  });
+
+  it("keeps a human partial view on stdout and grouped failures on stderr", () => {
+    const dataHome = temporaryHome();
+    const store = new FileBookStore(dataHome);
+    seedAccount(store);
+    expect(
+      store.appendInstrument(
+        InstrumentSchema.parse({
+          id: "EUROW",
+          name: "Euro instrument",
+          type: "stock",
+          quoteCurrency: "EUR",
+        }),
+      ).ok,
+    ).toBe(true);
+    expect(
+      store.appendEvent(
+        EventSchema.parse({
+          id: "deposit-eur",
+          date: "2026-03-01",
+          source: "manual",
+          type: "deposit",
+          account: "ib",
+          amount: { amount: "100", currency: "EUR" },
+          eurPerUnit: "1",
+        }),
+      ).ok,
+    ).toBe(true);
+    expect(
+      store.appendEvent(
+        EventSchema.parse({
+          id: "buy-hrow",
+          date: "2026-03-02",
+          source: "manual",
+          type: "buy",
+          account: "ib",
+          instrument: "EUROW",
+          qty: "1",
+          price: { amount: "40", currency: "EUR" },
+          eurPerUnit: "1",
+        }),
+      ).ok,
+    ).toBe(true);
+    expect(runCli(dataHome, ["config", "provider", "disable", "yahoo", "--json"]).status).toBe(0);
+
+    const result = runCli(dataHome, ["show", "glance", "--as-of", "2026-03-03", "--fetch"]);
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("as of: 2026-03-03");
+    expect(result.stderr).toBe(
+      "error: Could not fetch every requested market-data observation.\n" +
+        "- price EUROW via none: unavailable: No enabled provider is configured for price:stock.\n" +
+        "hint: Retry the command or add the missing marks manually.\n",
+    );
   });
 
   it("rejects an inverted event date range as validation", () => {
@@ -238,6 +467,7 @@ describe("read CLI", () => {
     const prices = runCli(dataHome, ["price", "list", "--json"]);
     const fx = runCli(dataHome, ["fx", "list", "--json"]);
     const positions = runCli(dataHome, ["show", "positions", "--as-of", "2026-03-04", "--json"]);
+    const humanPositions = runCli(dataHome, ["show", "positions", "--as-of", "2026-03-04"]);
 
     expect(prices.status).toBe(0);
     expect(JSON.parse(prices.stdout)).toMatchObject({ ok: true, data: [{ instrument: "HROW" }] });
@@ -251,6 +481,8 @@ describe("read CLI", () => {
         cash: [{ currency: "USD", balance: { amount: "60" }, valueEur: { amount: "54" } }],
       },
     });
+    expect(humanPositions.status).toBe(0);
+    expect(humanPositions.stdout).toContain("as of: 2026-03-04");
   });
 
   it("keeps JSON data on stdout and diagnostics on stderr", () => {

@@ -158,7 +158,14 @@ function sameSubject(left: SourceBinding, right: SourceSubject): boolean {
 }
 
 function parseConfig(value: Parameters<typeof MarketDataConfigSchema.parse>[0]): MarketDataConfig {
-  return MarketDataConfigSchema.parse(value);
+  const parsed = MarketDataConfigSchema.safeParse(value);
+  if (!parsed.success) {
+    throw validationFailure(
+      `Invalid market-data configuration: ${parsed.error.issues[0]?.message ?? "invalid value"}.`,
+      "Fix the route or source binding and retry.",
+    );
+  }
+  return parsed.data;
 }
 
 function parseProvider(value: string): ProviderId {

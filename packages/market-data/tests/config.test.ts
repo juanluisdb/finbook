@@ -41,7 +41,7 @@ describe("market-data configuration", () => {
     const store = new MarketDataConfigStore(temporaryHome());
     const config = MarketDataConfigSchema.parse({
       disabledProviders: ["yahoo"],
-      routes: { "price:fund": ["yahoo", "coingecko"] },
+      routes: { "price:fund": ["yahoo"] },
       bindings: [
         {
           kind: "instrument",
@@ -68,10 +68,10 @@ describe("market-data configuration", () => {
   it("applies route overrides after disabled providers", () => {
     const config = MarketDataConfigSchema.parse({
       disabledProviders: ["coingecko"],
-      routes: { "price:fund": ["coingecko", "yahoo"] },
+      routes: { "price:crypto": ["coingecko"] },
     });
 
-    expect(effectiveRoute("price:fund", config)).toEqual(["yahoo"]);
+    expect(effectiveRoute("price:crypto", config)).toEqual([]);
     expect(effectiveRoute("price:stock", config)).toEqual(["yahoo"]);
   });
 
@@ -104,6 +104,12 @@ describe("market-data configuration", () => {
       }),
     ).toThrow();
     expect(() => MarketDataConfigSchema.parse({ disabledProviders: ["unknown"] })).toThrow();
+  });
+
+  it("rejects a route whose provider cannot serve that operation", () => {
+    expect(() => MarketDataConfigSchema.parse({ routes: { "price:stock": ["ecb"] } })).toThrow(
+      /price:stock/u,
+    );
   });
 
   it("keeps the config file owner-only where supported", () => {

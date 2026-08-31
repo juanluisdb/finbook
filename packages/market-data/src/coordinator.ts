@@ -33,6 +33,8 @@ import {
   type PriceSource,
   type ProviderFailure,
   type ProviderId,
+  type RouteKey,
+  providerSupportsRoute,
 } from "./contracts.js";
 
 export type MarketDataStore = Pick<FileBookStore, "load" | "appendPrice" | "appendFx">;
@@ -43,7 +45,6 @@ export type MarketDataCoordinatorOptions = {
   priceSources: readonly PriceSource[];
   fxSources: readonly FxSource[];
   eurRateSources: readonly HistoricalEurRateSource[];
-  now?: () => Date;
 };
 
 export type ResolvePriceOptions = {
@@ -64,13 +65,16 @@ type PendingFx = {
   lastFailure: ProviderFailure | undefined;
 };
 
+type ProviderSelection =
+  | { ok: true; providers: readonly ProviderId[] }
+  | { ok: false; provider: ProviderId | "none"; error: ProviderFailure };
+
 export class MarketDataCoordinator {
   private readonly store: MarketDataStore;
   private readonly config: MarketDataConfig;
   private readonly priceSources: readonly PriceSource[];
   private readonly fxSources: readonly FxSource[];
   private readonly eurRateSources: readonly HistoricalEurRateSource[];
-  private readonly now: () => Date;
 
   constructor(options: MarketDataCoordinatorOptions) {
     this.store = options.store;
@@ -78,7 +82,6 @@ export class MarketDataCoordinator {
     this.priceSources = options.priceSources;
     this.fxSources = options.fxSources;
     this.eurRateSources = options.eurRateSources;
-    this.now = options.now ?? (() => new Date());
   }
 
   async resolvePrices(
@@ -89,25 +92,29 @@ export class MarketDataCoordinator {
     if (!snapshot.ok) return fail(snapshot.error);
 
     const needs = uniquePriceNeeds(requestedNeeds);
-    const today = this.now().toISOString().slice(0, 10);
     const pending = new Map<string, PendingPrice>();
+    const failures: PriceFetchFailure[] = [];
     let cached = 0;
 
     for (const need of needs) {
-      if (priceIsCached(snapshot.data.prices, need, today)) {
+      if (priceIsCached(snapshot.data.prices, need)) {
         cached += 1;
+        continue;
+      }
+      const selection = selectPriceProviders(need, this.config, options.provider);
+      if (!selection.ok) {
+        failures.push({ need, provider: selection.provider, error: selection.error });
         continue;
       }
       pending.set(priceNeedKey(need), {
         need,
-        providers: priceProviders(need, this.config, options.provider),
+        providers: selection.providers,
         providerIndex: 0,
         lastFailure: undefined,
       });
     }
 
     const fetched: PriceObservation[] = [];
-    const failures: PriceFetchFailure[] = [];
     while (pending.size > 0) {
       const groups = groupPendingPrices(pending);
       if (groups.size === 0) {
@@ -136,25 +143,29 @@ export class MarketDataCoordinator {
     if (!snapshot.ok) return fail(snapshot.error);
 
     const needs = uniqueFxNeeds(requestedNeeds);
-    const today = this.now().toISOString().slice(0, 10);
     const pending = new Map<string, PendingFx>();
+    const failures: FxFetchFailure[] = [];
     let cached = 0;
 
     for (const need of needs) {
-      if (fxIsCached(snapshot.data.fx, need, today)) {
+      if (fxIsCached(snapshot.data.fx, need)) {
         cached += 1;
+        continue;
+      }
+      const selection = selectFxProviders(need, this.config, options.provider);
+      if (!selection.ok) {
+        failures.push({ need, provider: selection.provider, error: selection.error });
         continue;
       }
       pending.set(fxNeedKey(need), {
         need,
-        providers: fxProviders(need, this.config, options.provider),
+        providers: selection.providers,
         providerIndex: 0,
         lastFailure: undefined,
       });
     }
 
     const fetched: FxObservation[] = [];
-    const failures: FxFetchFailure[] = [];
     while (pending.size > 0) {
       const groups = groupPendingFx(pending);
       if (groups.size === 0) {
@@ -178,16 +189,13 @@ export class MarketDataCoordinator {
     need: EurRateNeed,
     options: ResolvePriceOptions = {},
   ): Promise<EurRateResolution> {
-    const binding = findBinding(this.config, "currency", need.currency);
-    const providers =
-      options.provider !== undefined
-        ? [options.provider]
-        : binding === undefined
-          ? effectiveRoute("eur-rate:fiat", this.config)
-          : [binding.provider];
+    const bindingCandidate = findBinding(this.config, "currency", need.currency);
+    const binding = bindingCandidate?.kind === "currency" ? bindingCandidate : undefined;
+    const selection = selectHistoricalEurRateProviders(binding, this.config, options.provider);
+    if (!selection.ok) return { ok: false, error: selection.error };
     let lastFailure: ProviderFailure | undefined;
 
-    for (const provider of providers) {
+    for (const provider of selection.providers) {
       const source = this.eurRateSources.find((candidate) => candidate.id === provider);
       if (source === undefined) {
         lastFailure = {
@@ -253,13 +261,20 @@ export class MarketDataCoordinator {
       };
     }
 
-    return {
-      ok: false,
-      error: lastFailure ?? {
-        kind: "unavailable",
-        message: `No provider is configured for ${need.currency}.`,
-      },
+    const error = lastFailure ?? {
+      kind: "unavailable" as const,
+      message: `No provider is configured for ${need.currency}.`,
     };
+    if (binding === undefined && (error.kind === "unsupported" || error.kind === "not-found")) {
+      return {
+        ok: false,
+        error: {
+          ...error,
+          message: `${error.message} Bind it with: finbook config source set --currency ${need.currency} --provider coingecko --identifier <provider-id>.`,
+        },
+      };
+    }
+    return { ok: false, error };
   }
 
   private async resolveFxGroup(
@@ -416,26 +431,92 @@ class CoordinatorStorageError extends Error {
   }
 }
 
-function priceProviders(
+function selectPriceProviders(
   need: PriceNeed,
   config: MarketDataConfig,
   providerOverride: ProviderId | undefined,
-): readonly ProviderId[] {
-  if (providerOverride !== undefined) return [providerOverride];
+): ProviderSelection {
+  const route = priceRoute(need.instrument.type);
   const binding = findBinding(config, "instrument", need.instrument.id);
-  if (binding !== undefined) return [binding.provider];
-  return effectiveRoute(`price:${need.instrument.type}`, config);
+  if (providerOverride !== undefined) return selectProvider(providerOverride, route, config);
+  if (binding !== undefined) return selectProvider(binding.provider, route, config);
+  return selectRouteProviders(route, config);
 }
 
-function fxProviders(
+function selectFxProviders(
   need: FxNeed,
   config: MarketDataConfig,
   providerOverride: ProviderId | undefined,
-): readonly ProviderId[] {
-  if (providerOverride !== undefined) return [providerOverride];
+): ProviderSelection {
+  if (providerOverride !== undefined) return selectProvider(providerOverride, "fx", config);
   const binding = findBinding(config, "currency", need.currency);
-  if (binding !== undefined) return [binding.provider];
-  return effectiveRoute("fx", config);
+  if (binding !== undefined) return selectProvider(binding.provider, "fx", config);
+  return selectRouteProviders("fx", config);
+}
+
+function selectHistoricalEurRateProviders(
+  binding: Extract<MarketDataConfig["bindings"][number], { kind: "currency" }> | undefined,
+  config: MarketDataConfig,
+  providerOverride: ProviderId | undefined,
+): ProviderSelection {
+  const route =
+    binding !== undefined && providerSupportsRoute(binding.provider, "eur-rate:crypto")
+      ? "eur-rate:crypto"
+      : "eur-rate:fiat";
+  if (providerOverride !== undefined) {
+    return selectProvider(providerOverride, route, config);
+  }
+  if (binding !== undefined) {
+    return selectProvider(binding.provider, route, config);
+  }
+  return selectRouteProviders("eur-rate:fiat", config);
+}
+
+function selectProvider(
+  provider: ProviderId,
+  route: RouteKey,
+  config: MarketDataConfig,
+): ProviderSelection {
+  if (config.disabledProviders.includes(provider)) {
+    return {
+      ok: false,
+      provider,
+      error: { kind: "unsupported", message: `Provider ${provider} is disabled.` },
+    };
+  }
+  if (!providerSupportsRoute(provider, route)) {
+    return {
+      ok: false,
+      provider,
+      error: { kind: "unsupported", message: `Provider ${provider} cannot serve ${route}.` },
+    };
+  }
+  return { ok: true, providers: [provider] };
+}
+
+function selectRouteProviders(route: RouteKey, config: MarketDataConfig): ProviderSelection {
+  const providers = effectiveRoute(route, config);
+  if (providers.length === 0) {
+    return {
+      ok: false,
+      provider: "none",
+      error: { kind: "unavailable", message: `No enabled provider is configured for ${route}.` },
+    };
+  }
+  return { ok: true, providers };
+}
+
+function priceRoute(type: PriceNeed["instrument"]["type"]): RouteKey {
+  switch (type) {
+    case "stock":
+      return "price:stock";
+    case "etf":
+      return "price:etf";
+    case "fund":
+      return "price:fund";
+    case "crypto":
+      return "price:crypto";
+  }
 }
 
 function providerFxNeed(need: FxNeed, provider: ProviderId, config: MarketDataConfig): FxNeed {
@@ -618,18 +699,16 @@ function priceNeedKey(need: PriceNeed): string {
   return `${need.instrument.id}:${need.asOf}:${need.mode}`;
 }
 
-function fxIsCached(fx: readonly FxStamp[], need: FxNeed, today: string): boolean {
+function fxIsCached(fx: readonly FxStamp[], need: FxNeed): boolean {
   return fx.some((stamp) => {
     if (stamp.pair !== `${need.currency}/EUR`) return false;
-    if (need.mode === "historical") return stamp.asOf <= need.asOf;
-    return stamp.provenance.kind === "fetched" && stamp.provenance.retrievedAt.startsWith(today);
+    return need.mode === "historical" && stamp.asOf <= need.asOf;
   });
 }
 
-function priceIsCached(prices: readonly PriceStamp[], need: PriceNeed, today: string): boolean {
+function priceIsCached(prices: readonly PriceStamp[], need: PriceNeed): boolean {
   return prices.some((stamp) => {
     if (stamp.instrument !== need.instrument.id) return false;
-    if (need.mode === "historical") return stamp.asOf <= need.asOf;
-    return stamp.provenance.kind === "fetched" && stamp.provenance.retrievedAt.startsWith(today);
+    return need.mode === "historical" && stamp.asOf <= need.asOf;
   });
 }

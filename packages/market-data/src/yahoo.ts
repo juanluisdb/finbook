@@ -21,9 +21,14 @@ export type YahooHistoryPoint = {
   close: number | null;
 };
 
+export type YahooChartWindow = {
+  from: string;
+  to: string;
+};
+
 export type YahooGateway = {
   quote(symbols: readonly string[]): Promise<readonly YahooQuote[]>;
-  chart(symbol: string, asOf: string): Promise<readonly YahooHistoryPoint[]>;
+  chart(symbol: string, window: YahooChartWindow): Promise<readonly YahooHistoryPoint[]>;
 };
 
 export type YahooSourceOptions = {
@@ -97,7 +102,7 @@ export class YahooSource implements PriceSource {
   ): Promise<void> {
     let points: readonly YahooHistoryPoint[];
     try {
-      points = await this.gateway.chart(need.identifier, need.asOf);
+      points = await this.gateway.chart(need.identifier, yahooChartWindow(need.asOf));
     } catch (error) {
       outcomes.set(priceNeedKey(need), {
         need,
@@ -179,9 +184,9 @@ function createYahooGateway(fetchImplementation: typeof fetch = globalThis.fetch
         regularMarketTime: quote.regularMarketTime,
       }));
     },
-    async chart(symbol, asOf) {
-      const start = new Date(`${asOf}T00:00:00.000Z`);
-      const end = new Date(start.getTime() + 86_400_000);
+    async chart(symbol, window) {
+      const start = new Date(window.from);
+      const end = new Date(window.to);
       const chart = await client.chart(symbol, {
         period1: start,
         period2: end,
@@ -191,6 +196,13 @@ function createYahooGateway(fetchImplementation: typeof fetch = globalThis.fetch
       return chart.quotes.map((quote) => ({ date: quote.date, close: quote.close }));
     },
   };
+}
+
+function yahooChartWindow(asOf: string): YahooChartWindow {
+  const end = new Date(`${asOf}T00:00:00.000Z`);
+  const from = new Date(end.getTime() - 9 * 86_400_000);
+  const to = new Date(end.getTime() + 86_400_000);
+  return { from: from.toISOString(), to: to.toISOString() };
 }
 
 function normalizeQuote(need: PriceNeed, quote: YahooQuote, now: Date): PriceOutcome {
@@ -219,17 +231,7 @@ function normalizeQuote(need: PriceNeed, quote: YahooQuote, now: Date): PriceOut
       },
     };
   }
-  const asOf = dateOnly(quote.regularMarketTime);
-  if (asOf === undefined) {
-    return {
-      need,
-      ok: false,
-      error: {
-        kind: "invalid-response",
-        message: `Yahoo returned an invalid quote date for ${need.identifier}.`,
-      },
-    };
-  }
+  const asOf = need.asOf;
   return {
     need,
     ok: true,

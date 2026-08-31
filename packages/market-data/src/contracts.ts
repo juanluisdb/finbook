@@ -18,6 +18,31 @@ export const RouteKeySchema = z.enum([
 ]);
 export type RouteKey = z.infer<typeof RouteKeySchema>;
 
+export const PROVIDER_CAPABILITIES = {
+  yahoo: ["price:stock", "price:etf", "price:fund", "price:crypto"],
+  coingecko: ["price:crypto", "fx", "eur-rate:crypto"],
+  ecb: ["fx", "eur-rate:fiat"],
+} as const satisfies Record<ProviderId, readonly RouteKey[]>;
+
+export function providerSupportsRoute(provider: ProviderId, route: RouteKey): boolean {
+  return PROVIDER_CAPABILITIES[provider]?.some((candidate) => candidate === route) ?? false;
+}
+
+export function providerSupportsBinding(
+  provider: ProviderId,
+  kind: "instrument" | "currency",
+): boolean {
+  if (kind === "instrument") {
+    const routes: RouteKey[] = ["price:stock", "price:etf", "price:fund", "price:crypto"];
+    return routes.some((route) => providerSupportsRoute(provider, route));
+  }
+  return (
+    providerSupportsRoute(provider, "fx") ||
+    providerSupportsRoute(provider, "eur-rate:fiat") ||
+    providerSupportsRoute(provider, "eur-rate:crypto")
+  );
+}
+
 const ProviderIdentifierSchema = z.string().min(1);
 
 const InstrumentBindingSchema = z
@@ -65,8 +90,26 @@ export const MarketDataConfigSchema = z
   })
   .strict()
   .superRefine((config, context) => {
+    for (const route of RouteKeySchema.options) {
+      for (const provider of config.routes[route] ?? []) {
+        if (!providerSupportsRoute(provider, route)) {
+          context.addIssue({
+            code: "custom",
+            path: ["routes", route],
+            message: `Provider ${provider} cannot serve ${route}`,
+          });
+        }
+      }
+    }
     const seen = new Set<string>();
     for (const binding of config.bindings) {
+      if (!providerSupportsBinding(binding.provider, binding.kind)) {
+        context.addIssue({
+          code: "custom",
+          path: ["bindings"],
+          message: `Provider ${binding.provider} cannot serve ${binding.kind} bindings`,
+        });
+      }
       const key = `${binding.kind}:${binding.kind === "instrument" ? binding.instrument : binding.currency}`;
       if (seen.has(key)) {
         context.addIssue({
