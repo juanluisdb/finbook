@@ -1,5 +1,6 @@
 export { CURRENT_SCHEMA_VERSION } from "./version.js";
 export * from "./domain/apply.js";
+export * from "./domain/lock.js";
 export * from "./domain/money.js";
 export * from "./domain/queries.js";
 export * from "./domain/replay.js";

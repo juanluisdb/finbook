@@ -1,9 +1,11 @@
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -11,7 +13,11 @@ import { basename, join } from "node:path";
 import { z } from "zod";
 
 import { CURRENT_SCHEMA_VERSION } from "../version.js";
+import { apply } from "./apply.js";
+import { withBookLock } from "./lock.js";
+import { orderEvents } from "./replay.js";
 import { fail, succeed, type DomainError, type Result } from "./result.js";
+import { createInitialState } from "./state.js";
 import {
   AccountSchema,
   EventSchema,
@@ -47,6 +53,161 @@ export class FileBookStore {
   }
 
   load(): Result<BookSnapshot> {
+    if (this.needsLockedPreparation()) {
+      return withBookLock(this.dataHome, () => this.loadUnlocked());
+    }
+    return this.loadUnlocked();
+  }
+
+  appendAccount(account: Account): Result<void> {
+    const parsed = AccountSchema.safeParse(account);
+    if (!parsed.success) return fail(validationError(FILES.accounts, parsed.error));
+    return withBookLock(this.dataHome, () => {
+      const snapshot = this.loadUnlocked();
+      if (!snapshot.ok) return fail(snapshot.error);
+      if (snapshot.data.accounts.some((existing) => existing.id === parsed.data.id)) {
+        return fail(
+          invariantError(
+            `Account ID already exists: ${parsed.data.id}.`,
+            "Choose a new account ID.",
+          ),
+        );
+      }
+      this.writeJson(FILES.accounts, [...snapshot.data.accounts, parsed.data]);
+      return succeed(undefined);
+    });
+  }
+
+  appendInstrument(instrument: Instrument): Result<void> {
+    const parsed = InstrumentSchema.safeParse(instrument);
+    if (!parsed.success) return fail(validationError(FILES.instruments, parsed.error));
+    return withBookLock(this.dataHome, () => {
+      const snapshot = this.loadUnlocked();
+      if (!snapshot.ok) return fail(snapshot.error);
+      if (snapshot.data.instruments.some((existing) => existing.id === parsed.data.id)) {
+        return fail(
+          invariantError(
+            `Instrument ID already exists: ${parsed.data.id}.`,
+            "Choose a new instrument ID.",
+          ),
+        );
+      }
+      this.writeJson(FILES.instruments, [...snapshot.data.instruments, parsed.data]);
+      return succeed(undefined);
+    });
+  }
+
+  appendEvent(event: Event): Result<Event> {
+    const parsed = EventSchema.safeParse(event);
+    if (!parsed.success) return fail(validationError(FILES.events, parsed.error));
+    return withBookLock(this.dataHome, () => {
+      const snapshot = this.loadUnlocked();
+      if (!snapshot.ok) return fail(snapshot.error);
+      if (snapshot.data.events.some((existing) => existing.id === parsed.data.id)) {
+        return fail(
+          invariantError(`Event ID already exists: ${parsed.data.id}.`, "Choose a new event ID."),
+        );
+      }
+      const duplicateEvent = duplicateExternalIdForEvent(snapshot.data.events, parsed.data);
+      if (duplicateEvent !== undefined) return fail(duplicateEvent);
+      const events = [...snapshot.data.events, parsed.data];
+      const replayed = this.validateCandidate(snapshot.data, events, "append", parsed.data.id);
+      if (!replayed.ok) return fail(replayed.error);
+      this.writeEvents(events);
+      return succeed(parsed.data);
+    });
+  }
+
+  replaceEvent(id: string, replacement: Event): Result<Event> {
+    const parsed = EventSchema.safeParse(replacement);
+    if (!parsed.success) return fail(validationError(FILES.events, parsed.error));
+    return withBookLock(this.dataHome, () => {
+      const snapshot = this.loadUnlocked();
+      if (!snapshot.ok) return fail(snapshot.error);
+      const index = snapshot.data.events.findIndex((event) => event.id === id);
+      if (index === -1) return fail(notFoundError("event", id));
+      const existing = snapshot.data.events[index];
+      if (existing === undefined) return fail(notFoundError("event", id));
+      if (parsed.data.id !== id || parsed.data.type !== existing.type) {
+        return fail(
+          invariantError(
+            `Event replacement must keep ID ${id} and type ${existing.type}.`,
+            "Use the matching event edit command or delete and add to change type.",
+          ),
+        );
+      }
+      if (
+        parsed.data.source !== existing.source ||
+        parsed.data.externalId !== existing.externalId
+      ) {
+        return fail(
+          invariantError(
+            `Event replacement must keep source and external ID for ${id}.`,
+            "Keep immutable event identity fields unchanged.",
+          ),
+        );
+      }
+      const events = [...snapshot.data.events];
+      events[index] = parsed.data;
+      const replayed = this.validateCandidate(snapshot.data, events, "replace", id);
+      if (!replayed.ok) return fail(replayed.error);
+      this.writeEvents(events);
+      return succeed(parsed.data);
+    });
+  }
+
+  deleteEvent(id: string): Result<Event> {
+    return withBookLock(this.dataHome, () => {
+      const snapshot = this.loadUnlocked();
+      if (!snapshot.ok) return fail(snapshot.error);
+      const index = snapshot.data.events.findIndex((event) => event.id === id);
+      if (index === -1) return fail(notFoundError("event", id));
+      const removed = snapshot.data.events[index];
+      if (removed === undefined) return fail(notFoundError("event", id));
+      const events = snapshot.data.events.filter((_event, eventIndex) => eventIndex !== index);
+      const replayed = this.validateCandidate(snapshot.data, events, "delete", id);
+      if (!replayed.ok) return fail(replayed.error);
+      this.writeEvents(events);
+      return succeed(removed);
+    });
+  }
+
+  appendPrice(stamp: PriceStamp): Result<void> {
+    const parsed = PriceStampSchema.safeParse(stamp);
+    if (!parsed.success) return fail(validationError(FILES.prices, parsed.error));
+    return withBookLock(this.dataHome, () => {
+      const snapshot = this.loadUnlocked();
+      if (!snapshot.ok) return fail(snapshot.error);
+      const instrument = snapshot.data.instruments.find(
+        (candidate) => candidate.id === parsed.data.instrument,
+      );
+      if (instrument === undefined)
+        return fail(notFoundError("instrument", parsed.data.instrument));
+      if (instrument.quoteCurrency !== parsed.data.price.currency) {
+        return fail(
+          invariantError(
+            `Price currency ${parsed.data.price.currency} does not match ${instrument.id} quote currency ${instrument.quoteCurrency}.`,
+            "Use the instrument quote currency.",
+          ),
+        );
+      }
+      this.appendJsonLine(FILES.prices, parsed.data);
+      return succeed(undefined);
+    });
+  }
+
+  appendFx(stamp: FxStamp): Result<void> {
+    const parsed = FxStampSchema.safeParse(stamp);
+    if (!parsed.success) return fail(validationError(FILES.fx, parsed.error));
+    return withBookLock(this.dataHome, () => {
+      const initialized = this.ensureInitialized();
+      if (!initialized.ok) return fail(initialized.error);
+      this.appendJsonLine(FILES.fx, parsed.data);
+      return succeed(undefined);
+    });
+  }
+
+  private loadUnlocked(): Result<BookSnapshot> {
     const initialized = this.ensureInitialized();
     if (!initialized.ok) return fail(initialized.error);
 
@@ -92,145 +253,39 @@ export class FileBookStore {
     });
   }
 
-  appendAccount(account: Account): Result<void> {
-    const parsed = AccountSchema.safeParse(account);
-    if (!parsed.success) return fail(validationError(FILES.accounts, parsed.error));
-    const snapshot = this.load();
-    if (!snapshot.ok) return fail(snapshot.error);
-    if (snapshot.data.accounts.some((existing) => existing.id === parsed.data.id)) {
-      return fail(
-        invariantError(`Account ID already exists: ${parsed.data.id}.`, "Choose a new account ID."),
-      );
+  private validateCandidate(
+    snapshot: BookSnapshot,
+    events: readonly Event[],
+    mutation: "append" | "replace" | "delete",
+    targetId: string,
+  ): Result<void> {
+    let state = createInitialState(snapshot.accounts, snapshot.instruments);
+    for (const event of orderEvents(events)) {
+      const result = apply(state, event);
+      if (!result.ok) return fail(mutationError(mutation, targetId, event, result.error));
+      state = result.data;
     }
-    try {
-      this.writeJson(FILES.accounts, [...snapshot.data.accounts, parsed.data]);
-      return succeed(undefined);
-    } catch (error) {
-      return fail(
-        storageException(
-          FILES.accounts,
-          error instanceof Error ? error.message : "unknown filesystem error",
-        ),
-      );
-    }
+    return succeed(undefined);
   }
 
-  appendInstrument(instrument: Instrument): Result<void> {
-    const parsed = InstrumentSchema.safeParse(instrument);
-    if (!parsed.success) return fail(validationError(FILES.instruments, parsed.error));
-    const snapshot = this.load();
-    if (!snapshot.ok) return fail(snapshot.error);
-    if (snapshot.data.instruments.some((existing) => existing.id === parsed.data.id)) {
-      return fail(
-        invariantError(
-          `Instrument ID already exists: ${parsed.data.id}.`,
-          "Choose a new instrument ID.",
-        ),
-      );
-    }
+  private needsLockedPreparation(): boolean {
     try {
-      this.writeJson(FILES.instruments, [...snapshot.data.instruments, parsed.data]);
-      return succeed(undefined);
-    } catch (error) {
-      return fail(
-        storageException(
-          FILES.instruments,
-          error instanceof Error ? error.message : "unknown filesystem error",
-        ),
+      if (!existsSync(this.dataHome)) return true;
+      if (FILES_LIST.some((name) => !existsSync(join(this.dataHome, name)))) return true;
+      if (process.platform === "win32") return false;
+      if ((statSync(this.dataHome).mode & 0o777) !== 0o700) return true;
+      return FILES_LIST.some(
+        (name) => (statSync(join(this.dataHome, name)).mode & 0o777) !== 0o600,
       );
-    }
-  }
-
-  appendEvent(event: Event): Result<void> {
-    const parsed = EventSchema.safeParse(event);
-    if (!parsed.success) return fail(validationError(FILES.events, parsed.error));
-    const snapshot = this.load();
-    if (!snapshot.ok) return fail(snapshot.error);
-    if (snapshot.data.events.some((existing) => existing.id === parsed.data.id)) {
-      return fail(
-        invariantError(`Event ID already exists: ${parsed.data.id}.`, "Choose a new event ID."),
-      );
-    }
-    if (
-      parsed.data.externalId !== undefined &&
-      snapshot.data.events.some(
-        (existing) =>
-          existing.source === parsed.data.source && existing.externalId === parsed.data.externalId,
-      )
-    ) {
-      return fail(
-        invariantError(
-          `Event source and external ID already exist: ${parsed.data.source}/${parsed.data.externalId}.`,
-          "Use a new external ID or omit it for a manual event.",
-        ),
-      );
-    }
-    try {
-      this.appendJsonLine(FILES.events, parsed.data);
-      return succeed(undefined);
-    } catch (error) {
-      return fail(
-        storageException(
-          FILES.events,
-          error instanceof Error ? error.message : "unknown filesystem error",
-        ),
-      );
-    }
-  }
-
-  appendPrice(stamp: PriceStamp): Result<void> {
-    const parsed = PriceStampSchema.safeParse(stamp);
-    if (!parsed.success) return fail(validationError(FILES.prices, parsed.error));
-    const snapshot = this.load();
-    if (!snapshot.ok) return fail(snapshot.error);
-    const instrument = snapshot.data.instruments.find(
-      (candidate) => candidate.id === parsed.data.instrument,
-    );
-    if (instrument === undefined) {
-      return fail(notFoundError("instrument", parsed.data.instrument));
-    }
-    if (instrument.quoteCurrency !== parsed.data.price.currency) {
-      return fail(
-        invariantError(
-          `Price currency ${parsed.data.price.currency} does not match ${instrument.id} quote currency ${instrument.quoteCurrency}.`,
-          "Use the instrument quote currency.",
-        ),
-      );
-    }
-    try {
-      this.appendJsonLine(FILES.prices, parsed.data);
-      return succeed(undefined);
-    } catch (error) {
-      return fail(
-        storageException(
-          FILES.prices,
-          error instanceof Error ? error.message : "unknown filesystem error",
-        ),
-      );
-    }
-  }
-
-  appendFx(stamp: FxStamp): Result<void> {
-    const parsed = FxStampSchema.safeParse(stamp);
-    if (!parsed.success) return fail(validationError(FILES.fx, parsed.error));
-    const initialized = this.ensureInitialized();
-    if (!initialized.ok) return fail(initialized.error);
-    try {
-      this.appendJsonLine(FILES.fx, parsed.data);
-      return succeed(undefined);
-    } catch (error) {
-      return fail(
-        storageException(
-          FILES.fx,
-          error instanceof Error ? error.message : "unknown filesystem error",
-        ),
-      );
+    } catch {
+      return true;
     }
   }
 
   private ensureInitialized(): Result<void> {
     try {
       mkdirSync(this.dataHome, { recursive: true, mode: 0o700 });
+      this.setOwnerOnly(this.dataHome, 0o700);
       this.ensureJsonFile(FILES.meta, { schemaVersion: CURRENT_SCHEMA_VERSION });
       this.ensureJsonFile(FILES.accounts, []);
       this.ensureJsonFile(FILES.instruments, []);
@@ -306,7 +361,7 @@ export class FileBookStore {
 
   private writeJson<T>(name: string, value: T): void {
     const target = join(this.dataHome, name);
-    const temporary = join(this.dataHome, `.${basename(name)}.${process.pid}.tmp`);
+    const temporary = join(this.dataHome, `.${basename(name)}.${process.pid}.${randomUUID()}.tmp`);
     try {
       writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, {
         encoding: "utf8",
@@ -315,6 +370,24 @@ export class FileBookStore {
       this.setOwnerOnly(temporary);
       renameSync(temporary, target);
       this.setOwnerOnly(target);
+    } finally {
+      if (existsSync(temporary)) unlinkSync(temporary);
+    }
+  }
+
+  private writeEvents(events: readonly Event[]): void {
+    const target = join(this.dataHome, FILES.events);
+    const temporary = join(
+      this.dataHome,
+      `.${basename(FILES.events)}.${process.pid}.${randomUUID()}.tmp`,
+    );
+    try {
+      const content =
+        events.length === 0 ? "" : `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
+      writeFileSync(temporary, content, { encoding: "utf8", mode: 0o600 });
+      this.setOwnerOnly(temporary, 0o600);
+      renameSync(temporary, target);
+      this.setOwnerOnly(target, 0o600);
     } finally {
       if (existsSync(temporary)) unlinkSync(temporary);
     }
@@ -330,10 +403,12 @@ export class FileBookStore {
     this.setOwnerOnly(path);
   }
 
-  private setOwnerOnly(path: string): void {
-    chmodSync(path, 0o600);
+  private setOwnerOnly(path: string, mode = 0o600): void {
+    if (process.platform !== "win32") chmodSync(path, mode);
   }
 }
+
+const FILES_LIST = Object.values(FILES);
 
 function duplicateIdError<T extends { id: string }>(
   kind: string,
@@ -364,6 +439,24 @@ function duplicateExternalIdError(events: readonly Event[]): DomainError | undef
   return undefined;
 }
 
+function duplicateExternalIdForEvent(
+  events: readonly Event[],
+  candidate: Event,
+): DomainError | undefined {
+  if (
+    candidate.externalId !== undefined &&
+    events.some(
+      (event) => event.source === candidate.source && event.externalId === candidate.externalId,
+    )
+  ) {
+    return invariantError(
+      `Event source and external ID already exist: ${candidate.source}/${candidate.externalId}.`,
+      "Use a new external ID or omit it for a manual event.",
+    );
+  }
+  return undefined;
+}
+
 function validationError(location: string, error: z.ZodError): DomainError {
   const issue = error.issues[0];
   const detail = issue === undefined ? "invalid value" : issue.message;
@@ -380,6 +473,28 @@ function storageLineError(name: string, line: number, reason: string): DomainErr
 
 function storageException(location: string, detail: string): DomainError {
   return storageError(`Could not access ${location}: ${detail}.`);
+}
+
+function mutationError(
+  mutation: "append" | "replace" | "delete",
+  targetId: string,
+  blockingEvent: Event,
+  cause: DomainError,
+): DomainError {
+  const verb = mutation === "append" ? "append" : mutation === "replace" ? "replace" : "delete";
+  return {
+    type: cause.type,
+    message: `Cannot ${verb} event ${targetId}: ${cause.message} Blocking event ${blockingEvent.id} (${blockingEvent.type}) on ${blockingEvent.date}; no changes were written.`,
+    hint: "Correct the event mutation and retry.",
+    details: {
+      mutation: { kind: mutation, target: targetId },
+      blockingEvent: {
+        id: blockingEvent.id,
+        type: blockingEvent.type,
+        date: blockingEvent.date,
+      },
+    },
+  };
 }
 
 function storageError(message: string): DomainError {

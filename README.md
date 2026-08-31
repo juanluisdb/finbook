@@ -1,6 +1,6 @@
 # finbook
 
-finbook is a local, CLI-first book of economic events. It derives cash, positions, contributions, and a EUR glance from an append-only event ledger. It is not a broker, trading tool, or tax-filing product.
+finbook is a local, CLI-first book of economic events. It derives cash, positions, contributions, and a EUR glance from an ordered event ledger. It is not a broker, trading tool, or tax-filing product.
 
 `DESIGN.md` is the source of truth for scope, domain rules, CLI contracts, tests, and milestones.
 
@@ -58,3 +58,15 @@ export FINBOOK_COINGECKO_DEMO_API_KEY=...
 The CLI is non-interactive. Use `--json` for the stable `{ ok, data }` or `{ ok, error }` envelope. Monetary values are decimal strings inside `Money` objects.
 
 Book data belongs in `$FINBOOK_HOME` (default `~/.finbook`), never in this checkout. Use a temporary directory for tests and examples.
+
+## Correcting events
+
+Inspect an event before changing it, then use the matching typed edit command:
+
+```sh
+finbook event get buy-1
+finbook event edit buy buy-1 --qty 15
+finbook event delete deposit-old
+```
+
+Edits preserve the event identity and only change supplied fields. The complete remaining ledger is replayed before a correction is committed, so changing a buy from 20 units to 15 can be rejected if a later sale consumes all 20; the error identifies that blocking event and says no changes were written. Deletion is non-interactive and successful corrections are irreversible. Copy `$FINBOOK_HOME` yourself before making bulk corrections.

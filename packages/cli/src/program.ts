@@ -41,8 +41,9 @@ import {
   validationFailure,
 } from "./errors.js";
 import { createDoctor, type DoctorSummary } from "./doctor.js";
+import { registerEventCommands } from "./event-commands.js";
 import { formatMoney, formatRows, writeSuccess } from "./output.js";
-import { addAccount, addEvent, addInstrument, setFx, setPrice } from "./writes.js";
+import { addAccount, addInstrument, setFx, setPrice } from "./writes.js";
 
 export function createProgram(
   dataHome: string,
@@ -153,16 +154,7 @@ export function createProgram(
   instrumentGet.action((id, _options, command) => getInstrument(store, id, jsonMode(command)));
 
   const event = program.command("event").description("inspect events");
-  const eventAdd = event.command("add [type]").description("add an event from flags or --file");
-  addEventOptions(eventAdd);
-  addJsonOption(eventAdd);
-  eventAdd.action((type, _options, command) => {
-    const resolver =
-      command.opts().fetchRate === true && marketDataFactory !== undefined
-        ? marketDataFactory()
-        : undefined;
-    return addEvent(store, type, command.opts(), jsonMode(command), generateId, resolver);
-  });
+  registerEventCommands(event, store, generateId, marketDataFactory);
   const eventList = event.command("list").description("list events");
   eventList
     .option("--account <id>", "filter by account")
@@ -236,38 +228,6 @@ type AsOfOptions = JsonOptions & {
   asOf?: string | undefined;
   fetch?: boolean | undefined;
 };
-
-function addEventOptions(command: Command): void {
-  command
-    .option("--file <path>", "read one canonical event object")
-    .option("--id <id>", "event ID; generated when omitted")
-    .option("--date <date>", "event date")
-    .option("--source <source>", "event source; defaults to manual")
-    .option("--external-id <id>", "source-specific idempotency ID")
-    .option("--note <text>", "event note")
-    .option("--account <id>", "account ID")
-    .option("--from <id>", "source account or amount, depending on event type")
-    .option("--to <id>", "destination account or amount, depending on event type")
-    .option("--amount <decimal>", "amount")
-    .option("--currency <code>", "currency")
-    .option("--from-amount <decimal>", "FX source amount")
-    .option("--from-currency <code>", "FX source currency")
-    .option("--to-amount <decimal>", "FX destination amount")
-    .option("--to-currency <code>", "FX destination currency")
-    .option("--fee-amount <decimal>", "trade or FX fee amount")
-    .option("--fee-currency <code>", "trade or FX fee currency")
-    .option("--instrument <id>", "instrument ID")
-    .option("--qty <decimal>", "quantity")
-    .option("--price-amount <decimal>", "trade price amount")
-    .option("--price-currency <code>", "trade price currency")
-    .option("--gross-amount <decimal>", "gross income amount")
-    .option("--gross-currency <code>", "gross income currency")
-    .option("--withholding-foreign-amount <decimal>", "foreign withholding")
-    .option("--withholding-domestic-amount <decimal>", "domestic withholding")
-    .option("--eur-per-unit <decimal>", "historical EUR per unit rate")
-    .option("--fetch-rate", "fetch the historical EUR rate before writing")
-    .option("--provider <id>", "pin the historical-rate provider");
-}
 
 function addJsonOption(command: Command): void {
   command.option("--json", "return the stable JSON envelope");

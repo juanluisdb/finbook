@@ -1,6 +1,5 @@
 import { CurrencySchema, InstrumentIdSchema } from "@finbook/core";
 import {
-  MarketDataConfigSchema,
   MarketDataConfigStore,
   ProviderIdSchema,
   RouteKeySchema,
@@ -57,12 +56,14 @@ export function setProviderEnabled(
   json: boolean,
 ): void {
   const provider = parseProvider(value);
-  const config = requireResult(store.load());
-  const disabledProviders = enabled
-    ? config.disabledProviders.filter((candidate) => candidate !== provider)
-    : [...new Set([...config.disabledProviders, provider])];
-  const updated = parseConfig({ ...config, disabledProviders });
-  requireResult(store.save(updated));
+  const updated = requireResult(
+    store.update((config) => ({
+      ...config,
+      disabledProviders: enabled
+        ? config.disabledProviders.filter((candidate) => candidate !== provider)
+        : [...new Set([...config.disabledProviders, provider])],
+    })),
+  );
   writeSuccess(updated, json, `${provider} ${enabled ? "enabled" : "disabled"}`);
 }
 
@@ -80,9 +81,9 @@ export function setRoute(
   if (new Set(providers).size !== providers.length) {
     throw validationFailure("Duplicate providers", "List each route provider once.");
   }
-  const config = requireResult(store.load());
-  const updated = parseConfig({ ...config, routes: { ...config.routes, [route]: providers } });
-  requireResult(store.save(updated));
+  const updated = requireResult(
+    store.update((config) => ({ ...config, routes: { ...config.routes, [route]: providers } })),
+  );
   writeSuccess(updated, json, `${route} route updated`);
 }
 
@@ -92,10 +93,15 @@ export function setSource(
   json: boolean,
 ): void {
   const binding = sourceBinding(options);
-  const config = requireResult(store.load());
-  const bindings = config.bindings.filter((candidate) => !sameSubject(candidate, binding));
-  const updated = parseConfig({ ...config, bindings: [...bindings, binding] });
-  requireResult(store.save(updated));
+  requireResult(
+    store.update((config) => ({
+      ...config,
+      bindings: [
+        ...config.bindings.filter((candidate) => !sameSubject(candidate, binding)),
+        binding,
+      ],
+    })),
+  );
   writeSuccess(binding, json, `${binding.kind} source binding saved`);
 }
 
@@ -105,12 +111,12 @@ export function removeSource(
   json: boolean,
 ): void {
   const subject = sourceSubject(options);
-  const config = requireResult(store.load());
-  const updated = parseConfig({
-    ...config,
-    bindings: config.bindings.filter((candidate) => !sameSubject(candidate, subject)),
-  });
-  requireResult(store.save(updated));
+  const updated = requireResult(
+    store.update((config) => ({
+      ...config,
+      bindings: config.bindings.filter((candidate) => !sameSubject(candidate, subject)),
+    })),
+  );
   writeSuccess(updated, json, `${subject.kind} source binding removed`);
 }
 
@@ -155,17 +161,6 @@ function sameSubject(left: SourceBinding, right: SourceSubject): boolean {
   return left.kind === "instrument"
     ? right.kind === "instrument" && left.instrument === right.instrument
     : right.kind === "currency" && left.currency === right.currency;
-}
-
-function parseConfig(value: Parameters<typeof MarketDataConfigSchema.parse>[0]): MarketDataConfig {
-  const parsed = MarketDataConfigSchema.safeParse(value);
-  if (!parsed.success) {
-    throw validationFailure(
-      `Invalid market-data configuration: ${parsed.error.issues[0]?.message ?? "invalid value"}.`,
-      "Fix the route or source binding and retry.",
-    );
-  }
-  return parsed.data;
 }
 
 function parseProvider(value: string): ProviderId {

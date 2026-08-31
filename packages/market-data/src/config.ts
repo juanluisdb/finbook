@@ -1,15 +1,17 @@
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { basename, join } from "node:path";
 
-import { fail, succeed, type DomainError, type Result } from "@finbook/core";
+import { fail, succeed, type DomainError, type Result, withBookLock } from "@finbook/core";
 
 import {
   MarketDataConfigSchema,
@@ -73,6 +75,36 @@ export class MarketDataConfigStore {
   }
 
   load(): Result<MarketDataConfig> {
+    if (this.needsLockedPreparation()) {
+      return withBookLock(this.dataHome, () => this.loadUnlocked());
+    }
+    return this.loadUnlocked();
+  }
+
+  save(config: MarketDataConfig): Result<void> {
+    const parsed = MarketDataConfigSchema.safeParse(config);
+    if (!parsed.success) return fail(validationError(parsed.error.message));
+    return withBookLock(this.dataHome, () => this.saveUnlocked(parsed.data));
+  }
+
+  update(transform: (config: MarketDataConfig) => MarketDataConfig): Result<MarketDataConfig> {
+    return withBookLock(this.dataHome, () => {
+      const current = this.loadUnlocked();
+      if (!current.ok) return fail(current.error);
+      let next: MarketDataConfig;
+      try {
+        next = transform(current.data);
+      } catch (error) {
+        return fail(storageError(error instanceof Error ? error.message : "unknown config error"));
+      }
+      const parsed = MarketDataConfigSchema.safeParse(next);
+      if (!parsed.success) return fail(validationError(parsed.error.message));
+      const saved = this.saveUnlocked(parsed.data);
+      return saved.ok ? succeed(parsed.data) : fail(saved.error);
+    });
+  }
+
+  private loadUnlocked(): Result<MarketDataConfig> {
     try {
       this.ensureDirectory();
       const path = join(this.dataHome, CONFIG_FILE);
@@ -81,6 +113,7 @@ export class MarketDataConfigStore {
         this.write(config);
         return succeed(config);
       }
+      this.setOwnerOnly(path);
       const value = JSON.parse(readFileSync(path, "utf8"));
       const parsed = MarketDataConfigSchema.safeParse(value);
       return parsed.success ? succeed(parsed.data) : fail(validationError(parsed.error.message));
@@ -89,12 +122,10 @@ export class MarketDataConfigStore {
     }
   }
 
-  save(config: MarketDataConfig): Result<void> {
-    const parsed = MarketDataConfigSchema.safeParse(config);
-    if (!parsed.success) return fail(validationError(parsed.error.message));
+  private saveUnlocked(config: MarketDataConfig): Result<void> {
     try {
       this.ensureDirectory();
-      this.write(parsed.data);
+      this.write(config);
       return succeed(undefined);
     } catch (error) {
       return fail(storageError(error instanceof Error ? error.message : "unknown config error"));
@@ -103,22 +134,43 @@ export class MarketDataConfigStore {
 
   private ensureDirectory(): void {
     mkdirSync(this.dataHome, { recursive: true, mode: 0o700 });
+    if (process.platform !== "win32") chmodSync(this.dataHome, 0o700);
+  }
+
+  private needsLockedPreparation(): boolean {
+    try {
+      const path = join(this.dataHome, CONFIG_FILE);
+      if (!existsSync(this.dataHome) || !existsSync(path)) return true;
+      if (process.platform === "win32") return false;
+      return (
+        (statSync(this.dataHome).mode & 0o777) !== 0o700 || (statSync(path).mode & 0o777) !== 0o600
+      );
+    } catch {
+      return true;
+    }
   }
 
   private write(config: MarketDataConfig): void {
     const target = join(this.dataHome, CONFIG_FILE);
-    const temporary = join(this.dataHome, `.${basename(CONFIG_FILE)}.${process.pid}.tmp`);
+    const temporary = join(
+      this.dataHome,
+      `.${basename(CONFIG_FILE)}.${process.pid}.${randomUUID()}.tmp`,
+    );
     try {
       writeFileSync(temporary, `${JSON.stringify(config, null, 2)}\n`, {
         encoding: "utf8",
         mode: 0o600,
       });
-      chmodSync(temporary, 0o600);
+      if (process.platform !== "win32") chmodSync(temporary, 0o600);
       renameSync(temporary, target);
-      chmodSync(target, 0o600);
+      if (process.platform !== "win32") chmodSync(target, 0o600);
     } finally {
       if (existsSync(temporary)) unlinkSync(temporary);
     }
+  }
+
+  private setOwnerOnly(path: string): void {
+    if (process.platform !== "win32") chmodSync(path, 0o600);
   }
 }
 

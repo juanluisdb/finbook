@@ -1,29 +1,16 @@
-import { readFileSync } from "node:fs";
-
 import {
   AccountSchema,
-  EventSchema,
-  FileBookStore,
+  FxStampSchema,
   InstrumentSchema,
   PriceStampSchema,
-  FxStampSchema,
-  createInitialState,
-  replayEvents,
   type Account,
-  type Event,
+  type FileBookStore,
+  type FxStamp,
   type Instrument,
   type PriceStamp,
-  type EurRateProvenance,
-  type FxStamp,
 } from "@finbook/core";
-import {
-  ProviderIdSchema,
-  type EurRateNeed,
-  type EurRateResolution,
-  type ResolvePriceOptions,
-} from "@finbook/market-data";
 
-import { CliFailure, externalFailure, requireResult, validationFailure } from "./errors.js";
+import { requireResult, validationFailure } from "./errors.js";
 import { writeSuccess } from "./output.js";
 
 export type AccountWriteOptions = {
@@ -44,56 +31,12 @@ export type InstrumentWriteOptions = {
   json?: boolean | undefined;
 };
 
-export type EventWriteOptions = {
-  file?: string | undefined;
-  id?: string | undefined;
-  date?: string | undefined;
-  source?: string | undefined;
-  externalId?: string | undefined;
-  note?: string | undefined;
-  account?: string | undefined;
-  from?: string | undefined;
-  to?: string | undefined;
-  amount?: string | undefined;
-  currency?: string | undefined;
-  fromAmount?: string | undefined;
-  fromCurrency?: string | undefined;
-  toAmount?: string | undefined;
-  toCurrency?: string | undefined;
-  feeAmount?: string | undefined;
-  feeCurrency?: string | undefined;
-  instrument?: string | undefined;
-  qty?: string | undefined;
-  priceAmount?: string | undefined;
-  priceCurrency?: string | undefined;
-  grossAmount?: string | undefined;
-  grossCurrency?: string | undefined;
-  withholdingForeignAmount?: string | undefined;
-  withholdingDomesticAmount?: string | undefined;
-  eurPerUnit?: string | undefined;
-  fetchRate?: boolean | undefined;
-  provider?: string | undefined;
-  json?: boolean | undefined;
-};
-
 export type PriceWriteOptions = {
   instrument?: string | undefined;
   amount?: string | undefined;
   currency?: string | undefined;
   asOf?: string | undefined;
   json?: boolean | undefined;
-};
-
-type RawMoney = {
-  amount: string;
-  currency: string;
-};
-
-export type HistoricalRateResolver = {
-  resolveHistoricalEurRate(
-    need: EurRateNeed,
-    options?: ResolvePriceOptions,
-  ): Promise<EurRateResolution>;
 };
 
 export type FxWriteOptions = {
@@ -135,25 +78,6 @@ export function addInstrument(
   writeSuccess(instrument, json, `${instrument.id} added`);
 }
 
-export async function addEvent(
-  store: FileBookStore,
-  type: string | undefined,
-  options: EventWriteOptions,
-  json: boolean,
-  generateId: () => string,
-  rateResolver?: HistoricalRateResolver,
-): Promise<void> {
-  const event = await buildEvent(type, options, generateId, rateResolver);
-  const snapshot = requireResult(store.load());
-  const replayed = replayEvents(createInitialState(snapshot.accounts, snapshot.instruments), [
-    ...snapshot.events,
-    event,
-  ]);
-  requireResult(replayed);
-  requireResult(store.appendEvent(event));
-  writeSuccess(event, json, `${event.id} added`);
-}
-
 export function setPrice(store: FileBookStore, options: PriceWriteOptions, json: boolean): void {
   const stamp = parsePrice({
     instrument: required(options.instrument, "--instrument"),
@@ -181,225 +105,6 @@ export function setFx(store: FileBookStore, options: FxWriteOptions, json: boole
   });
   requireResult(store.appendFx(stamp));
   writeSuccess(stamp, json, `${stamp.pair} FX set to ${stamp.rate}`);
-}
-
-async function buildEvent(
-  type: string | undefined,
-  options: EventWriteOptions,
-  generateId: () => string,
-  rateResolver: HistoricalRateResolver | undefined,
-): Promise<Event> {
-  if (options.file !== undefined && options.fetchRate === true) {
-    throw validationFailure(
-      "`--fetch-rate` cannot be used with `--file`.",
-      "Add eurPerUnit to the canonical event file.",
-    );
-  }
-  if (options.provider !== undefined && options.fetchRate !== true) {
-    throw validationFailure(
-      "`--provider` requires `--fetch-rate`.",
-      "Use --provider only when fetching the event rate.",
-    );
-  }
-  if (options.file !== undefined && type !== undefined) {
-    throw validationFailure(
-      "Do not provide an event type with `--file`.",
-      "Use either a type and flags or `--file`.",
-    );
-  }
-  if (options.file !== undefined) return readEventFile(options.file);
-  if (type === undefined) {
-    throw validationFailure(
-      "Missing event type.",
-      "Provide a type such as `deposit` or use `--file`.",
-    );
-  }
-
-  const base = {
-    id: options.id ?? generateId(),
-    date: required(options.date, "--date"),
-    source: options.source ?? "manual",
-    note: options.note,
-    externalId: options.externalId,
-  };
-
-  switch (type) {
-    case "deposit": {
-      const amount = requiredMoney(options.amount, options.currency, "--amount", "--currency");
-      const rate = await resolveEurRate(amount.currency, base.date, options, rateResolver);
-      return parseEvent({
-        ...base,
-        type,
-        account: required(options.account, "--account"),
-        amount,
-        ...rate,
-      });
-    }
-    case "withdrawal": {
-      const amount = requiredMoney(options.amount, options.currency, "--amount", "--currency");
-      const rate = await resolveEurRate(amount.currency, base.date, options, rateResolver);
-      return parseEvent({
-        ...base,
-        type,
-        account: required(options.account, "--account"),
-        amount,
-        ...rate,
-      });
-    }
-    case "transfer":
-      return parseEvent({
-        ...base,
-        type,
-        from: required(options.from, "--from"),
-        to: required(options.to, "--to"),
-        amount: requiredMoney(options.amount, options.currency, "--amount", "--currency"),
-      });
-    case "fx":
-      return parseEvent({
-        ...base,
-        type,
-        account: required(options.account, "--account"),
-        from: requiredMoney(
-          options.fromAmount,
-          options.fromCurrency,
-          "--from-amount",
-          "--from-currency",
-        ),
-        to: requiredMoney(options.toAmount, options.toCurrency, "--to-amount", "--to-currency"),
-        fee: optionalMoney(
-          options.feeAmount,
-          options.feeCurrency,
-          "--fee-amount",
-          "--fee-currency",
-        ),
-      });
-    case "buy":
-    case "sell": {
-      const price = requiredMoney(
-        options.priceAmount,
-        options.priceCurrency,
-        "--price-amount",
-        "--price-currency",
-      );
-      const rate = await resolveEurRate(price.currency, base.date, options, rateResolver);
-      return parseEvent({
-        ...base,
-        type,
-        account: required(options.account, "--account"),
-        instrument: required(options.instrument, "--instrument"),
-        qty: required(options.qty, "--qty"),
-        price,
-        fee: optionalMoney(
-          options.feeAmount,
-          options.feeCurrency ?? options.priceCurrency,
-          "--fee-amount",
-          "--fee-currency",
-        ),
-        ...rate,
-      });
-    }
-    case "dividend": {
-      const gross = requiredMoney(
-        options.grossAmount,
-        options.grossCurrency,
-        "--gross-amount",
-        "--gross-currency",
-      );
-      const rate = await resolveEurRate(gross.currency, base.date, options, rateResolver);
-      return parseEvent({
-        ...base,
-        type,
-        account: required(options.account, "--account"),
-        instrument: required(options.instrument, "--instrument"),
-        gross,
-        withholdingForeign: optionalMoney(
-          options.withholdingForeignAmount,
-          options.grossCurrency,
-          "--withholding-foreign-amount",
-          "--gross-currency",
-        ),
-        withholdingDomestic: optionalMoney(
-          options.withholdingDomesticAmount,
-          options.grossCurrency,
-          "--withholding-domestic-amount",
-          "--gross-currency",
-        ),
-        ...rate,
-      });
-    }
-    case "interest": {
-      const gross = requiredMoney(
-        options.grossAmount,
-        options.grossCurrency,
-        "--gross-amount",
-        "--gross-currency",
-      );
-      const rate = await resolveEurRate(gross.currency, base.date, options, rateResolver);
-      return parseEvent({
-        ...base,
-        type,
-        account: required(options.account, "--account"),
-        gross,
-        withholdingForeign: optionalMoney(
-          options.withholdingForeignAmount,
-          options.grossCurrency,
-          "--withholding-foreign-amount",
-          "--gross-currency",
-        ),
-        withholdingDomestic: optionalMoney(
-          options.withholdingDomesticAmount,
-          options.grossCurrency,
-          "--withholding-domestic-amount",
-          "--gross-currency",
-        ),
-        ...rate,
-      });
-    }
-    case "fee": {
-      const amount = requiredMoney(options.amount, options.currency, "--amount", "--currency");
-      const rate = await resolveEurRate(amount.currency, base.date, options, rateResolver);
-      return parseEvent({
-        ...base,
-        type,
-        account: required(options.account, "--account"),
-        amount,
-        ...rate,
-      });
-    }
-    default:
-      throw validationFailure(
-        `Unknown event type: ${type}.`,
-        "Use deposit, withdrawal, transfer, fx, buy, sell, dividend, interest, or fee.",
-      );
-  }
-}
-
-function readEventFile(path: string): Event {
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf8");
-  } catch (error) {
-    throw validationFailure(
-      `Could not read event file ${path}: ${error instanceof Error ? error.message : "unknown file error"}.`,
-      "Check the file path and permissions.",
-    );
-  }
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    throw validationFailure(
-      `Event file ${path} is not valid JSON.`,
-      "Provide one JSON event object.",
-    );
-  }
-  return parseEvent(value);
-}
-
-function parseEvent(value: Parameters<typeof EventSchema.parse>[0]): Event {
-  const parsed = EventSchema.safeParse(value);
-  if (!parsed.success) throw zodFailure("event", parsed.error);
-  return parsed.data;
 }
 
 function parseAccount(value: Parameters<typeof AccountSchema.parse>[0]): Account {
@@ -433,103 +138,10 @@ function required(value: string | undefined, flag: string): string {
   return value;
 }
 
-type RateFields = {
-  eurPerUnit: string;
-  eurRateProvenance?: EurRateProvenance;
-};
-
-async function resolveEurRate(
-  currency: string,
-  date: string,
-  options: EventWriteOptions,
-  resolver: HistoricalRateResolver | undefined,
-): Promise<RateFields> {
-  const wantsFetch = options.fetchRate === true;
-  if (options.eurPerUnit !== undefined && wantsFetch) {
-    throw validationFailure(
-      "Use either `--eur-per-unit` or `--fetch-rate`.",
-      "Choose one source for the event rate.",
-    );
-  }
-  if (currency === "EUR") {
-    if (wantsFetch) {
-      throw validationFailure(
-        "EUR events do not need `--fetch-rate`.",
-        "Omit --fetch-rate; finbook stores the EUR rate as 1.",
-      );
-    }
-    return { eurPerUnit: options.eurPerUnit ?? "1" };
-  }
-  if (options.eurPerUnit !== undefined) return { eurPerUnit: options.eurPerUnit };
-  if (!wantsFetch) return { eurPerUnit: required(undefined, "--eur-per-unit") };
-  if (resolver === undefined) {
-    throw validationFailure(
-      "Historical-rate fetching is not configured.",
-      "Provide --eur-per-unit or configure a rate provider.",
-    );
-  }
-  const provider = parseProvider(options.provider);
-  const result = await resolver.resolveHistoricalEurRate(
-    { currency, date },
-    provider === undefined ? undefined : { provider },
-  );
-  if (!result.ok) {
-    throw externalFailure(
-      `Could not fetch the historical EUR rate: ${result.error.message}.`,
-      "Retry the provider or provide --eur-per-unit.",
-    );
-  }
-  return {
-    eurPerUnit: result.data.rate,
-    eurRateProvenance: {
-      source: result.data.provenance.source,
-      effectiveDate: result.data.effectiveDate,
-      retrievedAt: result.data.provenance.retrievedAt,
-    },
-  };
-}
-
-function parseProvider(value: string | undefined): ResolvePriceOptions["provider"] {
-  if (value === undefined) return undefined;
-  const parsed = ProviderIdSchema.safeParse(value);
-  if (!parsed.success) {
-    throw validationFailure(
-      `Unknown provider: ${value}.`,
-      "Use a provider supported by the current build.",
-    );
-  }
-  return parsed.data;
-}
-
-function requiredMoney(
-  amount: string | undefined,
-  currency: string | undefined,
-  amountFlag: string,
-  currencyFlag: string,
-): RawMoney {
-  return {
-    amount: required(amount, amountFlag),
-    currency: required(currency, currencyFlag),
-  };
-}
-
-function optionalMoney(
-  amount: string | undefined,
-  currency: string | undefined,
-  amountFlag: string,
-  currencyFlag: string,
-): { amount: string; currency: string } | undefined {
-  if (amount === undefined) return undefined;
-  if (currency === undefined || currency.trim() === "") {
-    throw validationFailure(`Missing ${currencyFlag}.`, `Provide ${currencyFlag}.`);
-  }
-  return { amount, currency };
-}
-
 function zodFailure(
   location: string,
   error: { issues: readonly { message: string }[] },
-): CliFailure {
+): ReturnType<typeof validationFailure> {
   const issue = error.issues[0];
   const detail = issue === undefined ? "invalid value" : issue.message;
   return validationFailure(`Invalid ${location}: ${detail}.`, `Fix the ${location} input.`);
