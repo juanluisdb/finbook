@@ -231,17 +231,7 @@ function normalizeQuote(need: PriceNeed, quote: YahooQuote, now: Date): PriceOut
       },
     };
   }
-  const asOf = dateOnly(quote.regularMarketTime);
-  if (asOf === undefined) {
-    return {
-      need,
-      ok: false,
-      error: {
-        kind: "invalid-response",
-        message: `Yahoo returned an invalid quote date for ${need.identifier}.`,
-      },
-    };
-  }
+  const asOf = need.asOf;
   return {
     need,
     ok: true,

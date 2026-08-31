@@ -111,13 +111,12 @@ function resolveDataHome(argv: readonly string[], env: NodeJS.ProcessEnv, cwd: s
 }
 
 function canRunWithoutDataHome(argv: readonly string[]): boolean {
-  return (
-    argv.length === 0 ||
-    argv.includes("--help") ||
-    argv.includes("-h") ||
-    argv.includes("--version") ||
-    (argv.length === 1 && argv[0] === "--json")
-  );
+  if (argv.length === 0 || (argv.length === 1 && argv[0] === "--json")) return true;
+  for (const arg of argv) {
+    if (arg === "--") return false;
+    if (arg === "--help" || arg === "-h" || arg === "--version" || arg === "-V") return true;
+  }
+  return false;
 }
 
 process.exitCode = await main();

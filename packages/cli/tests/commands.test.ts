@@ -42,9 +42,13 @@ function temporaryHome(): string {
   return directory;
 }
 
-function runCli(dataHome: string, args: readonly string[]): SpawnSyncReturns<string> {
+function runCli(
+  dataHome: string,
+  args: readonly string[],
+  cwd: string = repositoryRoot,
+): SpawnSyncReturns<string> {
   return spawnSync(process.execPath, [cliPath, ...args], {
-    cwd: repositoryRoot,
+    cwd,
     encoding: "utf8",
     env: { ...process.env, FINBOOK_HOME: dataHome },
   });
@@ -185,6 +189,19 @@ describe("read CLI", () => {
     expect(readdirSync(dataHome)).toEqual([]);
   });
 
+  it("does not use the working directory for a positional --help argument", () => {
+    const dataHome = temporaryHome();
+    const workingDirectory = temporaryHome();
+    const result = runCli(dataHome, ["account", "get", "--", "--help"], workingDirectory);
+
+    expect(result.status).toBe(3);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toBe(
+      "error: Unknown account ID: --help.\nhint: Add or select an existing account.\n",
+    );
+    expect(readdirSync(workingDirectory)).toEqual([]);
+  });
+
   it("reports an invalid FINBOOK_HOME as a validation failure", () => {
     const jsonResult = runCli("", ["account", "list", "--json"]);
     const humanResult = runCli("", ["account", "list"]);
@@ -205,11 +222,15 @@ describe("read CLI", () => {
 
   it("keeps help and version available with an invalid FINBOOK_HOME", () => {
     const help = runCli("", ["--help"]);
+    const shortVersion = runCli("", ["-V"]);
     const version = runCli("", ["--version"]);
 
     expect(help.status).toBe(0);
     expect(help.stderr).toBe("");
     expect(help.stdout).toContain("Usage: finbook");
+    expect(shortVersion.status).toBe(0);
+    expect(shortVersion.stderr).toBe("");
+    expect(shortVersion.stdout.trim()).toBe("0.1.0");
     expect(version.status).toBe(0);
     expect(version.stderr).toBe("");
     expect(version.stdout.trim()).toBe("0.1.0");

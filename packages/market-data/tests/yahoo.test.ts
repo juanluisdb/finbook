@@ -91,6 +91,21 @@ describe("Yahoo source", () => {
     expect(gateway.quotedSymbols).toEqual([["HROW"]]);
   });
 
+  it("uses the latest need date when the quote timestamp crosses the local boundary", async () => {
+    const gateway = new FixtureGateway([
+      {
+        symbol: "HROW",
+        currency: "USD",
+        regularMarketPrice: 40.5,
+        regularMarketTime: new Date("2026-03-02T03:29:00.000Z"),
+      },
+    ]);
+
+    const result = await source(gateway).fetchPrices([need("latest", "2026-03-01")]);
+
+    expect(result).toMatchObject([{ ok: true, data: { asOf: "2026-03-01" } }]);
+  });
+
   it("selects the latest historical close on or before the requested date", async () => {
     const gateway = new FixtureGateway();
 
