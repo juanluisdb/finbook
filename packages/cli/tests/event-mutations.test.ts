@@ -153,6 +153,44 @@ describe("typed event CLI", () => {
     expect(buyHelp.stdout).toContain("--fee-amount");
   });
 
+  it("rejects a trade fee currency without a fee amount", () => {
+    const dataHome = temporaryHome();
+    seedBook(dataHome);
+    addDeposit(dataHome, "deposit-usd");
+
+    const result = runCli(dataHome, [
+      "event",
+      "add",
+      "buy",
+      "--date",
+      "2026-03-02",
+      "--account",
+      "ib",
+      "--instrument",
+      "HROW",
+      "--qty",
+      "1",
+      "--price-amount",
+      "10",
+      "--price-currency",
+      "USD",
+      "--fee-currency",
+      "USD",
+      "--eur-per-unit",
+      "0.9",
+      "--json",
+    ]);
+
+    expect(result.status).toBe(2);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: false,
+      error: { type: "validation" },
+    });
+    expect(JSON.parse(runCli(dataHome, ["event", "list", "--json"]).stdout)).toMatchObject({
+      data: [{ id: "deposit-usd" }],
+    });
+  });
+
   it("keeps one valid command shape for every event type", () => {
     const dataHome = temporaryHome();
     seedBook(dataHome);

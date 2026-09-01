@@ -145,11 +145,11 @@ const AddInputSchema = z.discriminatedUnion("type", [
   z
     .object({ ...TradeAddFields, type: z.literal("buy") })
     .strict()
-    .superRefine(validateRateOptions),
+    .superRefine(validateTradeAddOptions),
   z
     .object({ ...TradeAddFields, type: z.literal("sell") })
     .strict()
-    .superRefine(validateRateOptions),
+    .superRefine(validateTradeAddOptions),
   DividendAddSchema.superRefine(validateRateOptions),
   InterestAddSchema.superRefine(validateRateOptions),
   z
@@ -646,6 +646,23 @@ function validateRateOptions(input: RateInput, context: z.RefinementCtx): void {
       code: "custom",
       path: ["fetchRate"],
       message: "Use either --eur-per-unit or --fetch-rate",
+    });
+  }
+}
+
+function validateTradeAddOptions(
+  input: RateInput & {
+    feeAmount?: string | undefined;
+    feeCurrency?: string | undefined;
+  },
+  context: z.RefinementCtx,
+): void {
+  validateRateOptions(input, context);
+  if (input.feeCurrency !== undefined && input.feeAmount === undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["feeAmount"],
+      message: "--fee-amount is required with --fee-currency",
     });
   }
 }
