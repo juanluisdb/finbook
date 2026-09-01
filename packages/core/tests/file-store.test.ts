@@ -1,5 +1,13 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -58,6 +66,11 @@ function loaded(store: FileBookStore): BookSnapshot {
   return result.data;
 }
 
+function seedBook(store: FileBookStore): void {
+  expect(store.appendAccount(account).ok).toBe(true);
+  expect(store.appendInstrument(instrument).ok).toBe(true);
+}
+
 describe("FileBookStore", () => {
   it("initializes an empty book and reloads appended data", () => {
     const store = temporaryStore();
@@ -114,6 +127,7 @@ describe("FileBookStore", () => {
 
   it("rejects a duplicate source and external ID without changing the event file", () => {
     const store = temporaryStore();
+    seedBook(store);
     expect(store.appendEvent(event).ok).toBe(true);
     const eventPath = join(store.dataHome, "events.jsonl");
     const before = readFileSync(eventPath, "utf8");
@@ -126,12 +140,375 @@ describe("FileBookStore", () => {
 
   it("rejects a duplicate event ID even without an external ID", () => {
     const store = temporaryStore();
+    seedBook(store);
     const first = { ...event, externalId: undefined };
     expect(store.appendEvent(first).ok).toBe(true);
 
     const duplicate = store.appendEvent({ ...first, date: "2026-03-02" });
 
     expect(duplicate).toMatchObject({ ok: false, error: { type: "invariant" } });
+  });
+
+  it.each([
+    ["unknown account", { ...event, id: "unknown-account", account: "missing" }],
+    [
+      "insufficient cash",
+      {
+        id: "buy-without-cash",
+        date: "2026-03-01",
+        source: "manual",
+        type: "buy",
+        account: "ib",
+        instrument: "HROW",
+        qty: "1",
+        price: { amount: "1", currency: "USD" },
+        eurPerUnit: "0.9",
+      },
+    ],
+    [
+      "oversell",
+      {
+        id: "sell-without-holding",
+        date: "2026-03-01",
+        source: "manual",
+        type: "sell",
+        account: "ib",
+        instrument: "HROW",
+        qty: "1",
+        price: { amount: "1", currency: "USD" },
+        eurPerUnit: "0.9",
+      },
+    ],
+  ] as const)("rejects a direct %s event and preserves the event file", (_name, input) => {
+    const store = temporaryStore();
+    seedBook(store);
+    const before = readFileSync(join(store.dataHome, "events.jsonl"), "utf8");
+
+    const result = store.appendEvent(EventSchema.parse(input));
+
+    expect(result).toMatchObject({ ok: false });
+    expect(readFileSync(join(store.dataHome, "events.jsonl"), "utf8")).toBe(before);
+  });
+
+  it("rejects an append while an active book lock is held", () => {
+    const store = temporaryStore();
+    expect(store.load().ok).toBe(true);
+    const lock = join(store.dataHome, ".finbook.lock");
+    mkdirSync(lock, { mode: 0o700 });
+    writeFileSync(
+      join(lock, "owner.json"),
+      JSON.stringify({
+        pid: process.pid,
+        hostname: hostname(),
+        createdAt: "2026-08-31T12:00:00.000Z",
+        token: "active-lock-token",
+      }),
+      { mode: 0o600 },
+    );
+
+    const result = store.appendAccount({ ...account, id: "cash" });
+
+    expect(result).toMatchObject({ ok: false, error: { type: "storage" } });
+    expect(readFileSync(join(store.dataHome, "accounts.json"), "utf8")).toBe("[]\n");
+  });
+
+  it("rejects a complete load while an active book lock is held", () => {
+    const store = temporaryStore();
+    expect(store.load().ok).toBe(true);
+    const lock = join(store.dataHome, ".finbook.lock");
+    mkdirSync(lock, { mode: 0o700 });
+    writeFileSync(
+      join(lock, "owner.json"),
+      JSON.stringify({
+        pid: process.pid,
+        hostname: hostname(),
+        createdAt: "2026-08-31T12:00:00.000Z",
+        token: "active-load-token",
+      }),
+      { mode: 0o600 },
+    );
+
+    expect(store.load()).toMatchObject({ ok: false, error: { type: "storage" } });
+  });
+
+  it("routes every book mutator through the active lock", () => {
+    const store = temporaryStore();
+    expect(store.load().ok).toBe(true);
+    const lock = join(store.dataHome, ".finbook.lock");
+    mkdirSync(lock, { mode: 0o700 });
+    writeFileSync(
+      join(lock, "owner.json"),
+      JSON.stringify({
+        pid: process.pid,
+        hostname: hostname(),
+        createdAt: "2026-08-31T12:00:00.000Z",
+        token: "active-lock-token",
+      }),
+      { mode: 0o600 },
+    );
+
+    const mutations = [
+      store.appendAccount({ ...account, id: "cash" }),
+      store.appendInstrument({ ...instrument, id: "OTHER" }),
+      store.appendEvent({ ...event, id: "locked-event", externalId: undefined }),
+      store.appendPrice({
+        instrument: "HROW",
+        price: { amount: "40", currency: "USD" },
+        asOf: "2026-03-01",
+        provenance: { kind: "manual" },
+      }),
+      store.appendFx({
+        pair: "USD/EUR",
+        rate: "0.9",
+        asOf: "2026-03-01",
+        provenance: { kind: "manual" },
+      }),
+      store.replaceEvent("missing", event, event),
+      store.deleteEvent("missing"),
+    ];
+
+    for (const result of mutations) {
+      expect(result).toMatchObject({ ok: false, error: { type: "storage" } });
+    }
+  });
+
+  it("persists a valid event only after replaying the complete candidate", () => {
+    const store = temporaryStore();
+    seedBook(store);
+    const deposit = EventSchema.parse({
+      id: "deposit-usd",
+      date: "2026-03-01",
+      source: "manual",
+      type: "deposit",
+      account: "ib",
+      amount: { amount: "100", currency: "USD" },
+      eurPerUnit: "0.9",
+    });
+    const buy = EventSchema.parse({
+      id: "buy-hrow",
+      date: "2026-03-02",
+      source: "manual",
+      type: "buy",
+      account: "ib",
+      instrument: "HROW",
+      qty: "2",
+      price: { amount: "10", currency: "USD" },
+      eurPerUnit: "0.9",
+    });
+
+    expect(store.appendEvent(deposit).ok).toBe(true);
+    expect(store.appendEvent(buy).ok).toBe(true);
+
+    const snapshot = loaded(store);
+    expect(snapshot.events).toEqual([deposit, buy]);
+    expect(getGlance(snapshot, "2026-03-02")).toMatchObject({ ok: true });
+  });
+
+  it("rejects replacing a funding buy below a later sale and preserves bytes", () => {
+    const store = temporaryStore();
+    seedBook(store);
+    const deposit = EventSchema.parse({
+      id: "deposit-usd",
+      date: "2026-03-01",
+      source: "manual",
+      type: "deposit",
+      account: "ib",
+      amount: { amount: "100", currency: "USD" },
+      eurPerUnit: "0.9",
+    });
+    const buy = EventSchema.parse({
+      id: "buy-hrow",
+      date: "2026-03-02",
+      source: "manual",
+      externalId: "broker-buy",
+      type: "buy",
+      account: "ib",
+      instrument: "HROW",
+      qty: "20",
+      price: { amount: "2", currency: "USD" },
+      eurPerUnit: "0.9",
+    });
+    const sell = EventSchema.parse({
+      id: "sell-hrow",
+      date: "2026-03-03",
+      source: "manual",
+      type: "sell",
+      account: "ib",
+      instrument: "HROW",
+      qty: "20",
+      price: { amount: "2", currency: "USD" },
+      eurPerUnit: "0.9",
+    });
+    expect(store.appendEvent(deposit).ok).toBe(true);
+    expect(store.appendEvent(buy).ok).toBe(true);
+    expect(store.appendEvent(sell).ok).toBe(true);
+    const eventPath = join(store.dataHome, "events.jsonl");
+    const before = readFileSync(eventPath, "utf8");
+
+    const result = store.replaceEvent("buy-hrow", { ...buy, qty: "15" }, buy);
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { type: "invariant", message: expect.stringContaining("sell-hrow") },
+    });
+    expect(readFileSync(eventPath, "utf8")).toBe(before);
+    expect(loaded(store).events[1]).toEqual(buy);
+  });
+
+  it("rejects deleting funding for a later operation and preserves bytes", () => {
+    const store = temporaryStore();
+    seedBook(store);
+    const deposit = EventSchema.parse({
+      id: "deposit-usd",
+      date: "2026-03-01",
+      source: "manual",
+      type: "deposit",
+      account: "ib",
+      amount: { amount: "100", currency: "USD" },
+      eurPerUnit: "0.9",
+    });
+    const buy = EventSchema.parse({
+      id: "buy-hrow",
+      date: "2026-03-02",
+      source: "manual",
+      type: "buy",
+      account: "ib",
+      instrument: "HROW",
+      qty: "2",
+      price: { amount: "10", currency: "USD" },
+      eurPerUnit: "0.9",
+    });
+    expect(store.appendEvent(deposit).ok).toBe(true);
+    expect(store.appendEvent(buy).ok).toBe(true);
+    const eventPath = join(store.dataHome, "events.jsonl");
+    const before = readFileSync(eventPath, "utf8");
+
+    const result = store.deleteEvent("deposit-usd");
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { type: "invariant", message: expect.stringContaining("buy-hrow") },
+    });
+    expect(readFileSync(eventPath, "utf8")).toBe(before);
+  });
+
+  it("preserves identity and line position for a valid replacement", () => {
+    const store = temporaryStore();
+    seedBook(store);
+    const deposit = EventSchema.parse({
+      id: "deposit-usd",
+      date: "2026-03-01",
+      source: "manual",
+      type: "deposit",
+      account: "ib",
+      amount: { amount: "100", currency: "USD" },
+      eurPerUnit: "0.9",
+    });
+    const buy = EventSchema.parse({
+      id: "buy-hrow",
+      date: "2026-03-02",
+      source: "broker",
+      externalId: "broker-buy",
+      type: "buy",
+      account: "ib",
+      instrument: "HROW",
+      qty: "2",
+      price: { amount: "10", currency: "USD" },
+      eurPerUnit: "0.9",
+    });
+    const independent = EventSchema.parse({
+      id: "deposit-eur",
+      date: "2026-03-03",
+      source: "manual",
+      type: "deposit",
+      account: "ib",
+      amount: { amount: "5", currency: "EUR" },
+      eurPerUnit: "1",
+    });
+    expect(store.appendEvent(deposit).ok).toBe(true);
+    expect(store.appendEvent(buy).ok).toBe(true);
+    expect(store.appendEvent(independent).ok).toBe(true);
+
+    const replacement = { ...buy, price: { amount: "12", currency: "USD" } };
+    const result = store.replaceEvent("buy-hrow", replacement, buy);
+
+    expect(result).toEqual({ ok: true, data: replacement });
+    expect(loaded(store).events).toEqual([deposit, replacement, independent]);
+  });
+
+  it.each([
+    ["id", { id: "different-id" }],
+    ["type", { type: "sell" }],
+    ["source", { source: "different-source" }],
+    ["external ID", { externalId: undefined }],
+  ] as const)("rejects a changed event %s and preserves bytes", (_field, change) => {
+    const store = temporaryStore();
+    seedBook(store);
+    const funding = EventSchema.parse({
+      id: "funding",
+      date: "2026-02-28",
+      source: "manual",
+      type: "deposit",
+      account: "ib",
+      amount: { amount: "100", currency: "USD" },
+      eurPerUnit: "0.9",
+    });
+    expect(store.appendEvent(funding).ok).toBe(true);
+    const original = EventSchema.parse({
+      id: "replace-me",
+      date: "2026-03-01",
+      source: "broker",
+      externalId: "broker-1",
+      type: "buy",
+      account: "ib",
+      instrument: "HROW",
+      qty: "1",
+      price: { amount: "10", currency: "USD" },
+      eurPerUnit: "0.9",
+    });
+    expect(store.appendEvent(original).ok).toBe(true);
+    const before = readFileSync(join(store.dataHome, "events.jsonl"), "utf8");
+    const replacement = EventSchema.parse({ ...original, ...change });
+
+    const result = store.replaceEvent(original.id, replacement, original);
+
+    expect(result).toMatchObject({ ok: false, error: { type: "invariant" } });
+    expect(readFileSync(join(store.dataHome, "events.jsonl"), "utf8")).toBe(before);
+  });
+
+  it("deletes one independent event and reports missing targets without rewriting", () => {
+    const store = temporaryStore();
+    seedBook(store);
+    const first = EventSchema.parse({
+      id: "deposit-one",
+      date: "2026-03-01",
+      source: "manual",
+      type: "deposit",
+      account: "ib",
+      amount: { amount: "100", currency: "EUR" },
+      eurPerUnit: "1",
+    });
+    const second = EventSchema.parse({
+      id: "deposit-two",
+      date: "2026-03-02",
+      source: "manual",
+      type: "deposit",
+      account: "ib",
+      amount: { amount: "5", currency: "EUR" },
+      eurPerUnit: "1",
+    });
+    expect(store.appendEvent(first).ok).toBe(true);
+    expect(store.appendEvent(second).ok).toBe(true);
+    const eventPath = join(store.dataHome, "events.jsonl");
+
+    const deleted = store.deleteEvent("deposit-one");
+    const beforeMissing = readFileSync(eventPath, "utf8");
+    const missing = store.deleteEvent("missing");
+
+    expect(deleted).toEqual({ ok: true, data: first });
+    expect(loaded(store).events).toEqual([second]);
+    expect(missing).toMatchObject({ ok: false, error: { type: "not-found" } });
+    expect(readFileSync(eventPath, "utf8")).toBe(beforeMissing);
   });
 
   it("reports the file and line for corrupt JSONL", () => {
@@ -150,6 +527,10 @@ describe("FileBookStore", () => {
     if (process.platform === "win32") return;
     const store = temporaryStore();
     expect(store.load().ok).toBe(true);
+
+    chmodSync(store.dataHome, 0o755);
+    expect(store.load().ok).toBe(true);
+    expect(statSync(store.dataHome).mode & 0o777).toBe(0o700);
 
     for (const name of [
       "meta.json",

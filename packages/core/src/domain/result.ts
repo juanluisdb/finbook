@@ -1,6 +1,7 @@
 export type DomainErrorType =
   | "validation"
   | "not-found"
+  | "conflict"
   | "invariant"
   | "storage"
   | "external"

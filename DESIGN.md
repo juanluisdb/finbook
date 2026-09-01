@@ -297,7 +297,7 @@ $FINBOOK_HOME/          # default ~/.finbook
   meta.json             # { schemaVersion }
   accounts.json
   instruments.json
-  events.jsonl          # append-only book
+  events.jsonl          # ordered ledger; corrections atomically rewrite it
   prices.jsonl
   fx.jsonl
   market-data.json       # non-secret provider routes and bindings
@@ -305,10 +305,12 @@ $FINBOOK_HOME/          # default ~/.finbook
 
 - Inspectable files. Backup = copy this folder.
 - Never commit this folder. Never write the book into the git checkout.
-- `events.jsonl`, `prices.jsonl`, and `fx.jsonl` are append-only. For a repeated price or FX key at the same date, the last appended record wins.
+- `prices.jsonl` and `fx.jsonl` are append-only. For a repeated price or FX key at the same date, the last appended record wins.
+- `events.jsonl` preserves stable line order and is rewritten only by a validated add, edit, or delete through the local mutation boundary. Validation, not-found, and domain rejection leave its bytes unchanged; a post-commit filesystem failure explicitly reports that the mutation may have committed.
 - Event `id` is unique within the book. `source` + `externalId` is also unique when `externalId` is present (parser retries).
 - A corrupt JSONL line fails that line and identifies its file and line number; do not silently skip.
 - File mode: owner-only where the OS allows (`0600`).
+- All local mutations use one owner-only `FINBOOK_HOME/.finbook.lock` directory. Its `owner.json` records the PID, hostname, creation instant, and acquisition token. A live owner fails fast; a definitely dead same-host owner is quarantined and reclaimed. A foreign, malformed, missing, or uncertain owner requires manual inspection before removal.
 - Parse at the boundary with Zod. Downstream sees the parsed type, never the raw line.
 - Fetched stamps retain only normalized values and compact provenance; raw provider responses are not book data.
 - `market-data.json` contains no credentials. Provider API keys come from environment variables.
@@ -319,7 +321,7 @@ Override `FINBOOK_HOME` for tests (temp dir) and if the owner later keeps the fo
 
 ## 8. CLI
 
-Agent-friendly. Noun → verb. **No prompts.** Every command accepts `--json`. Data on stdout, noise on stderr. Missing required flags → fail fast, exit 2, list what is missing.
+Agent-friendly. Noun → verb. **No prompts.** Every command accepts `--json`. Data on stdout, noise on stderr. Missing required flags → fail fast, exit 2, list all missing fields.
 
 ```
 finbook doctor
@@ -331,6 +333,8 @@ finbook account add|list|get
 finbook instrument add|list|get
 finbook event add <type> …          # flags, --eur-per-unit or --fetch-rate
 finbook event add --file …          # canonical event object
+finbook event edit <type> <id> …    # typed, validated correction
+finbook event delete <id>            # irreversible, non-interactive correction
 finbook event list [--account] [--from] [--to]
 finbook event get <id>
 finbook price set|list
@@ -347,9 +351,11 @@ Human tables by default. JSON envelope is stable (additive only):
 
 Monetary fields in `data` use `Money` (`amount` is a decimal string). Quantities, rates, and weights are decimal strings; counts may be integers. A `null` EUR total means the corresponding value is incomplete under §4.5. Human tables may format these values for readability.
 
-Exit codes: `0` success (including empty lists), `1` external/provider failure or unexpected bug, `2` validation, `3` not found.
+Exit codes: `0` success (including empty lists), `1` external/provider failure or unexpected bug, `2` validation or concurrent-edit conflict, `3` not found.
 
-Flags and `--file` share **one** Zod object per command. `--file` contains one canonical command object. The CLI does not re-implement domain rules; it calls core.
+Each event type has its own legal flags; an irrelevant flag is a validation error. Required fields are marked in typed-command help and reported together when omitted. `--file` contains one canonical event object and cannot be combined with a typed event. Typed and file-based event writes call the same core mutation boundary, which loads the latest book, validates uniqueness, replays the complete candidate, and commits only a valid result.
+
+An event edit reads its target before any rate fetch and supplies that version to the replacement boundary. If another process changes or deletes the target before the replacement commits, the edit returns a conflict with exit code `2`; reload the event and retry.
 
 `doctor`: schema version, event count, hole count, data path. Works even if the book is empty. Does not dump holdings unless asked.
 
@@ -364,6 +370,8 @@ Historical Yahoo requests cover a bounded ten-calendar-day window ending on the 
 If a fetch is incomplete, every successful mark remains cached, the usable partial view is returned, and the command exits `1`. Human mode writes the view to stdout and one grouped failure report to stderr. JSON mode writes one `ok: false` envelope whose `error.details` contains requested/saved counts, per-need failures, and the partial view.
 
 For rate-bearing event types, `--eur-per-unit` and `--fetch-rate` are mutually exclusive. The latter resolves the historical rate before append; a failed fetch leaves the book unchanged.
+
+Event edits retain omitted fields and use explicit clear flags for optional notes, fees, and withholdings. They preserve `id`, `type`, `source`, `externalId`, and the target line position. Changing a rate-bearing date or currency requires a new historical EUR rate; a successful edit or delete creates no backup, tombstone, or hidden history.
 
 ---
 
@@ -480,6 +488,11 @@ Dependency strategy:
 | P3 | A corrupt JSONL line | Load fails with the file and line number; the line is never silently skipped. |
 | P4 | A fresh data directory and a supported POSIX filesystem | Required files/directories use owner-only permissions where the OS permits. |
 | P5 | Two price or FX records with the same logical key and date | The last appended record is the value used by queries. |
+| P6 | Direct event append of an unknown reference, insufficient cash, or oversell | Full candidate replay rejects it; the event file is unchanged. |
+| P7 | Edit a funding buy below a later sale, or delete required funding | The blocking event is identified and the original bytes remain unchanged. |
+| P8 | Valid replacement or independent deletion | The complete JSONL candidate is atomically committed; identity, remaining order, and reload/replay are preserved. |
+| P9 | Two concurrent 75 EUR withdrawals from 100 EUR | At most one withdrawal commits; the other reports an expected lock or domain failure, and replay remains valid. |
+| P10 | An existing permissive data directory | A normal operation repairs the directory to `0700` with data files at `0600` where supported. |
 
 ### CLI cases
 
@@ -493,6 +506,8 @@ Dependency strategy:
 | C6 | `show glance --json` with complete and incomplete data | Includes `asOf`, `totalEur`, `contributedEur`, `pnlEur`, `holes`, and breakdowns; money and decimal values use the wire conventions in §8. |
 | C7 | The worked normal week from §6 | The glance distinguishes contribution, transfer, income, fees, holdings, and holes as designed. |
 | C8 | Run the CLI under an unsupported Node major | Fails loudly before doing work. |
+| C9 | Supply an irrelevant flag to a typed event command | Exit 2, name the flag, and append nothing. |
+| C10 | Edit or delete through the typed correction commands | Omitted fields are retained, clear flags are explicit, dependent corrections fail safely, and successful delete returns the canonical removed event. |
 
 Do **not** test FIFO tax matching, V0282-22, 720/721 obligations, broker parsing, live prices, or scheduler behavior in v1.
 
@@ -574,7 +589,7 @@ finbook/
 
 | Commit | Change | Cases |
 |---|---|---|
-| M3.1 `feat(core): add filesystem book store` | Create/load `meta.json`, config JSON, and append-only JSONL files; parse every line with Zod; return file/line-aware corruption errors. | P1, P3 |
+| M3.1 `feat(core): add filesystem book store` | Create/load `meta.json`, config JSON, and validated JSONL files; parse every line with Zod; return file/line-aware corruption errors. | P1, P3 |
 | M3.2 `feat(core): add append policies` | Enforce `source` + `externalId` idempotency, last-appended stamp semantics, owner-only modes where supported, safe directory creation, and reload equivalence. | P2, P4, P5 |
 
 **M3 acceptance:** copying `FINBOOK_HOME` is a complete backup; append/reload produces the same derived result; malformed data is loud and never silently skipped.

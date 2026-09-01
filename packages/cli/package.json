@@ -13,6 +13,7 @@
   "dependencies": {
     "@finbook/core": "workspace:*",
     "@finbook/market-data": "workspace:*",
-    "commander": "15.0.0"
+    "commander": "15.0.0",
+    "zod": "4.4.3"
   }
 }

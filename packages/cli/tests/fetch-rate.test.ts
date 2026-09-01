@@ -7,7 +7,7 @@ import { AccountSchema, FileBookStore } from "@finbook/core";
 import type { EurRateNeed, EurRateResolution, ResolvePriceOptions } from "@finbook/market-data";
 
 import { CliFailure } from "../src/errors.js";
-import { addEvent, type EventWriteOptions } from "../src/writes.js";
+import { addEvent, type DepositAddInput } from "../src/event-input.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -44,8 +44,9 @@ type RateResolver = {
   ): Promise<EurRateResolution>;
 };
 
-function depositOptions(): EventWriteOptions {
+function depositOptions(): DepositAddInput {
   return {
+    type: "deposit",
     id: "deposit-1",
     date: "2026-03-03",
     account: "ib",
@@ -78,7 +79,7 @@ describe("event historical-rate fetching", () => {
       },
     };
 
-    await addEvent(store, "deposit", depositOptions(), true, () => "deposit-1", resolver);
+    await addEvent(store, depositOptions(), true, () => "deposit-1", resolver);
 
     const snapshot = store.load();
     if (!snapshot.ok) throw new Error(snapshot.error.message);
@@ -104,7 +105,7 @@ describe("event historical-rate fetching", () => {
     };
 
     await expect(
-      addEvent(store, "deposit", depositOptions(), true, () => "deposit-1", resolver),
+      addEvent(store, depositOptions(), true, () => "deposit-1", resolver),
     ).rejects.toBeInstanceOf(CliFailure);
     const snapshot = store.load();
     if (!snapshot.ok) throw new Error(snapshot.error.message);

@@ -37,7 +37,8 @@ export function requireResult<T>(result: Result<T>): T {
 
 export function exitCodeFor(error: DomainError): number {
   if (error.type === "not-found") return 3;
-  if (error.type === "validation" || error.type === "invariant") return 2;
+  if (error.type === "validation" || error.type === "conflict" || error.type === "invariant")
+    return 2;
   return 1;
 }
 

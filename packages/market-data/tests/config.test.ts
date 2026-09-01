@@ -1,7 +1,9 @@
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+
+import { withBookLock } from "@finbook/core";
 
 import {
   MarketDataConfigSchema,
@@ -116,6 +118,54 @@ describe("market-data configuration", () => {
     if (process.platform === "win32") return;
     const store = new MarketDataConfigStore(temporaryHome());
     expect(store.save(MarketDataConfigSchema.parse({})).ok).toBe(true);
+    expect(statSync(join(store.dataHome, "market-data.json")).mode & 0o777).toBe(0o600);
+  });
+
+  it("updates configuration under one locked read-modify-write", () => {
+    const store = new MarketDataConfigStore(temporaryHome());
+    expect(store.load().ok).toBe(true);
+
+    const updated = store.update((config) => ({ ...config, disabledProviders: ["yahoo"] }));
+
+    expect(updated).toMatchObject({ ok: true, data: { disabledProviders: ["yahoo"] } });
+    expect(store.load()).toMatchObject({ ok: true, data: { disabledProviders: ["yahoo"] } });
+  });
+
+  it("rethrows configuration transform errors after releasing the lock", () => {
+    const store = new MarketDataConfigStore(temporaryHome());
+    expect(store.load().ok).toBe(true);
+    const expected = new Error("transform failure");
+
+    expect(() =>
+      store.update(() => {
+        throw expected;
+      }),
+    ).toThrow(expected);
+    expect(store.update((config) => config)).toMatchObject({ ok: true });
+  });
+
+  it("rejects configuration updates while the book lock is held", () => {
+    const store = new MarketDataConfigStore(temporaryHome());
+    expect(store.load().ok).toBe(true);
+
+    const result = withBookLock(store.dataHome, () =>
+      store.update((config) => ({ ...config, disabledProviders: ["yahoo"] })),
+    );
+
+    expect(result).toMatchObject({ ok: false, error: { type: "storage" } });
+    expect(store.load()).toMatchObject({ ok: true, data: { disabledProviders: [] } });
+  });
+
+  it("repairs an existing permissive data directory and config file", () => {
+    if (process.platform === "win32") return;
+    const store = new MarketDataConfigStore(temporaryHome());
+    expect(store.load().ok).toBe(true);
+    chmodSync(store.dataHome, 0o755);
+    chmodSync(join(store.dataHome, "market-data.json"), 0o644);
+
+    expect(store.load().ok).toBe(true);
+
+    expect(statSync(store.dataHome).mode & 0o777).toBe(0o700);
     expect(statSync(join(store.dataHome, "market-data.json")).mode & 0o777).toBe(0o600);
   });
 });
