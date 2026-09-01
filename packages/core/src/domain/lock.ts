@@ -31,20 +31,22 @@ export function withBookLock<T>(dataHome: string, operation: () => Result<T>): R
   const acquired = acquireBookLock(dataHome);
   if (!acquired.ok) return fail(acquired.error);
 
-  let result: Result<T>;
+  let result: Result<T> | undefined;
+  let threw = false;
+  let thrownError: unknown;
+  let released: Result<void>;
   try {
     result = operation();
   } catch (error) {
-    result = fail(
-      storageError(
-        `The local mutation failed${error instanceof Error ? `: ${error.message}` : ": unknown error"}; its commit status is uncertain`,
-        "Inspect the book before retrying.",
-      ),
-    );
+    threw = true;
+    thrownError = error;
+  } finally {
+    released = releaseBookLock(dataHome, acquired.data);
   }
 
-  const released = releaseBookLock(dataHome, acquired.data);
+  if (threw) throw thrownError;
   if (!released.ok) return fail(released.error);
+  if (result === undefined) throw new Error("Book lock operation returned no result.");
   return result;
 }
 

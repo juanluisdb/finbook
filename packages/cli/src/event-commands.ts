@@ -7,6 +7,8 @@ import {
   addEventFile,
   deleteEvent,
   editEvent,
+  type EventAddOptions,
+  type EventEditOptions,
   type HistoricalRateResolver,
 } from "./event-input.js";
 import { validationFailure } from "./errors.js";
@@ -65,13 +67,13 @@ function registerDepositAdd(
 ): void {
   const command = parent.command("deposit").description("record a deposit");
   addBaseOptions(command);
-  addAccountMoneyOptions(command);
+  addAccountMoneyOptions(command, true);
   addRateOptions(command);
   addJsonOption(command);
   command.action((_options, current) =>
     addEvent(
       store,
-      { type: "deposit", ...current.opts() },
+      typedAddEventInput(current, "deposit"),
       jsonMode(current),
       generateId,
       rateResolver(current, marketDataFactory),
@@ -87,13 +89,13 @@ function registerWithdrawalAdd(
 ): void {
   const command = parent.command("withdrawal").description("record a withdrawal");
   addBaseOptions(command);
-  addAccountMoneyOptions(command);
+  addAccountMoneyOptions(command, true);
   addRateOptions(command);
   addJsonOption(command);
   command.action((_options, current) =>
     addEvent(
       store,
-      { type: "withdrawal", ...current.opts() },
+      typedAddEventInput(current, "withdrawal"),
       jsonMode(current),
       generateId,
       rateResolver(current, marketDataFactory),
@@ -108,25 +110,27 @@ function registerTransferAdd(
 ): void {
   const command = parent.command("transfer").description("record a transfer");
   addBaseOptions(command);
-  command.option("--from <id>", "source account").option("--to <id>", "destination account");
-  addMoneyOptions(command);
+  command
+    .option("--from <id>", "required source account")
+    .option("--to <id>", "required destination account");
+  addMoneyOptions(command, true);
   addJsonOption(command);
   command.action((_options, current) =>
-    addEvent(store, { type: "transfer", ...current.opts() }, jsonMode(current), generateId),
+    addEvent(store, typedAddEventInput(current, "transfer"), jsonMode(current), generateId),
   );
 }
 
 function registerFxAdd(parent: Command, store: FileBookStore, generateId: () => string): void {
   const command = parent.command("fx").description("record a currency exchange");
   addBaseOptions(command);
-  command.option("--account <id>", "account ID");
-  addFxMoneyOptions(command);
+  command.option("--account <id>", "required account ID");
+  addFxMoneyOptions(command, true);
   command
     .option("--fee-amount <decimal>", "FX fee amount")
     .option("--fee-currency <code>", "FX fee currency");
   addJsonOption(command);
   command.action((_options, current) =>
-    addEvent(store, { type: "fx", ...current.opts() }, jsonMode(current), generateId),
+    addEvent(store, typedAddEventInput(current, "fx"), jsonMode(current), generateId),
   );
 }
 
@@ -139,13 +143,13 @@ function registerTradeAdd(
 ): void {
   const command = parent.command(type).description(`record a ${type}`);
   addBaseOptions(command);
-  addTradeOptions(command);
+  addTradeOptions(command, true);
   addRateOptions(command);
   addJsonOption(command);
   command.action((_options, current) =>
     addEvent(
       store,
-      { type, ...current.opts() },
+      typedAddEventInput(current, type),
       jsonMode(current),
       generateId,
       rateResolver(current, marketDataFactory),
@@ -181,9 +185,11 @@ function registerIncomeAdd(
   const command = parent.command(type).description(`record ${type}`);
   addBaseOptions(command);
   if (type === "dividend")
-    command.option("--account <id>", "account ID").option("--instrument <id>", "instrument ID");
-  else command.option("--account <id>", "account ID");
-  addGrossOptions(command);
+    command
+      .option("--account <id>", "required account ID")
+      .option("--instrument <id>", "required instrument ID");
+  else command.option("--account <id>", "required account ID");
+  addGrossOptions(command, true);
   command
     .option("--withholding-foreign-amount <decimal>", "foreign withholding")
     .option("--withholding-domestic-amount <decimal>", "domestic withholding");
@@ -192,7 +198,7 @@ function registerIncomeAdd(
   command.action((_options, current) =>
     addEvent(
       store,
-      { type, ...current.opts() },
+      typedAddEventInput(current, type),
       jsonMode(current),
       generateId,
       rateResolver(current, marketDataFactory),
@@ -226,13 +232,13 @@ function registerFeeAdd(
 ): void {
   const command = parent.command("fee").description("record a fee");
   addBaseOptions(command);
-  addAccountMoneyOptions(command);
+  addAccountMoneyOptions(command, true);
   addRateOptions(command);
   addJsonOption(command);
   command.action((_options, current) =>
     addEvent(
       store,
-      { type: "fee", ...current.opts() },
+      typedAddEventInput(current, "fee"),
       jsonMode(current),
       generateId,
       rateResolver(current, marketDataFactory),
@@ -253,7 +259,7 @@ function registerDepositEdit(
   command.action((id, _options, current) =>
     editEvent(
       store,
-      { type: "deposit", ...current.opts() },
+      typedEditEventInput(current, "deposit"),
       id,
       jsonMode(current),
       rateResolver(current, marketDataFactory),
@@ -274,7 +280,7 @@ function registerWithdrawalEdit(
   command.action((id, _options, current) =>
     editEvent(
       store,
-      { type: "withdrawal", ...current.opts() },
+      typedEditEventInput(current, "withdrawal"),
       id,
       jsonMode(current),
       rateResolver(current, marketDataFactory),
@@ -289,7 +295,7 @@ function registerTransferEdit(parent: Command, store: FileBookStore): void {
   addMoneyEditOptions(command);
   addJsonOption(command);
   command.action((id, _options, current) =>
-    editEvent(store, { type: "transfer", ...current.opts() }, id, jsonMode(current)),
+    editEvent(store, typedEditEventInput(current, "transfer"), id, jsonMode(current)),
   );
 }
 
@@ -304,7 +310,7 @@ function registerFxEdit(parent: Command, store: FileBookStore): void {
     .option("--clear-fee", "remove the fee");
   addJsonOption(command);
   command.action((id, _options, current) =>
-    editEvent(store, { type: "fx", ...current.opts() }, id, jsonMode(current)),
+    editEvent(store, typedEditEventInput(current, "fx"), id, jsonMode(current)),
   );
 }
 
@@ -322,7 +328,7 @@ function registerTradeEdit(
   command.action((id, _options, current) =>
     editEvent(
       store,
-      { type, ...current.opts() },
+      typedEditEventInput(current, type),
       id,
       jsonMode(current),
       rateResolver(current, marketDataFactory),
@@ -367,7 +373,7 @@ function registerIncomeEdit(
   command.action((id, _options, current) =>
     editEvent(
       store,
-      { type, ...current.opts() },
+      typedEditEventInput(current, type),
       id,
       jsonMode(current),
       rateResolver(current, marketDataFactory),
@@ -404,7 +410,7 @@ function registerFeeEdit(
   command.action((id, _options, current) =>
     editEvent(
       store,
-      { type: "fee", ...current.opts() },
+      typedEditEventInput(current, "fee"),
       id,
       jsonMode(current),
       rateResolver(current, marketDataFactory),
@@ -415,7 +421,7 @@ function registerFeeEdit(
 function addBaseOptions(command: Command): void {
   command
     .option("--id <id>", "event ID; generated when omitted")
-    .option("--date <date>", "event date")
+    .option("--date <date>", "required event date")
     .option("--source <source>", "event source; defaults to manual")
     .option("--external-id <id>", "source-specific idempotency ID")
     .option("--note <text>", "event note");
@@ -428,44 +434,61 @@ function addBaseEditOptions(command: Command): void {
     .option("--clear-note", "remove the note");
 }
 
-function addAccountMoneyOptions(command: Command): void {
+function addAccountMoneyOptions(command: Command, required = false): void {
   command
-    .option("--account <id>", "account ID")
-    .option("--amount <decimal>", "amount")
-    .option("--currency <code>", "currency");
+    .option("--account <id>", required ? "required account ID" : "account ID")
+    .option("--amount <decimal>", required ? "required amount" : "amount")
+    .option("--currency <code>", required ? "required currency" : "currency");
 }
 
 function addAccountMoneyEditOptions(command: Command): void {
   addAccountMoneyOptions(command);
 }
 
-function addMoneyOptions(command: Command): void {
-  command.option("--amount <decimal>", "amount").option("--currency <code>", "currency");
+function addMoneyOptions(command: Command, required = false): void {
+  command
+    .option("--amount <decimal>", required ? "required amount" : "amount")
+    .option("--currency <code>", required ? "required currency" : "currency");
 }
 
 function addMoneyEditOptions(command: Command): void {
   addMoneyOptions(command);
 }
 
-function addFxMoneyOptions(command: Command): void {
+function addFxMoneyOptions(command: Command, required = false): void {
   command
-    .option("--from-amount <decimal>", "FX source amount")
-    .option("--from-currency <code>", "FX source currency")
-    .option("--to-amount <decimal>", "FX destination amount")
-    .option("--to-currency <code>", "FX destination currency");
+    .option("--from-amount <decimal>", required ? "required FX source amount" : "FX source amount")
+    .option(
+      "--from-currency <code>",
+      required ? "required FX source currency" : "FX source currency",
+    )
+    .option(
+      "--to-amount <decimal>",
+      required ? "required FX destination amount" : "FX destination amount",
+    )
+    .option(
+      "--to-currency <code>",
+      required ? "required FX destination currency" : "FX destination currency",
+    );
 }
 
 function addFxMoneyEditOptions(command: Command): void {
   addFxMoneyOptions(command);
 }
 
-function addTradeOptions(command: Command): Command {
+function addTradeOptions(command: Command, required = false): Command {
   return command
-    .option("--account <id>", "account ID")
-    .option("--instrument <id>", "instrument ID")
-    .option("--qty <decimal>", "quantity")
-    .option("--price-amount <decimal>", "trade price amount")
-    .option("--price-currency <code>", "trade price currency")
+    .option("--account <id>", required ? "required account ID" : "account ID")
+    .option("--instrument <id>", required ? "required instrument ID" : "instrument ID")
+    .option("--qty <decimal>", required ? "required quantity" : "quantity")
+    .option(
+      "--price-amount <decimal>",
+      required ? "required trade price amount" : "trade price amount",
+    )
+    .option(
+      "--price-currency <code>",
+      required ? "required trade price currency" : "trade price currency",
+    )
     .option("--fee-amount <decimal>", "trade fee amount")
     .option("--fee-currency <code>", "trade fee currency");
 }
@@ -474,10 +497,16 @@ function addTradeEditOptions(command: Command): void {
   addTradeOptions(command).option("--clear-fee", "remove the fee");
 }
 
-function addGrossOptions(command: Command): void {
+function addGrossOptions(command: Command, required = false): void {
   command
-    .option("--gross-amount <decimal>", "gross income amount")
-    .option("--gross-currency <code>", "gross income currency");
+    .option(
+      "--gross-amount <decimal>",
+      required ? "required gross income amount" : "gross income amount",
+    )
+    .option(
+      "--gross-currency <code>",
+      required ? "required gross income currency" : "gross income currency",
+    );
 }
 
 function addGrossEditOptions(command: Command): void {
@@ -500,6 +529,30 @@ function rateResolver(
 
 function addJsonOption(command: Command): void {
   command.option("--json", "return the stable JSON envelope");
+}
+
+function typedAddEventInput(command: Command, type: EventAddOptions["type"]): EventAddOptions {
+  if (command.optsWithGlobals().file !== undefined) {
+    throw validationFailure(
+      "Cannot combine --file with a typed event.",
+      "Use --file without an event type or remove --file.",
+    );
+  }
+  const options = { ...command.opts() };
+  // SAFETY: Commander supplies only registered options, and addEvent validates them with Zod.
+  return { type, ...options } as EventAddOptions;
+}
+
+function typedEditEventInput(command: Command, type: EventEditOptions["type"]): EventEditOptions {
+  if (command.optsWithGlobals().file !== undefined) {
+    throw validationFailure(
+      "Cannot combine --file with a typed event.",
+      "Use --file without an event type or remove --file.",
+    );
+  }
+  const options = { ...command.opts() };
+  // SAFETY: Commander supplies only registered options, and editEvent validates them with Zod.
+  return { type, ...options } as EventEditOptions;
 }
 
 function jsonMode(command: Command): boolean {

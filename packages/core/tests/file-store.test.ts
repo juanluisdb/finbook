@@ -212,6 +212,25 @@ describe("FileBookStore", () => {
     expect(readFileSync(join(store.dataHome, "accounts.json"), "utf8")).toBe("[]\n");
   });
 
+  it("rejects a complete load while an active book lock is held", () => {
+    const store = temporaryStore();
+    expect(store.load().ok).toBe(true);
+    const lock = join(store.dataHome, ".finbook.lock");
+    mkdirSync(lock, { mode: 0o700 });
+    writeFileSync(
+      join(lock, "owner.json"),
+      JSON.stringify({
+        pid: process.pid,
+        hostname: hostname(),
+        createdAt: "2026-08-31T12:00:00.000Z",
+        token: "active-load-token",
+      }),
+      { mode: 0o600 },
+    );
+
+    expect(store.load()).toMatchObject({ ok: false, error: { type: "storage" } });
+  });
+
   it("routes every book mutator through the active lock", () => {
     const store = temporaryStore();
     expect(store.load().ok).toBe(true);
@@ -244,6 +263,8 @@ describe("FileBookStore", () => {
         asOf: "2026-03-01",
         provenance: { kind: "manual" },
       }),
+      store.replaceEvent("missing", event, event),
+      store.deleteEvent("missing"),
     ];
 
     for (const result of mutations) {
@@ -324,7 +345,7 @@ describe("FileBookStore", () => {
     const eventPath = join(store.dataHome, "events.jsonl");
     const before = readFileSync(eventPath, "utf8");
 
-    const result = store.replaceEvent("buy-hrow", { ...buy, qty: "15" });
+    const result = store.replaceEvent("buy-hrow", { ...buy, qty: "15" }, buy);
 
     expect(result).toMatchObject({
       ok: false,
@@ -409,10 +430,50 @@ describe("FileBookStore", () => {
     expect(store.appendEvent(independent).ok).toBe(true);
 
     const replacement = { ...buy, price: { amount: "12", currency: "USD" } };
-    const result = store.replaceEvent("buy-hrow", replacement);
+    const result = store.replaceEvent("buy-hrow", replacement, buy);
 
     expect(result).toEqual({ ok: true, data: replacement });
     expect(loaded(store).events).toEqual([deposit, replacement, independent]);
+  });
+
+  it.each([
+    ["id", { id: "different-id" }],
+    ["type", { type: "sell" }],
+    ["source", { source: "different-source" }],
+    ["external ID", { externalId: undefined }],
+  ] as const)("rejects a changed event %s and preserves bytes", (_field, change) => {
+    const store = temporaryStore();
+    seedBook(store);
+    const funding = EventSchema.parse({
+      id: "funding",
+      date: "2026-02-28",
+      source: "manual",
+      type: "deposit",
+      account: "ib",
+      amount: { amount: "100", currency: "USD" },
+      eurPerUnit: "0.9",
+    });
+    expect(store.appendEvent(funding).ok).toBe(true);
+    const original = EventSchema.parse({
+      id: "replace-me",
+      date: "2026-03-01",
+      source: "broker",
+      externalId: "broker-1",
+      type: "buy",
+      account: "ib",
+      instrument: "HROW",
+      qty: "1",
+      price: { amount: "10", currency: "USD" },
+      eurPerUnit: "0.9",
+    });
+    expect(store.appendEvent(original).ok).toBe(true);
+    const before = readFileSync(join(store.dataHome, "events.jsonl"), "utf8");
+    const replacement = EventSchema.parse({ ...original, ...change });
+
+    const result = store.replaceEvent(original.id, replacement, original);
+
+    expect(result).toMatchObject({ ok: false, error: { type: "invariant" } });
+    expect(readFileSync(join(store.dataHome, "events.jsonl"), "utf8")).toBe(before);
   });
 
   it("deletes one independent event and reports missing targets without rewriting", () => {

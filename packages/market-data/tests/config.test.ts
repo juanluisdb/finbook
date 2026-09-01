@@ -131,6 +131,19 @@ describe("market-data configuration", () => {
     expect(store.load()).toMatchObject({ ok: true, data: { disabledProviders: ["yahoo"] } });
   });
 
+  it("rethrows configuration transform errors after releasing the lock", () => {
+    const store = new MarketDataConfigStore(temporaryHome());
+    expect(store.load().ok).toBe(true);
+    const expected = new Error("transform failure");
+
+    expect(() =>
+      store.update(() => {
+        throw expected;
+      }),
+    ).toThrow(expected);
+    expect(store.update((config) => config)).toMatchObject({ ok: true });
+  });
+
   it("rejects configuration updates while the book lock is held", () => {
     const store = new MarketDataConfigStore(temporaryHome());
     expect(store.load().ok).toBe(true);

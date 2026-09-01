@@ -115,4 +115,40 @@ describe("book lock", () => {
     expect(failure).toMatchObject({ ok: false, error: { type: "invariant" } });
     expect(withBookLock(dataHome, () => succeed("retry")).data).toBe("retry");
   });
+
+  it("releases the lock and rethrows an operation exception", () => {
+    const dataHome = temporaryHome();
+    const expected = new Error("programmer failure");
+
+    expect(() =>
+      withBookLock(dataHome, () => {
+        throw expected;
+      }),
+    ).toThrow(expected);
+    expect(withBookLock(dataHome, () => succeed("retry"))).toEqual({ ok: true, data: "retry" });
+  });
+
+  it("writes the documented generated owner fields", () => {
+    const dataHome = temporaryHome();
+
+    const result = withBookLock(dataHome, () => {
+      // SAFETY: withBookLock writes and validates this owner record before invoking the callback.
+      const owner = JSON.parse(readFileSync(ownerPath(dataHome), "utf8")) as LockOwner;
+      expect(owner).toEqual({
+        pid: process.pid,
+        hostname: expect.any(String),
+        createdAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T.*Z$/u),
+        token: expect.any(String),
+      });
+      expect(owner.hostname).toBe(hostname());
+      expect(Number.isFinite(Date.parse(owner.createdAt))).toBe(true);
+      expect(owner.token).not.toBe("");
+      if (process.platform !== "win32") {
+        expect(statSync(ownerPath(dataHome)).mode & 0o777).toBe(0o600);
+      }
+      return succeed(undefined);
+    });
+
+    expect(result).toEqual({ ok: true, data: undefined });
+  });
 });

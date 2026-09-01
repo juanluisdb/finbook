@@ -1,7 +1,14 @@
 import { readFileSync } from "node:fs";
 
 import {
+  AccountIdSchema,
+  CurrencySchema,
   EventSchema,
+  IsoDateSchema,
+  InstrumentIdSchema,
+  NonNegativeDecimalStringSchema,
+  NonEmptyStringSchema,
+  PositiveDecimalStringSchema,
   type FileBookStore,
   type Event,
   type EurRateProvenance,
@@ -13,6 +20,7 @@ import {
   type EurRateResolution,
   type ResolvePriceOptions,
 } from "@finbook/market-data";
+import { z } from "zod";
 
 import {
   externalFailure,
@@ -23,13 +31,237 @@ import {
 } from "./errors.js";
 import { writeSuccess } from "./output.js";
 
-type AddBase = {
-  id?: string | undefined;
-  date?: string | undefined;
-  source?: string | undefined;
-  externalId?: string | undefined;
-  note?: string | undefined;
+const AddBaseFields = {
+  id: NonEmptyStringSchema.optional(),
+  date: IsoDateSchema,
+  source: NonEmptyStringSchema.optional(),
+  externalId: NonEmptyStringSchema.optional(),
+  note: z.string().optional(),
+  json: z.boolean().optional(),
 };
+
+const RateFields = {
+  eurPerUnit: PositiveDecimalStringSchema.optional(),
+  fetchRate: z.boolean().optional(),
+  provider: ProviderIdSchema.optional(),
+};
+
+const RateOptionsSchema = z.object(RateFields).strict();
+type RateInput = z.infer<typeof RateOptionsSchema>;
+
+const EditBaseFields = {
+  date: IsoDateSchema.optional(),
+  note: z.string().optional(),
+  clearNote: z.boolean().optional(),
+  json: z.boolean().optional(),
+};
+
+const AccountMoneyAddFields = {
+  ...AddBaseFields,
+  ...RateFields,
+  account: AccountIdSchema,
+  amount: PositiveDecimalStringSchema,
+  currency: CurrencySchema,
+};
+
+const TransferAddSchema = z
+  .object({
+    ...AddBaseFields,
+    type: z.literal("transfer"),
+    from: AccountIdSchema,
+    to: AccountIdSchema,
+    amount: PositiveDecimalStringSchema,
+    currency: CurrencySchema,
+  })
+  .strict();
+
+const FxAddSchema = z
+  .object({
+    ...AddBaseFields,
+    type: z.literal("fx"),
+    account: AccountIdSchema,
+    fromAmount: PositiveDecimalStringSchema,
+    fromCurrency: CurrencySchema,
+    toAmount: PositiveDecimalStringSchema,
+    toCurrency: CurrencySchema,
+    feeAmount: NonNegativeDecimalStringSchema.optional(),
+    feeCurrency: CurrencySchema.optional(),
+  })
+  .strict()
+  .superRefine((input, context) =>
+    validateOptionalMoneyPair(input.feeAmount, input.feeCurrency, context),
+  );
+
+const TradeAddFields = {
+  ...AddBaseFields,
+  ...RateFields,
+  account: AccountIdSchema,
+  instrument: InstrumentIdSchema,
+  qty: PositiveDecimalStringSchema,
+  priceAmount: PositiveDecimalStringSchema,
+  priceCurrency: CurrencySchema,
+  feeAmount: NonNegativeDecimalStringSchema.optional(),
+  feeCurrency: CurrencySchema.optional(),
+};
+
+const DividendAddSchema = z
+  .object({
+    ...AddBaseFields,
+    ...RateFields,
+    type: z.literal("dividend"),
+    account: AccountIdSchema,
+    instrument: InstrumentIdSchema,
+    grossAmount: PositiveDecimalStringSchema,
+    grossCurrency: CurrencySchema,
+    withholdingForeignAmount: NonNegativeDecimalStringSchema.optional(),
+    withholdingDomesticAmount: NonNegativeDecimalStringSchema.optional(),
+  })
+  .strict();
+
+const InterestAddSchema = z
+  .object({
+    ...AddBaseFields,
+    ...RateFields,
+    type: z.literal("interest"),
+    account: AccountIdSchema,
+    grossAmount: PositiveDecimalStringSchema,
+    grossCurrency: CurrencySchema,
+    withholdingForeignAmount: NonNegativeDecimalStringSchema.optional(),
+    withholdingDomesticAmount: NonNegativeDecimalStringSchema.optional(),
+  })
+  .strict();
+
+const AddInputSchema = z.discriminatedUnion("type", [
+  z
+    .object({ ...AccountMoneyAddFields, type: z.literal("deposit") })
+    .strict()
+    .superRefine(validateRateOptions),
+  z
+    .object({ ...AccountMoneyAddFields, type: z.literal("withdrawal") })
+    .strict()
+    .superRefine(validateRateOptions),
+  TransferAddSchema,
+  FxAddSchema,
+  z
+    .object({ ...TradeAddFields, type: z.literal("buy") })
+    .strict()
+    .superRefine(validateRateOptions),
+  z
+    .object({ ...TradeAddFields, type: z.literal("sell") })
+    .strict()
+    .superRefine(validateRateOptions),
+  DividendAddSchema.superRefine(validateRateOptions),
+  InterestAddSchema.superRefine(validateRateOptions),
+  z
+    .object({ ...AccountMoneyAddFields, type: z.literal("fee") })
+    .strict()
+    .superRefine(validateRateOptions),
+]);
+
+const AccountMoneyEditFields = {
+  ...EditBaseFields,
+  ...RateFields,
+  account: AccountIdSchema.optional(),
+  amount: PositiveDecimalStringSchema.optional(),
+  currency: CurrencySchema.optional(),
+};
+
+const TransferEditSchema = z
+  .object({
+    ...EditBaseFields,
+    type: z.literal("transfer"),
+    from: AccountIdSchema.optional(),
+    to: AccountIdSchema.optional(),
+    amount: PositiveDecimalStringSchema.optional(),
+    currency: CurrencySchema.optional(),
+  })
+  .strict();
+
+const FxEditSchema = z
+  .object({
+    ...EditBaseFields,
+    type: z.literal("fx"),
+    account: AccountIdSchema.optional(),
+    fromAmount: PositiveDecimalStringSchema.optional(),
+    fromCurrency: CurrencySchema.optional(),
+    toAmount: PositiveDecimalStringSchema.optional(),
+    toCurrency: CurrencySchema.optional(),
+    feeAmount: NonNegativeDecimalStringSchema.optional(),
+    feeCurrency: CurrencySchema.optional(),
+    clearFee: z.boolean().optional(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    validateOptionalMoneyPair(input.feeAmount, input.feeCurrency, context);
+    validateClearValue(input.feeAmount, input.clearFee, context, "fee");
+  });
+
+const TradeEditFields = {
+  ...EditBaseFields,
+  ...RateFields,
+  account: AccountIdSchema.optional(),
+  instrument: InstrumentIdSchema.optional(),
+  qty: PositiveDecimalStringSchema.optional(),
+  priceAmount: PositiveDecimalStringSchema.optional(),
+  priceCurrency: CurrencySchema.optional(),
+  feeAmount: NonNegativeDecimalStringSchema.optional(),
+  feeCurrency: CurrencySchema.optional(),
+  clearFee: z.boolean().optional(),
+};
+
+const IncomeEditFields = {
+  ...EditBaseFields,
+  ...RateFields,
+  account: AccountIdSchema.optional(),
+  grossAmount: PositiveDecimalStringSchema.optional(),
+  grossCurrency: CurrencySchema.optional(),
+  withholdingForeignAmount: NonNegativeDecimalStringSchema.optional(),
+  withholdingDomesticAmount: NonNegativeDecimalStringSchema.optional(),
+  clearWithholdingForeign: z.boolean().optional(),
+  clearWithholdingDomestic: z.boolean().optional(),
+};
+
+const EditInputSchema = z.discriminatedUnion("type", [
+  z
+    .object({ ...AccountMoneyEditFields, type: z.literal("deposit") })
+    .strict()
+    .superRefine(validateRateOptions),
+  z
+    .object({ ...AccountMoneyEditFields, type: z.literal("withdrawal") })
+    .strict()
+    .superRefine(validateRateOptions),
+  TransferEditSchema,
+  FxEditSchema,
+  z
+    .object({ ...TradeEditFields, type: z.literal("buy") })
+    .strict()
+    .superRefine(validateRateOptions),
+  z
+    .object({ ...TradeEditFields, type: z.literal("sell") })
+    .strict()
+    .superRefine(validateRateOptions),
+  z
+    .object({
+      ...IncomeEditFields,
+      type: z.literal("dividend"),
+      instrument: InstrumentIdSchema.optional(),
+    })
+    .strict()
+    .superRefine(validateRateOptions),
+  z
+    .object({ ...IncomeEditFields, type: z.literal("interest") })
+    .strict()
+    .superRefine(validateRateOptions),
+  z
+    .object({ ...AccountMoneyEditFields, type: z.literal("fee") })
+    .strict()
+    .superRefine(validateRateOptions),
+]);
+
+export type EventAddInput = z.infer<typeof AddInputSchema>;
+export type EventEditInput = z.infer<typeof EditInputSchema>;
+export type EventAddOptions = z.input<typeof AddInputSchema>;
+export type EventEditOptions = z.input<typeof EditInputSchema>;
 
 type EventBaseFields = {
   id: string;
@@ -39,160 +271,14 @@ type EventBaseFields = {
   externalId?: string;
 };
 
-type RateInput = {
-  eurPerUnit?: string | undefined;
-  fetchRate?: boolean | undefined;
-  provider?: string | undefined;
-};
+type AddBase = Pick<EventAddInput, "id" | "date" | "source" | "externalId" | "note">;
+type EditBase = Pick<EventEditInput, "type" | "date" | "note" | "clearNote">;
+type AccountMoneyEditInput = Extract<EventEditInput, { type: "deposit" | "withdrawal" | "fee" }>;
+type FxEditInput = Extract<EventEditInput, { type: "fx" }>;
+type TradeEditInput = Extract<EventEditInput, { type: "buy" | "sell" }>;
+type IncomeEditInput = Extract<EventEditInput, { type: "dividend" | "interest" }>;
 
-type AccountMoneyInput = AddBase &
-  RateInput & {
-    account?: string | undefined;
-    amount?: string | undefined;
-    currency?: string | undefined;
-  };
-
-export type DepositAddInput = AccountMoneyInput & { type: "deposit" };
-export type WithdrawalAddInput = AccountMoneyInput & { type: "withdrawal" };
-
-export type TransferAddInput = AddBase & {
-  type: "transfer";
-  from?: string | undefined;
-  to?: string | undefined;
-  amount?: string | undefined;
-  currency?: string | undefined;
-};
-
-export type FxAddInput = AddBase & {
-  type: "fx";
-  account?: string | undefined;
-  fromAmount?: string | undefined;
-  fromCurrency?: string | undefined;
-  toAmount?: string | undefined;
-  toCurrency?: string | undefined;
-  feeAmount?: string | undefined;
-  feeCurrency?: string | undefined;
-};
-
-type TradeAddInput = AddBase &
-  RateInput & {
-    account?: string | undefined;
-    instrument?: string | undefined;
-    qty?: string | undefined;
-    priceAmount?: string | undefined;
-    priceCurrency?: string | undefined;
-    feeAmount?: string | undefined;
-    feeCurrency?: string | undefined;
-  };
-
-export type BuyAddInput = TradeAddInput & { type: "buy" };
-export type SellAddInput = TradeAddInput & { type: "sell" };
-
-type IncomeAddInput = AddBase &
-  RateInput & {
-    account?: string | undefined;
-    instrument?: string | undefined;
-    grossAmount?: string | undefined;
-    grossCurrency?: string | undefined;
-    withholdingForeignAmount?: string | undefined;
-    withholdingDomesticAmount?: string | undefined;
-  };
-
-export type DividendAddInput = IncomeAddInput & { type: "dividend" };
-export type InterestAddInput = IncomeAddInput & { type: "interest" };
-export type FeeAddInput = AccountMoneyInput & { type: "fee" };
-
-export type EventAddInput =
-  | DepositAddInput
-  | WithdrawalAddInput
-  | TransferAddInput
-  | FxAddInput
-  | BuyAddInput
-  | SellAddInput
-  | DividendAddInput
-  | InterestAddInput
-  | FeeAddInput;
-
-type EditBase = {
-  type: Event["type"];
-  date?: string | undefined;
-  note?: string | undefined;
-  clearNote?: boolean | undefined;
-};
-
-type EditRateInput = RateInput;
-
-type EditAccountMoneyInput = EditBase &
-  EditRateInput & {
-    account?: string | undefined;
-    amount?: string | undefined;
-    currency?: string | undefined;
-  };
-
-export type DepositEditInput = EditAccountMoneyInput & { type: "deposit" };
-export type WithdrawalEditInput = EditAccountMoneyInput & { type: "withdrawal" };
-
-export type TransferEditInput = EditBase & {
-  type: "transfer";
-  from?: string | undefined;
-  to?: string | undefined;
-  amount?: string | undefined;
-  currency?: string | undefined;
-};
-
-export type FxEditInput = EditBase & {
-  type: "fx";
-  account?: string | undefined;
-  fromAmount?: string | undefined;
-  fromCurrency?: string | undefined;
-  toAmount?: string | undefined;
-  toCurrency?: string | undefined;
-  feeAmount?: string | undefined;
-  feeCurrency?: string | undefined;
-  clearFee?: boolean | undefined;
-};
-
-type TradeEditInput = EditBase &
-  EditRateInput & {
-    account?: string | undefined;
-    instrument?: string | undefined;
-    qty?: string | undefined;
-    priceAmount?: string | undefined;
-    priceCurrency?: string | undefined;
-    feeAmount?: string | undefined;
-    feeCurrency?: string | undefined;
-    clearFee?: boolean | undefined;
-  };
-
-export type BuyEditInput = TradeEditInput & { type: "buy" };
-export type SellEditInput = TradeEditInput & { type: "sell" };
-
-type IncomeEditInput = EditBase &
-  EditRateInput & {
-    account?: string | undefined;
-    instrument?: string | undefined;
-    grossAmount?: string | undefined;
-    grossCurrency?: string | undefined;
-    withholdingForeignAmount?: string | undefined;
-    withholdingDomesticAmount?: string | undefined;
-    clearWithholdingForeign?: boolean | undefined;
-    clearWithholdingDomestic?: boolean | undefined;
-  };
-
-export type DividendEditInput = IncomeEditInput & { type: "dividend" };
-export type InterestEditInput = IncomeEditInput & { type: "interest" };
-export type FeeEditInput = EditAccountMoneyInput & { type: "fee" };
-
-export type EventEditInput =
-  | DepositEditInput
-  | WithdrawalEditInput
-  | TransferEditInput
-  | FxEditInput
-  | BuyEditInput
-  | SellEditInput
-  | DividendEditInput
-  | InterestEditInput
-  | FeeEditInput;
+type Reference = { kind: "account" | "instrument"; id: string };
 
 export type HistoricalRateResolver = {
   resolveHistoricalEurRate(
@@ -201,14 +287,29 @@ export type HistoricalRateResolver = {
   ): Promise<EurRateResolution>;
 };
 
+export function parseAddInput(value: EventAddOptions): EventAddInput {
+  const parsed = AddInputSchema.safeParse(value);
+  if (!parsed.success) throw zodFailure("event input", parsed.error);
+  return parsed.data;
+}
+
+export function parseEditInput(value: EventEditOptions): EventEditInput {
+  const parsed = EditInputSchema.safeParse(value);
+  if (!parsed.success) throw zodFailure("event input", parsed.error);
+  return parsed.data;
+}
+
 export async function addEvent(
   store: FileBookStore,
-  input: EventAddInput,
+  input: EventAddOptions,
   json: boolean,
   generateId: () => string,
   rateResolver?: HistoricalRateResolver,
 ): Promise<void> {
-  const event = await buildEvent(input, generateId, rateResolver);
+  const parsedInput = parseAddInput(input);
+  const snapshot = requireResult(store.load());
+  validateReferences(snapshot, addReferences(parsedInput));
+  const event = await buildEvent(parsedInput, generateId, rateResolver);
   const saved = requireResult(store.appendEvent(event));
   writeSuccess(saved, json, `${saved.id} added on ${saved.date}: ${eventSummary(saved)}`);
 }
@@ -221,28 +322,31 @@ export function addEventFile(store: FileBookStore, path: string, json: boolean):
 
 export async function editEvent(
   store: FileBookStore,
-  input: EventEditInput,
+  input: EventEditOptions,
   id: string,
   json: boolean,
   rateResolver?: HistoricalRateResolver,
 ): Promise<void> {
-  if (!hasEditValues(input)) {
+  const parsedInput = parseEditInput(input);
+  const eventId = parseEventId(id);
+  if (!hasEditValues(parsedInput)) {
     throw validationFailure(
       "An event edit needs at least one mutable field.",
       "Provide a field to change or a clear flag.",
     );
   }
   const snapshot = requireResult(store.load());
-  const current = snapshot.events.find((event) => event.id === id);
-  if (current === undefined) throw notFoundFailure("event", id);
-  if (current.type !== input.type) {
+  const current = snapshot.events.find((event) => event.id === eventId);
+  if (current === undefined) throw notFoundFailure("event", eventId);
+  if (current.type !== parsedInput.type) {
     throw validationFailure(
-      `Event ${id} is a ${current.type}, not a ${input.type}.`,
+      `Event ${eventId} is a ${current.type}, not a ${parsedInput.type}.`,
       "Use the matching event edit command; changing type requires delete and add.",
     );
   }
-  const replacement = await buildReplacement(current, input, rateResolver);
-  const saved = requireResult(store.replaceEvent(id, replacement));
+  validateReferences(snapshot, editReferences(current, parsedInput));
+  const replacement = await buildReplacement(current, parsedInput, rateResolver);
+  const saved = requireResult(store.replaceEvent(eventId, replacement, current));
   writeSuccess(saved, json, `${saved.id} edited on ${saved.date}: ${eventSummary(saved)}`);
 }
 
@@ -262,11 +366,12 @@ async function buildEvent(
     case "withdrawal":
     case "fee": {
       const amount = requiredMoney(input.amount, input.currency, "--amount", "--currency");
+      const account = required(input.account, "--account");
       const rate = await resolveEurRate(amount.currency, base.date, input, rateResolver);
       return parseEvent({
         ...base,
         type: input.type,
-        account: required(input.account, "--account"),
+        account,
         amount,
         ...rate,
       });
@@ -295,85 +400,99 @@ async function buildEvent(
       });
     case "buy":
     case "sell": {
+      const account = required(input.account, "--account");
+      const instrument = required(input.instrument, "--instrument");
+      const qty = required(input.qty, "--qty");
       const price = requiredMoney(
         input.priceAmount,
         input.priceCurrency,
         "--price-amount",
         "--price-currency",
       );
+      const fee = optionalMoney(
+        input.feeAmount,
+        input.feeAmount === undefined ? undefined : (input.feeCurrency ?? input.priceCurrency),
+        "--fee-amount",
+        "--fee-currency",
+      );
       const rate = await resolveEurRate(price.currency, base.date, input, rateResolver);
-      return parseEvent({
+      const event = {
         ...base,
         type: input.type,
-        account: required(input.account, "--account"),
-        instrument: required(input.instrument, "--instrument"),
-        qty: required(input.qty, "--qty"),
+        account,
+        instrument,
+        qty,
         price,
-        fee: optionalMoney(
-          input.feeAmount,
-          input.feeAmount === undefined ? undefined : (input.feeCurrency ?? input.priceCurrency),
-          "--fee-amount",
-          "--fee-currency",
-        ),
-        ...rate,
-      });
+      };
+      if (fee !== undefined) Object.assign(event, { fee });
+      Object.assign(event, rate);
+      return parseEvent(event);
     }
     case "dividend": {
+      const account = required(input.account, "--account");
+      const instrument = required(input.instrument, "--instrument");
       const gross = requiredMoney(
         input.grossAmount,
         input.grossCurrency,
         "--gross-amount",
         "--gross-currency",
       );
+      const withholdingForeign = optionalMoney(
+        input.withholdingForeignAmount,
+        input.withholdingForeignAmount === undefined ? undefined : input.grossCurrency,
+        "--withholding-foreign-amount",
+        "--gross-currency",
+      );
+      const withholdingDomestic = optionalMoney(
+        input.withholdingDomesticAmount,
+        input.withholdingDomesticAmount === undefined ? undefined : input.grossCurrency,
+        "--withholding-domestic-amount",
+        "--gross-currency",
+      );
       const rate = await resolveEurRate(gross.currency, base.date, input, rateResolver);
-      return parseEvent({
+      const event = {
         ...base,
         type: input.type,
-        account: required(input.account, "--account"),
-        instrument: required(input.instrument, "--instrument"),
+        account,
+        instrument,
         gross,
-        withholdingForeign: optionalMoney(
-          input.withholdingForeignAmount,
-          input.withholdingForeignAmount === undefined ? undefined : input.grossCurrency,
-          "--withholding-foreign-amount",
-          "--gross-currency",
-        ),
-        withholdingDomestic: optionalMoney(
-          input.withholdingDomesticAmount,
-          input.withholdingDomesticAmount === undefined ? undefined : input.grossCurrency,
-          "--withholding-domestic-amount",
-          "--gross-currency",
-        ),
-        ...rate,
-      });
+      };
+      if (withholdingForeign !== undefined) Object.assign(event, { withholdingForeign });
+      if (withholdingDomestic !== undefined) Object.assign(event, { withholdingDomestic });
+      Object.assign(event, rate);
+      return parseEvent(event);
     }
     case "interest": {
+      const account = required(input.account, "--account");
       const gross = requiredMoney(
         input.grossAmount,
         input.grossCurrency,
         "--gross-amount",
         "--gross-currency",
       );
+      const withholdingForeign = optionalMoney(
+        input.withholdingForeignAmount,
+        input.withholdingForeignAmount === undefined ? undefined : input.grossCurrency,
+        "--withholding-foreign-amount",
+        "--gross-currency",
+      );
+      const withholdingDomestic = optionalMoney(
+        input.withholdingDomesticAmount,
+        input.withholdingDomesticAmount === undefined ? undefined : input.grossCurrency,
+        "--withholding-domestic-amount",
+        "--gross-currency",
+      );
       const rate = await resolveEurRate(gross.currency, base.date, input, rateResolver);
-      return parseEvent({
+      const event = {
         ...base,
         type: input.type,
-        account: required(input.account, "--account"),
+        account,
         gross,
-        withholdingForeign: optionalMoney(
-          input.withholdingForeignAmount,
-          input.withholdingForeignAmount === undefined ? undefined : input.grossCurrency,
-          "--withholding-foreign-amount",
-          "--gross-currency",
-        ),
-        withholdingDomestic: optionalMoney(
-          input.withholdingDomesticAmount,
-          input.withholdingDomesticAmount === undefined ? undefined : input.grossCurrency,
-          "--withholding-domestic-amount",
-          "--gross-currency",
-        ),
-        ...rate,
-      });
+      };
+      if (withholdingForeign !== undefined) Object.assign(event, { withholdingForeign });
+      if (withholdingDomestic !== undefined) Object.assign(event, { withholdingDomestic });
+      Object.assign(event, rate);
+      return parseEvent(event);
     }
   }
 }
@@ -428,9 +547,127 @@ function typeMismatch(actual: EventEditInput["type"], expected: Event["type"]): 
   );
 }
 
+function addReferences(input: EventAddInput): readonly Reference[] {
+  switch (input.type) {
+    case "deposit":
+    case "withdrawal":
+    case "fee":
+    case "fx":
+    case "interest":
+      return [{ kind: "account", id: input.account }];
+    case "transfer":
+      return [
+        { kind: "account", id: input.from },
+        { kind: "account", id: input.to },
+      ];
+    case "buy":
+    case "sell":
+    case "dividend":
+      return [
+        { kind: "account", id: input.account },
+        { kind: "instrument", id: input.instrument },
+      ];
+  }
+}
+
+function editReferences(current: Event, input: EventEditInput): readonly Reference[] {
+  switch (current.type) {
+    case "deposit":
+    case "withdrawal":
+    case "fee":
+      if (input.type !== current.type) return [];
+      return [{ kind: "account", id: input.account ?? current.account }];
+    case "transfer":
+      if (input.type !== current.type) return [];
+      return [
+        { kind: "account", id: input.from ?? current.from },
+        { kind: "account", id: input.to ?? current.to },
+      ];
+    case "fx":
+      if (input.type !== current.type) return [];
+      return [{ kind: "account", id: input.account ?? current.account }];
+    case "buy":
+    case "sell":
+      if (input.type !== current.type) return [];
+      return [
+        { kind: "account", id: input.account ?? current.account },
+        { kind: "instrument", id: input.instrument ?? current.instrument },
+      ];
+    case "dividend":
+      if (input.type !== current.type) return [];
+      return [
+        { kind: "account", id: input.account ?? current.account },
+        { kind: "instrument", id: input.instrument ?? current.instrument },
+      ];
+    case "interest":
+      if (input.type !== current.type) return [];
+      return [{ kind: "account", id: input.account ?? current.account }];
+  }
+}
+
+function validateReferences(
+  snapshot: { accounts: readonly { id: string }[]; instruments: readonly { id: string }[] },
+  references: readonly Reference[],
+): void {
+  for (const reference of references) {
+    const values = reference.kind === "account" ? snapshot.accounts : snapshot.instruments;
+    if (!values.some((value) => value.id === reference.id)) {
+      throw notFoundFailure(reference.kind, reference.id);
+    }
+  }
+}
+
+function validateOptionalMoneyPair(
+  amount: string | undefined,
+  currency: string | undefined,
+  context: z.RefinementCtx,
+): void {
+  const amountProvided = amount !== undefined;
+  const currencyProvided = currency !== undefined;
+  if (amountProvided === currencyProvided) return;
+  const missing = amountProvided ? "feeCurrency" : "feeAmount";
+  context.addIssue({
+    code: "custom",
+    path: [missing],
+    message: `The ${missing} value is required with its money pair`,
+  });
+}
+
+function validateRateOptions(input: RateInput, context: z.RefinementCtx): void {
+  if (input.provider !== undefined && input.fetchRate !== true) {
+    context.addIssue({
+      code: "custom",
+      path: ["provider"],
+      message: "--provider requires --fetch-rate",
+    });
+  }
+  if (input.eurPerUnit !== undefined && input.fetchRate === true) {
+    context.addIssue({
+      code: "custom",
+      path: ["fetchRate"],
+      message: "Use either --eur-per-unit or --fetch-rate",
+    });
+  }
+}
+
+function validateClearValue(
+  value: string | undefined,
+  clear: boolean | undefined,
+  context: z.RefinementCtx,
+  label: string,
+): void {
+  if (clear === true && value !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["clear"],
+      message: `A ${label} value cannot be used with its clear flag`,
+    });
+  }
+}
+
 async function buildAccountMoneyReplacement(
   current: Extract<Event, { type: "deposit" | "withdrawal" | "fee" }>,
-  input: DepositEditInput | WithdrawalEditInput | FeeEditInput,
+  input: AccountMoneyEditInput,
   base: EventBaseFields,
   rateResolver: HistoricalRateResolver | undefined,
 ): Promise<Event> {
@@ -478,7 +715,7 @@ function buildFxReplacement(
 
 async function buildTradeReplacement(
   current: Extract<Event, { type: "buy" | "sell" }>,
-  input: BuyEditInput | SellEditInput,
+  input: TradeEditInput,
   base: EventBaseFields,
   rateResolver: HistoricalRateResolver | undefined,
 ): Promise<Event> {
@@ -514,19 +751,11 @@ async function buildTradeReplacement(
 
 async function buildIncomeReplacement(
   current: Extract<Event, { type: "dividend" | "interest" }>,
-  input: DividendEditInput | InterestEditInput,
+  input: IncomeEditInput,
   base: EventBaseFields,
   rateResolver: HistoricalRateResolver | undefined,
 ): Promise<Event> {
   const gross = mergeMoney(current.gross, input.grossAmount, input.grossCurrency);
-  const rate = await resolveEditedRate(
-    gross.currency,
-    current.gross.currency,
-    current,
-    base.date,
-    input,
-    rateResolver,
-  );
   const foreign = mergeWithholding(
     current.withholdingForeign,
     input.withholdingForeignAmount,
@@ -540,6 +769,14 @@ async function buildIncomeReplacement(
     gross.currency,
     input.clearWithholdingDomestic,
     "--withholding-domestic-amount",
+  );
+  const rate = await resolveEditedRate(
+    gross.currency,
+    current.gross.currency,
+    current,
+    base.date,
+    input,
+    rateResolver,
   );
   const common = {
     ...base,
@@ -560,7 +797,7 @@ async function buildIncomeReplacement(
 function addBase(input: AddBase, generateId: () => string): EventBaseFields {
   const base: EventBaseFields = {
     id: input.id ?? generateId(),
-    date: required(input.date, "--date"),
+    date: input.date,
     source: input.source ?? "manual",
   };
   if (input.note !== undefined) base.note = input.note;
@@ -636,8 +873,15 @@ function mergeWithholding(
     );
   }
   if (clear === true) return undefined;
-  if (amount === undefined && current === undefined) return undefined;
-  return { amount: amount ?? current?.amount ?? required(undefined, amountFlag), currency };
+  if (amount !== undefined) return { amount, currency };
+  if (current === undefined) return undefined;
+  if (current.currency !== currency) {
+    throw validationFailure(
+      "Changing gross currency requires new withholding amounts or clear flags.",
+      `Provide ${amountFlag} or use its clear flag.`,
+    );
+  }
+  return current;
 }
 
 type RateBearingEvent = {
@@ -732,10 +976,9 @@ async function resolveEurRate(
       "Provide --eur-per-unit or configure a rate provider.",
     );
   }
-  const provider = parseProvider(input.provider);
   const result = await resolver.resolveHistoricalEurRate(
     { currency, date },
-    provider === undefined ? undefined : { provider },
+    input.provider === undefined ? undefined : { provider: input.provider },
   );
   if (!result.ok) {
     throw externalFailure(
@@ -751,17 +994,6 @@ async function resolveEurRate(
       retrievedAt: result.data.provenance.retrievedAt,
     },
   };
-}
-
-function parseProvider(value: string | undefined): ResolvePriceOptions["provider"] {
-  if (value === undefined) return undefined;
-  const parsed = ProviderIdSchema.safeParse(value);
-  if (!parsed.success)
-    throw validationFailure(
-      `Unknown provider: ${value}.`,
-      "Use a provider supported by the current build.",
-    );
-  return parsed.data;
 }
 
 function requiredMoney(
@@ -812,7 +1044,13 @@ function readEventFile(path: string): Event {
 
 function parseEvent(value: Parameters<typeof EventSchema.parse>[0]): Event {
   const parsed = EventSchema.safeParse(value);
-  if (!parsed.success) throw zodFailure("event", parsed.error);
+  if (!parsed.success) throw zodFailure("event", parsed.error, false);
+  return parsed.data;
+}
+
+function parseEventId(value: string): string {
+  const parsed = NonEmptyStringSchema.safeParse(value);
+  if (!parsed.success) throw validationFailure("Missing event ID.", "Provide an event ID.");
   return parsed.data;
 }
 
@@ -822,13 +1060,28 @@ function required(value: string | undefined, flag: string): string {
   return value;
 }
 
-function zodFailure(
-  location: string,
-  error: { issues: readonly { message: string }[] },
-): CliFailure {
+function zodFailure(location: string, error: z.ZodError, aggregateMissing = true): CliFailure {
+  const missing = aggregateMissing
+    ? [...new Set(error.issues.filter(isMissingIssue).map((issue) => issueFlag(issue.path)))]
+    : [];
+  if (missing.length > 0) {
+    return validationFailure(
+      `Missing required fields: ${missing.join(", ")}.`,
+      "Provide all required fields before retrying.",
+    );
+  }
   const issue = error.issues[0];
   const detail = issue === undefined ? "invalid value" : issue.message;
   return validationFailure(`Invalid ${location}: ${detail}.`, `Fix the ${location} input.`);
+}
+
+function isMissingIssue(issue: z.core.$ZodIssue): boolean {
+  return issue.code === "invalid_type" && issue.input === undefined;
+}
+
+function issueFlag(path: readonly PropertyKey[]): string {
+  const field = String(path.at(-1) ?? "field");
+  return `--${field.replace(/[A-Z]/gu, (letter) => `-${letter.toLowerCase()}`)}`;
 }
 
 function eventSummary(event: Event): string {

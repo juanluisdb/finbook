@@ -91,7 +91,7 @@ describe("write CLI", () => {
     expect(result.stderr).toBe("");
     expect(JSON.parse(result.stdout)).toMatchObject({
       ok: false,
-      error: { type: "validation", hint: expect.stringContaining("--account") },
+      error: { type: "validation", message: expect.stringContaining("--account") },
     });
   });
 

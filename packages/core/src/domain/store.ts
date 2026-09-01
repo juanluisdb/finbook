@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
   renameSync,
-  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -53,10 +53,7 @@ export class FileBookStore {
   }
 
   load(): Result<BookSnapshot> {
-    if (this.needsLockedPreparation()) {
-      return withBookLock(this.dataHome, () => this.loadUnlocked());
-    }
-    return this.loadUnlocked();
+    return withBookLock(this.dataHome, () => this.loadUnlocked());
   }
 
   appendAccount(account: Account): Result<void> {
@@ -73,7 +70,8 @@ export class FileBookStore {
           ),
         );
       }
-      this.writeJson(FILES.accounts, [...snapshot.data.accounts, parsed.data]);
+      const written = this.writeJson(FILES.accounts, [...snapshot.data.accounts, parsed.data]);
+      if (!written.ok) return fail(written.error);
       return succeed(undefined);
     });
   }
@@ -92,7 +90,11 @@ export class FileBookStore {
           ),
         );
       }
-      this.writeJson(FILES.instruments, [...snapshot.data.instruments, parsed.data]);
+      const written = this.writeJson(FILES.instruments, [
+        ...snapshot.data.instruments,
+        parsed.data,
+      ]);
+      if (!written.ok) return fail(written.error);
       return succeed(undefined);
     });
   }
@@ -113,21 +115,25 @@ export class FileBookStore {
       const events = [...snapshot.data.events, parsed.data];
       const replayed = this.validateCandidate(snapshot.data, events, "append", parsed.data.id);
       if (!replayed.ok) return fail(replayed.error);
-      this.writeEvents(events);
+      const written = this.writeEvents(events);
+      if (!written.ok) return fail(written.error);
       return succeed(parsed.data);
     });
   }
 
-  replaceEvent(id: string, replacement: Event): Result<Event> {
+  replaceEvent(id: string, replacement: Event, expected: Event): Result<Event> {
     const parsed = EventSchema.safeParse(replacement);
     if (!parsed.success) return fail(validationError(FILES.events, parsed.error));
+    const parsedExpected = EventSchema.safeParse(expected);
+    if (!parsedExpected.success) return fail(validationError(FILES.events, parsedExpected.error));
     return withBookLock(this.dataHome, () => {
       const snapshot = this.loadUnlocked();
       if (!snapshot.ok) return fail(snapshot.error);
       const index = snapshot.data.events.findIndex((event) => event.id === id);
-      if (index === -1) return fail(notFoundError("event", id));
+      if (index === -1) return fail(conflictError(id));
       const existing = snapshot.data.events[index];
       if (existing === undefined) return fail(notFoundError("event", id));
+      if (!isDeepStrictEqual(existing, parsedExpected.data)) return fail(conflictError(id));
       if (parsed.data.id !== id || parsed.data.type !== existing.type) {
         return fail(
           invariantError(
@@ -151,7 +157,8 @@ export class FileBookStore {
       events[index] = parsed.data;
       const replayed = this.validateCandidate(snapshot.data, events, "replace", id);
       if (!replayed.ok) return fail(replayed.error);
-      this.writeEvents(events);
+      const written = this.writeEvents(events);
+      if (!written.ok) return fail(written.error);
       return succeed(parsed.data);
     });
   }
@@ -167,7 +174,8 @@ export class FileBookStore {
       const events = snapshot.data.events.filter((_event, eventIndex) => eventIndex !== index);
       const replayed = this.validateCandidate(snapshot.data, events, "delete", id);
       if (!replayed.ok) return fail(replayed.error);
-      this.writeEvents(events);
+      const written = this.writeEvents(events);
+      if (!written.ok) return fail(written.error);
       return succeed(removed);
     });
   }
@@ -191,7 +199,8 @@ export class FileBookStore {
           ),
         );
       }
-      this.appendJsonLine(FILES.prices, parsed.data);
+      const written = this.appendJsonLine(FILES.prices, parsed.data);
+      if (!written.ok) return fail(written.error);
       return succeed(undefined);
     });
   }
@@ -202,7 +211,8 @@ export class FileBookStore {
     return withBookLock(this.dataHome, () => {
       const initialized = this.ensureInitialized();
       if (!initialized.ok) return fail(initialized.error);
-      this.appendJsonLine(FILES.fx, parsed.data);
+      const written = this.appendJsonLine(FILES.fx, parsed.data);
+      if (!written.ok) return fail(written.error);
       return succeed(undefined);
     });
   }
@@ -268,32 +278,22 @@ export class FileBookStore {
     return succeed(undefined);
   }
 
-  private needsLockedPreparation(): boolean {
-    try {
-      if (!existsSync(this.dataHome)) return true;
-      if (FILES_LIST.some((name) => !existsSync(join(this.dataHome, name)))) return true;
-      if (process.platform === "win32") return false;
-      if ((statSync(this.dataHome).mode & 0o777) !== 0o700) return true;
-      return FILES_LIST.some(
-        (name) => (statSync(join(this.dataHome, name)).mode & 0o777) !== 0o600,
-      );
-    } catch {
-      return true;
-    }
-  }
-
   private ensureInitialized(): Result<void> {
     try {
       mkdirSync(this.dataHome, { recursive: true, mode: 0o700 });
       this.setOwnerOnly(this.dataHome, 0o700);
-      this.ensureJsonFile(FILES.meta, { schemaVersion: CURRENT_SCHEMA_VERSION });
-      this.ensureJsonFile(FILES.accounts, []);
-      this.ensureJsonFile(FILES.instruments, []);
+      const meta = this.ensureJsonFile(FILES.meta, { schemaVersion: CURRENT_SCHEMA_VERSION });
+      if (!meta.ok) return fail(meta.error);
+      const accounts = this.ensureJsonFile(FILES.accounts, []);
+      if (!accounts.ok) return fail(accounts.error);
+      const instruments = this.ensureJsonFile(FILES.instruments, []);
+      if (!instruments.ok) return fail(instruments.error);
       this.ensureLineFile(FILES.events);
       this.ensureLineFile(FILES.prices);
       this.ensureLineFile(FILES.fx);
       return succeed(undefined);
     } catch (error) {
+      if (!(error instanceof Error) || !isFileSystemError(error)) throw error;
       return fail(
         storageException(
           this.dataHome,
@@ -303,13 +303,13 @@ export class FileBookStore {
     }
   }
 
-  private ensureJsonFile<T>(name: string, value: T): void {
+  private ensureJsonFile<T>(name: string, value: T): Result<void> {
     const path = join(this.dataHome, name);
     if (existsSync(path)) {
       this.setOwnerOnly(path);
-      return;
+      return succeed(undefined);
     }
-    this.writeJson(name, value);
+    return this.writeJson(name, value);
   }
 
   private ensureLineFile(name: string): void {
@@ -359,9 +359,13 @@ export class FileBookStore {
     }
   }
 
-  private writeJson<T>(name: string, value: T): void {
+  private writeJson<T>(name: string, value: T): Result<void> {
     const target = join(this.dataHome, name);
     const temporary = join(this.dataHome, `.${basename(name)}.${process.pid}.${randomUUID()}.tmp`);
+    let renamed = false;
+    let failure: DomainError | undefined;
+    let thrown = false;
+    let thrownError: unknown;
     try {
       writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, {
         encoding: "utf8",
@@ -369,46 +373,94 @@ export class FileBookStore {
       });
       this.setOwnerOnly(temporary);
       renameSync(temporary, target);
+      renamed = true;
       this.setOwnerOnly(target);
-    } finally {
-      if (existsSync(temporary)) unlinkSync(temporary);
+    } catch (error) {
+      if (!(error instanceof Error) || !isFileSystemError(error)) {
+        thrown = true;
+        thrownError = error;
+      } else {
+        failure = storageWriteError(name, error.message, renamed);
+      }
     }
+    try {
+      if (existsSync(temporary)) unlinkSync(temporary);
+    } catch (error) {
+      if (!(error instanceof Error) || !isFileSystemError(error)) {
+        if (!thrown) {
+          thrown = true;
+          thrownError = error;
+        }
+      } else if (failure === undefined) {
+        failure = storageWriteError(name, error.message, renamed);
+      }
+    }
+    if (thrown) throw thrownError;
+    return failure === undefined ? succeed(undefined) : fail(failure);
   }
 
-  private writeEvents(events: readonly Event[]): void {
+  private writeEvents(events: readonly Event[]): Result<void> {
     const target = join(this.dataHome, FILES.events);
     const temporary = join(
       this.dataHome,
       `.${basename(FILES.events)}.${process.pid}.${randomUUID()}.tmp`,
     );
+    let renamed = false;
+    let failure: DomainError | undefined;
+    let thrown = false;
+    let thrownError: unknown;
     try {
       const content =
         events.length === 0 ? "" : `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
       writeFileSync(temporary, content, { encoding: "utf8", mode: 0o600 });
       this.setOwnerOnly(temporary, 0o600);
       renameSync(temporary, target);
+      renamed = true;
       this.setOwnerOnly(target, 0o600);
-    } finally {
-      if (existsSync(temporary)) unlinkSync(temporary);
+    } catch (error) {
+      if (!(error instanceof Error) || !isFileSystemError(error)) {
+        thrown = true;
+        thrownError = error;
+      } else {
+        failure = storageWriteError(FILES.events, error.message, renamed);
+      }
     }
+    try {
+      if (existsSync(temporary)) unlinkSync(temporary);
+    } catch (error) {
+      if (!(error instanceof Error) || !isFileSystemError(error)) {
+        if (!thrown) {
+          thrown = true;
+          thrownError = error;
+        }
+      } else if (failure === undefined) {
+        failure = storageWriteError(FILES.events, error.message, renamed);
+      }
+    }
+    if (thrown) throw thrownError;
+    return failure === undefined ? succeed(undefined) : fail(failure);
   }
 
-  private appendJsonLine<T>(name: string, value: T): void {
+  private appendJsonLine<T>(name: string, value: T): Result<void> {
     const path = join(this.dataHome, name);
-    writeFileSync(path, `${JSON.stringify(value)}\n`, {
-      encoding: "utf8",
-      flag: "a",
-      mode: 0o600,
-    });
-    this.setOwnerOnly(path);
+    try {
+      writeFileSync(path, `${JSON.stringify(value)}\n`, {
+        encoding: "utf8",
+        flag: "a",
+        mode: 0o600,
+      });
+      this.setOwnerOnly(path);
+      return succeed(undefined);
+    } catch (error) {
+      if (!(error instanceof Error) || !isFileSystemError(error)) throw error;
+      return fail(storageWriteError(name, error.message, true));
+    }
   }
 
   private setOwnerOnly(path: string, mode = 0o600): void {
     if (process.platform !== "win32") chmodSync(path, mode);
   }
 }
-
-const FILES_LIST = Object.values(FILES);
 
 function duplicateIdError<T extends { id: string }>(
   kind: string,
@@ -475,6 +527,16 @@ function storageException(location: string, detail: string): DomainError {
   return storageError(`Could not access ${location}: ${detail}.`);
 }
 
+function storageWriteError(
+  location: string,
+  detail: string,
+  mayHaveCommitted: boolean,
+): DomainError {
+  return storageError(
+    `Could not write ${location}: ${detail}; ${mayHaveCommitted ? "the mutation may have committed" : "no changes were written"}.`,
+  );
+}
+
 function mutationError(
   mutation: "append" | "replace" | "delete",
   targetId: string,
@@ -505,10 +567,23 @@ function invariantError(message: string, hint: string): DomainError {
   return { type: "invariant", message, hint };
 }
 
+function conflictError(id: string): DomainError {
+  return {
+    type: "conflict",
+    message: `Event ${id} changed while preparing this edit.`,
+    hint: "Reload the event and retry the edit.",
+    details: { eventId: id },
+  };
+}
+
 function notFoundError(kind: string, id: string): DomainError {
   return {
     type: "not-found",
     message: `Unknown ${kind} ID: ${id}.`,
     hint: `Add or select an existing ${kind}.`,
   };
+}
+
+function isFileSystemError(error: Error): error is NodeJS.ErrnoException {
+  return "code" in error;
 }

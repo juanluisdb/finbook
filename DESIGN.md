@@ -306,7 +306,7 @@ $FINBOOK_HOME/          # default ~/.finbook
 - Inspectable files. Backup = copy this folder.
 - Never commit this folder. Never write the book into the git checkout.
 - `prices.jsonl` and `fx.jsonl` are append-only. For a repeated price or FX key at the same date, the last appended record wins.
-- `events.jsonl` preserves stable line order and is rewritten only by a validated add, edit, or delete through the local mutation boundary. Failed corrections leave its bytes unchanged.
+- `events.jsonl` preserves stable line order and is rewritten only by a validated add, edit, or delete through the local mutation boundary. Validation, not-found, and domain rejection leave its bytes unchanged; a post-commit filesystem failure explicitly reports that the mutation may have committed.
 - Event `id` is unique within the book. `source` + `externalId` is also unique when `externalId` is present (parser retries).
 - A corrupt JSONL line fails that line and identifies its file and line number; do not silently skip.
 - File mode: owner-only where the OS allows (`0600`).
@@ -321,7 +321,7 @@ Override `FINBOOK_HOME` for tests (temp dir) and if the owner later keeps the fo
 
 ## 8. CLI
 
-Agent-friendly. Noun → verb. **No prompts.** Every command accepts `--json`. Data on stdout, noise on stderr. Missing required flags → fail fast, exit 2, list what is missing.
+Agent-friendly. Noun → verb. **No prompts.** Every command accepts `--json`. Data on stdout, noise on stderr. Missing required flags → fail fast, exit 2, list all missing fields.
 
 ```
 finbook doctor
@@ -351,9 +351,11 @@ Human tables by default. JSON envelope is stable (additive only):
 
 Monetary fields in `data` use `Money` (`amount` is a decimal string). Quantities, rates, and weights are decimal strings; counts may be integers. A `null` EUR total means the corresponding value is incomplete under §4.5. Human tables may format these values for readability.
 
-Exit codes: `0` success (including empty lists), `1` external/provider failure or unexpected bug, `2` validation, `3` not found.
+Exit codes: `0` success (including empty lists), `1` external/provider failure or unexpected bug, `2` validation or concurrent-edit conflict, `3` not found.
 
-Each event type has its own legal flags; an irrelevant flag is a validation error. `--file` contains one canonical event object. Typed and file-based event writes call the same core mutation boundary, which loads the latest book, validates uniqueness, replays the complete candidate, and commits only a valid result.
+Each event type has its own legal flags; an irrelevant flag is a validation error. Required fields are marked in typed-command help and reported together when omitted. `--file` contains one canonical event object and cannot be combined with a typed event. Typed and file-based event writes call the same core mutation boundary, which loads the latest book, validates uniqueness, replays the complete candidate, and commits only a valid result.
+
+An event edit reads its target before any rate fetch and supplies that version to the replacement boundary. If another process changes or deletes the target before the replacement commits, the edit returns a conflict with exit code `2`; reload the event and retry.
 
 `doctor`: schema version, event count, hole count, data path. Works even if the book is empty. Does not dump holdings unless asked.
 
@@ -489,7 +491,8 @@ Dependency strategy:
 | P6 | Direct event append of an unknown reference, insufficient cash, or oversell | Full candidate replay rejects it; the event file is unchanged. |
 | P7 | Edit a funding buy below a later sale, or delete required funding | The blocking event is identified and the original bytes remain unchanged. |
 | P8 | Valid replacement or independent deletion | The complete JSONL candidate is atomically committed; identity, remaining order, and reload/replay are preserved. |
-| P9 | Two concurrent 75 EUR withdrawals from 100 EUR, plus an existing permissive data directory | At most one withdrawal commits; replay remains valid, and the directory is repaired to `0700` with data files at `0600` where supported. |
+| P9 | Two concurrent 75 EUR withdrawals from 100 EUR | At most one withdrawal commits; the other reports an expected lock or domain failure, and replay remains valid. |
+| P10 | An existing permissive data directory | A normal operation repairs the directory to `0700` with data files at `0600` where supported. |
 
 ### CLI cases
 

@@ -153,7 +153,7 @@ export function createProgram(
   addJsonOption(instrumentGet);
   instrumentGet.action((id, _options, command) => getInstrument(store, id, jsonMode(command)));
 
-  const event = program.command("event").description("inspect events");
+  const event = program.command("event").description("manage events");
   registerEventCommands(event, store, generateId, marketDataFactory);
   const eventList = event.command("list").description("list events");
   eventList

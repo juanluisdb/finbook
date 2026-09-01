@@ -91,12 +91,7 @@ export class MarketDataConfigStore {
     return withBookLock(this.dataHome, () => {
       const current = this.loadUnlocked();
       if (!current.ok) return fail(current.error);
-      let next: MarketDataConfig;
-      try {
-        next = transform(current.data);
-      } catch (error) {
-        return fail(storageError(error instanceof Error ? error.message : "unknown config error"));
-      }
+      const next = transform(current.data);
       const parsed = MarketDataConfigSchema.safeParse(next);
       if (!parsed.success) return fail(validationError(parsed.error.message));
       const saved = this.saveUnlocked(parsed.data);

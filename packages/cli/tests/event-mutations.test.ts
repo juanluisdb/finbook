@@ -271,6 +271,84 @@ describe("typed event CLI", () => {
     });
   });
 
+  it("rejects --file combined with a typed event in either argument order", () => {
+    const dataHome = temporaryHome();
+    seedBook(dataHome);
+    const path = join(dataHome, "event.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        id: "file-event",
+        date: "2026-03-01",
+        source: "manual",
+        type: "deposit",
+        account: "ib",
+        amount: { amount: "5", currency: "EUR" },
+        eurPerUnit: "1",
+      }),
+    );
+    const before = readFileSync(join(dataHome, "events.jsonl"), "utf8");
+    const typed = [
+      "deposit",
+      "--id",
+      "typed-event",
+      "--date",
+      "2026-03-01",
+      "--account",
+      "ib",
+      "--amount",
+      "5",
+      "--currency",
+      "EUR",
+      "--eur-per-unit",
+      "1",
+      "--json",
+    ];
+
+    const beforeType = runCli(dataHome, ["event", "add", "--file", path, ...typed]);
+    const afterType = runCli(dataHome, [
+      "event",
+      "add",
+      ...typed.slice(0, 1),
+      "--file",
+      path,
+      ...typed.slice(1),
+    ]);
+
+    expect(beforeType.status).toBe(2);
+    expect(afterType.status).toBe(2);
+    expect(JSON.parse(beforeType.stdout)).toMatchObject({
+      ok: false,
+      error: { type: "validation" },
+    });
+    expect(JSON.parse(afterType.stdout)).toMatchObject({
+      ok: false,
+      error: { type: "validation" },
+    });
+    expect(readFileSync(join(dataHome, "events.jsonl"), "utf8")).toBe(before);
+  });
+
+  it("marks required typed fields in help and reports all missing fields", () => {
+    const dataHome = temporaryHome();
+    const help = runCli(dataHome, ["event", "add", "deposit", "--help"]);
+    const missing = runCli(dataHome, ["event", "add", "deposit", "--json"]);
+
+    expect(help.status).toBe(0);
+    expect(help.stdout).toContain("required");
+    expect(missing.status).toBe(2);
+    expect(JSON.parse(missing.stdout)).toMatchObject({
+      ok: false,
+      error: {
+        type: "validation",
+        message: expect.stringContaining("--date"),
+      },
+    });
+    const message = JSON.parse(missing.stdout).error.message;
+    expect(message).toContain("--account");
+    expect(message).toContain("--amount");
+    expect(message).toContain("--currency");
+  });
+
   it("edits only supplied fields and explicitly clears a fee", () => {
     const dataHome = temporaryHome();
     seedBook(dataHome);
@@ -548,13 +626,29 @@ describe("typed event CLI", () => {
       runCliAsync(dataHome, withdrawal("withdrawal-two")),
     ]);
 
-    expect(results.filter((result) => result.status === 0)).toHaveLength(1);
-    expect(results.filter((result) => result.status !== 0)).toHaveLength(1);
-    expect(results.find((result) => result.status !== 0)).toMatchObject({ status: 1 });
+    const successful = results.filter((result) => result.status === 0);
+    const failed = results.filter((result) => result.status !== 0);
+    expect(successful).toHaveLength(1);
+    expect(failed).toHaveLength(1);
+    const loser = failed[0];
+    expect(loser?.status === 1 || loser?.status === 2).toBe(true);
+    expect(JSON.parse(loser?.stdout ?? "")).toMatchObject({
+      ok: false,
+      error: {
+        type: expect.stringMatching(/^(storage|invariant)$/u),
+      },
+    });
+    const winnerId = successful[0] === undefined ? "" : JSON.parse(successful[0].stdout).data.id;
     const events = runJson(dataHome, ["event", "list"]);
+    expect(events.data.map((event: { id: string }) => event.id)).toEqual(["deposit-eur", winnerId]);
     expect(
       events.data.filter((event: { type: string }) => event.type === "withdrawal"),
     ).toHaveLength(1);
-    expect(runCli(dataHome, ["show", "glance", "--as-of", "2026-03-02", "--json"]).status).toBe(0);
+    const glance = runCli(dataHome, ["show", "glance", "--as-of", "2026-03-02", "--json"]);
+    expect(glance.status).toBe(0);
+    expect(JSON.parse(glance.stdout)).toMatchObject({
+      ok: true,
+      data: { cash: [{ currency: "EUR", balance: { amount: "25" } }] },
+    });
   });
 });
