@@ -4,15 +4,8 @@ import {
   FileBookStore,
   getGlance,
   getPositions,
-  type Account,
   type BookSnapshot,
-  type Breakdown,
   type Event,
-  type FxStamp,
-  type Glance,
-  type Instrument,
-  type PositionsResult,
-  type PriceStamp,
 } from "@finbook/core";
 import { Command } from "commander";
 import {
@@ -34,15 +27,26 @@ import {
 } from "./config.js";
 import { requireDate } from "./dates.js";
 import {
+  CliFailure,
   externalFailure,
   notFoundFailure,
   requireResult,
   type ExternalFailureDetails,
   validationFailure,
 } from "./errors.js";
-import { createDoctor, type DoctorSummary } from "./doctor.js";
+import { doctorError, inspectDoctor } from "./doctor.js";
 import { registerEventCommands } from "./event-commands.js";
-import { formatMoney, formatRows, writeSuccess } from "./output.js";
+import {
+  renderAccounts,
+  renderDoctor,
+  renderEvents,
+  renderFx,
+  renderGlance,
+  renderInstruments,
+  renderPositions,
+  renderPrices,
+} from "./human-output.js";
+import { writeSuccess } from "./output.js";
 import { addAccount, addInstrument, setFx, setPrice } from "./writes.js";
 
 export function createProgram(
@@ -67,7 +71,9 @@ export function createProgram(
 
   const doctor = program.command("doctor").description("report book health");
   addJsonOption(doctor);
-  doctor.action((_options, command) => showDoctor(store, jsonMode(command), defaultDate));
+  doctor.action((_options, command) =>
+    showDoctor(store, marketDataConfig, jsonMode(command), defaultDate),
+  );
 
   const config = program.command("config").description("configure market-data sources");
   const configShow = config.command("show").description("show non-secret configuration");
@@ -241,11 +247,18 @@ function loadSnapshot(store: FileBookStore): BookSnapshot {
   return requireResult(store.load());
 }
 
-function showDoctor(store: FileBookStore, json: boolean, defaultDate: string): void {
-  const snapshot = loadSnapshot(store);
-  const glance = requireResult(getGlance(snapshot, defaultDate));
-  const data = createDoctor(store.dataHome, snapshot.events.length, glance.holes.length);
-  writeSuccess(data, json, renderDoctor(data));
+function showDoctor(
+  store: FileBookStore,
+  marketDataConfig: MarketDataConfigStore,
+  json: boolean,
+  defaultDate: string,
+): void {
+  const report = inspectDoctor(store, marketDataConfig, defaultDate);
+  if (report.status === "error") {
+    if (!json) writeSuccess(report, false, renderDoctor(report));
+    throw new CliFailure(doctorError(report));
+  }
+  writeSuccess(report, json, renderDoctor(report));
 }
 
 function listAccounts(store: FileBookStore, json: boolean): void {
@@ -446,121 +459,4 @@ function eventBelongsToAccount(event: Event, accountId: string): boolean {
   return event.type === "transfer"
     ? event.from === accountId || event.to === accountId
     : event.account === accountId;
-}
-
-function renderDoctor(data: DoctorSummary): string {
-  return formatRows(
-    ["FIELD", "VALUE"],
-    [
-      ["schema version", String(data.schemaVersion)],
-      ["events", String(data.eventCount)],
-      ["holes", String(data.holeCount)],
-      ["data path", data.dataPath],
-    ],
-  );
-}
-
-function renderAccounts(accounts: readonly Account[]): string {
-  return formatRows(
-    ["ID", "NAME", "PLATFORM", "COUNTRY", "CUSTODIAL"],
-    accounts.map((account) => [
-      account.id,
-      account.name,
-      account.platform,
-      account.country,
-      account.custodial,
-    ]),
-  );
-}
-
-function renderInstruments(instruments: readonly Instrument[]): string {
-  return formatRows(
-    ["ID", "NAME", "TYPE", "QUOTE", "ISIN"],
-    instruments.map((instrument) => [
-      instrument.id,
-      instrument.name,
-      instrument.type,
-      instrument.quoteCurrency,
-      instrument.isin ?? "",
-    ]),
-  );
-}
-
-function renderEvents(events: readonly Event[]): string {
-  return formatRows(
-    ["DATE", "TYPE", "ID", "ACCOUNT"],
-    events.map((event) => [event.date, event.type, event.id, eventAccount(event)]),
-  );
-}
-
-function renderPrices(prices: readonly PriceStamp[]): string {
-  return formatRows(
-    ["AS OF", "INSTRUMENT", "PRICE"],
-    prices.map((stamp) => [stamp.asOf, stamp.instrument, formatMoney(stamp.price)]),
-  );
-}
-
-function renderFx(stamps: readonly FxStamp[]): string {
-  return formatRows(
-    ["AS OF", "PAIR", "RATE"],
-    stamps.map((stamp) => [stamp.asOf, stamp.pair, stamp.rate]),
-  );
-}
-
-function renderGlance(glance: Glance): string {
-  return [
-    `as of: ${glance.asOf}`,
-    `total: ${formatMoney(glance.totalEur)}`,
-    `contributed: ${formatMoney(glance.contributedEur)}`,
-    `pnl: ${formatMoney(glance.pnlEur)}`,
-    `holes: ${String(glance.holes.length)}`,
-    "",
-    "by platform",
-    formatBreakdowns(glance.byPlatform),
-    "",
-    "by asset type",
-    formatBreakdowns(glance.byAssetType),
-    "",
-    "by currency",
-    formatBreakdowns(glance.byCurrency),
-  ].join("\n");
-}
-
-function renderPositions(result: PositionsResult): string {
-  return [
-    `as of: ${result.asOf}`,
-    "positions",
-    formatRows(
-      ["ACCOUNT", "INSTRUMENT", "QUANTITY", "COST", "VALUE EUR"],
-      result.positions.map((position) => [
-        position.account,
-        position.instrument,
-        position.quantity,
-        formatMoney(position.cost),
-        formatMoney(position.valueEur),
-      ]),
-    ),
-    "",
-    "cash",
-    formatRows(
-      ["ACCOUNT", "CURRENCY", "BALANCE", "VALUE EUR"],
-      result.cash.map((entry) => [
-        entry.account,
-        entry.currency,
-        formatMoney(entry.balance),
-        formatMoney(entry.valueEur),
-      ]),
-    ),
-  ].join("\n");
-}
-
-function formatBreakdowns(rows: readonly Breakdown[]): string {
-  return formatRows(
-    ["KEY", "VALUE EUR", "WEIGHT"],
-    rows.map((row) => [row.key, formatMoney(row.valueEur), row.weight ?? "unknown"]),
-  );
-}
-
-function eventAccount(event: Event): string {
-  return event.type === "transfer" ? `${event.from} → ${event.to}` : event.account;
 }

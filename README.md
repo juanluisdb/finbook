@@ -41,6 +41,15 @@ With all requested providers available, the first command exits `0` and returns 
 
 Fetched prices and FX marks are cached one observation at a time. If a command stops part-way through a batch, rerunning it naturally reuses the successful cached marks.
 
+When a human glance or positions view is incomplete, it still shows the usable partial result and lists every missing observation with both a manual command and the matching `--fetch` command. For example:
+
+```text
+missing data
+- FX USD/EUR as of 2026-08-05
+  add: finbook fx set --pair USD/EUR --rate <decimal> --as-of 2026-08-05
+  or:  finbook show glance --as-of 2026-08-05 --fetch
+```
+
 Provider configuration is non-secret:
 
 ```sh
@@ -58,6 +67,19 @@ export FINBOOK_COINGECKO_DEMO_API_KEY=...
 The CLI is non-interactive. Use `--json` for the stable `{ ok, data }` or `{ ok, error }` envelope. Monetary values are decimal strings inside `Money` objects.
 
 Book data belongs in `$FINBOOK_HOME` (default `~/.finbook`), never in this checkout. Use a temporary directory for tests and examples.
+
+## Checking book health
+
+`finbook doctor` is an offline, read-only inspection of the local book:
+
+```sh
+finbook doctor
+finbook doctor --json
+```
+
+It validates stored schemas, replays the complete event ledger, checks market-data configuration, permissions, lock ownership, and valuation completeness. A healthy or merely incomplete/busy book exits `0`; warnings remain visible in the report. Corrupt data, invalid replay, unsafe permissions, or uncertain lock ownership exit `1`, with the full report under `error.details.report` in JSON mode.
+
+Doctor does not initialize a missing book, fetch data, repair permissions, reclaim locks, or expose event payloads and provider credentials.
 
 ## Correcting events
 

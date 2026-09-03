@@ -1,4 +1,12 @@
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -29,6 +37,27 @@ function temporaryHome(): string {
 }
 
 describe("market-data configuration", () => {
+  it("inspects absent configuration without creating it", () => {
+    const store = new MarketDataConfigStore(temporaryHome());
+    const path = join(store.dataHome, "market-data.json");
+
+    expect(store.inspect()).toMatchObject({
+      ok: true,
+      data: { exists: false, config: { disabledProviders: [], routes: {}, bindings: [] } },
+    });
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it("rejects invalid configuration during inspection without rewriting it", () => {
+    const store = new MarketDataConfigStore(temporaryHome());
+    const path = join(store.dataHome, "market-data.json");
+    const before = `${JSON.stringify({ routes: { "price:stock": ["ecb"] } })}\n`;
+    writeFileSync(path, before, { mode: 0o600 });
+
+    expect(store.inspect()).toMatchObject({ ok: false, error: { type: "validation" } });
+    expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
   it("provides deterministic routes without a config file", () => {
     expect(defaultRoute("price:stock")).toEqual(["yahoo"]);
     expect(defaultRoute("price:etf")).toEqual(["yahoo"]);

@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -72,6 +73,16 @@ function seedBook(store: FileBookStore): void {
 }
 
 describe("FileBookStore", () => {
+  it("inspects a missing book without initializing it", () => {
+    const root = mkdtempSync(join(tmpdir(), "finbook-inspect-"));
+    temporaryDirectories.push(root);
+    const dataHome = join(root, "missing");
+    const store = new FileBookStore(dataHome);
+
+    expect(store.inspect()).toEqual({ ok: true, data: { initialized: false } });
+    expect(existsSync(dataHome)).toBe(false);
+  });
+
   it("initializes an empty book and reloads appended data", () => {
     const store = temporaryStore();
     expect(loaded(store)).toEqual({
@@ -521,6 +532,55 @@ describe("FileBookStore", () => {
     expect(result).toMatchObject({ ok: false, error: { type: "storage" } });
     if (result.ok) throw new Error("Expected corrupt JSONL to fail");
     expect(result.error.message).toContain("events.jsonl:2");
+  });
+
+  it("inspects corrupt JSONL without changing its bytes", () => {
+    const store = temporaryStore();
+    expect(store.load().ok).toBe(true);
+    const eventPath = join(store.dataHome, "events.jsonl");
+    writeFileSync(eventPath, `${JSON.stringify(event)}\nnot-json\n`);
+    const before = readFileSync(eventPath, "utf8");
+
+    const result = store.inspect();
+
+    expect(result).toMatchObject({ ok: false, error: { type: "storage" } });
+    if (result.ok) throw new Error("Expected corrupt JSONL to fail inspection");
+    expect(result.error.message).toContain("events.jsonl:2");
+    expect(readFileSync(eventPath, "utf8")).toBe(before);
+  });
+
+  it("reports a replay failure while preserving a parseable ledger", () => {
+    const store = temporaryStore();
+    seedBook(store);
+    const invalidEvent = EventSchema.parse({
+      id: "buy-without-cash",
+      date: "2026-03-01",
+      source: "manual",
+      type: "buy",
+      account: "ib",
+      instrument: "HROW",
+      qty: "1",
+      price: { amount: "10", currency: "USD" },
+      eurPerUnit: "0.9",
+    });
+    const eventPath = join(store.dataHome, "events.jsonl");
+    writeFileSync(eventPath, `${JSON.stringify(invalidEvent)}\n`);
+    const before = readFileSync(eventPath, "utf8");
+
+    const result = store.inspect();
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        initialized: true,
+        schemaVersion: 1,
+        replay: {
+          ok: false,
+          error: { message: expect.stringContaining("buy-without-cash") },
+        },
+      },
+    });
+    expect(readFileSync(eventPath, "utf8")).toBe(before);
   });
 
   it("sets owner-only file modes where the filesystem supports them", () => {

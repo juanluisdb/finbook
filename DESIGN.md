@@ -343,7 +343,7 @@ finbook show glance [--as-of] [--fetch]
 finbook show positions [--as-of] [--fetch]
 ```
 
-Human tables by default. JSON envelope is stable (additive only):
+Human tables by default. Event tables include a compact type-specific transaction summary. Glance and positions always show their resolved `asOf`; incomplete views list every valuation hole after the partial result with exact `price set`/`fx set` and matching `show ... --fetch` remedies. JSON event and view shapes are unchanged. The JSON envelope is stable (additive only):
 
 ```ts
 { ok: true, data: T } | { ok: false, error: { type: string, message: string, hint: string, details?: unknown } }
@@ -357,7 +357,7 @@ Each event type has its own legal flags; an irrelevant flag is a validation erro
 
 An event edit reads its target before any rate fetch and supplies that version to the replacement boundary. If another process changes or deletes the target before the replacement commits, the edit returns a conflict with exit code `2`; reload the event and retry.
 
-`doctor`: schema version, event count, hole count, data path. Works even if the book is empty. Does not dump holdings unless asked.
+`doctor` is an offline, read-only inspection. It reports overall `ok`, `warning`, or `error` status plus named `book`, `schema`, `replay`, `market-config`, `permissions`, `lock`, and `valuation` checks. A missing home is a valid uninitialized state and remains absent. Valuation holes and active or definitely stale same-host locks are warnings with exit `0`; malformed data, failed replay, unsafe permissions, or uncertain lock ownership are errors with exit `1`. JSON errors retain the complete report under `error.details.report`. Doctor never initializes, repairs, unlocks, changes permissions, fetches, or includes event payloads or credentials.
 
 `--fetch` is the explicit visualization network path. It fetches only the marks needed by the requested view and caches each successful mark immediately. A latest request (an omitted or current-date view) always calls its provider; historical requests reuse any valid cached mark with `asOf <= requested asOf`. It never changes events.
 
@@ -392,6 +392,7 @@ finbook/
 - Default routing is deterministic: stocks/ETFs/funds → Yahoo, crypto → CoinGecko, fiat FX/rates → ECB. One capability registry validates defaults, overrides, bindings, disabled state, and explicit pins. Config can disable providers, override route order, or bind one local instrument/currency to one provider identifier.
 - A default route may fall back after a bounded retry; an explicit provider selection is pinned. Ambiguous identifiers fail rather than guess.
 - Fetched marks are appended one at a time to the existing JSONL cache. A stopped historical batch resumes from successful records already persisted; latest fetches intentionally call providers again.
+- Doctor uses read-only book, lock, and market-config inspection paths that reuse the production schemas, replay, and lock classification without acquiring or reclaiming a lock.
 - **Do not add Effect** for this boundary. Keep the existing `Result` model and use Ky’s HTTP retry behavior; Effect remains a future option if the application becomes a larger workflow runtime.
 
 Clock and ID generation are injected (or passed in) so tests do not freeze global time.
@@ -493,12 +494,13 @@ Dependency strategy:
 | P8 | Valid replacement or independent deletion | The complete JSONL candidate is atomically committed; identity, remaining order, and reload/replay are preserved. |
 | P9 | Two concurrent 75 EUR withdrawals from 100 EUR | At most one withdrawal commits; the other reports an expected lock or domain failure, and replay remains valid. |
 | P10 | An existing permissive data directory | A normal operation repairs the directory to `0700` with data files at `0600` where supported. |
+| P11 | Read-only inspection of a missing, corrupt, or replay-invalid book | Reports the state through the production parsers/replay and leaves paths and bytes unchanged. |
 
 ### CLI cases
 
 | ID | Input | Observable outcome |
 |---|---|---|
-| C1 | Empty `FINBOOK_HOME`; run `doctor` | Succeeds and reports schema version, zero event count, zero holes, and data path without dumping holdings. |
+| C1 | Missing `FINBOOK_HOME`; run `doctor` | Exits 0, reports an uninitialized book with zero events/holes, and creates nothing. |
 | C2 | Missing required `--account` with `--json` | Exit 2; stdout contains the stable `ok: false` envelope and `hint` names the missing flag. |
 | C3 | Unknown account/instrument/event ID | Exit 3 with a not-found error. |
 | C4 | The same command supplied by flags and by `--file` | Both produce the same canonical Zod input and core result. |
@@ -508,6 +510,9 @@ Dependency strategy:
 | C8 | Run the CLI under an unsupported Node major | Fails loudly before doing work. |
 | C9 | Supply an irrelevant flag to a typed event command | Exit 2, name the flag, and append nothing. |
 | C10 | Edit or delete through the typed correction commands | Omitted fields are retained, clear flags are explicit, dependent corrections fail safely, and successful delete returns the canonical removed event. |
+| C11 | List all event families in human mode | Every row has a compact type-specific summary; JSON event shapes are unchanged. |
+| C12 | Show an incomplete glance or positions view | Human output includes the resolved date, every hole, and exact manual/fetch remedies; a non-fetching view still exits 0. |
+| C13 | Doctor an incomplete, locked, insecure, corrupt, or replay-invalid book | Warnings exit 0; hard failures exit 1 with the report in the JSON error envelope; every case is offline, redacted, and byte-preserving. |
 
 Do **not** test FIFO tax matching, V0282-22, 720/721 obligations, broker parsing, live prices, or scheduler behavior in v1.
 

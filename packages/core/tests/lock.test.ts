@@ -11,7 +11,7 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { fail, succeed, withBookLock, type LockOwner } from "../src/index.js";
+import { fail, inspectBookLock, succeed, withBookLock, type LockOwner } from "../src/index.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -37,6 +37,49 @@ function writeOwner(dataHome: string, owner: LockOwner): void {
 }
 
 describe("book lock", () => {
+  it("inspects lock ownership without exposing the token or changing the lock", () => {
+    const dataHome = temporaryHome();
+    writeOwner(dataHome, {
+      pid: process.pid,
+      hostname: hostname(),
+      createdAt: "2026-08-31T12:00:00.000Z",
+      token: "private-token",
+    });
+    const before = readFileSync(ownerPath(dataHome), "utf8");
+
+    expect(inspectBookLock(dataHome)).toEqual({
+      kind: "active",
+      owner: {
+        pid: process.pid,
+        hostname: hostname(),
+        createdAt: "2026-08-31T12:00:00.000Z",
+      },
+    });
+    expect(readFileSync(ownerPath(dataHome), "utf8")).toBe(before);
+  });
+
+  it("classifies absent, stale, and malformed locks without reclaiming them", () => {
+    const absentHome = temporaryHome();
+    expect(inspectBookLock(absentHome)).toEqual({ kind: "absent" });
+
+    const staleHome = temporaryHome();
+    writeOwner(staleHome, {
+      pid: 2_147_483_647,
+      hostname: hostname(),
+      createdAt: "2026-08-31T12:00:00.000Z",
+      token: "stale-token",
+    });
+    const staleBefore = readFileSync(ownerPath(staleHome), "utf8");
+    expect(inspectBookLock(staleHome)).toMatchObject({ kind: "stale" });
+    expect(readFileSync(ownerPath(staleHome), "utf8")).toBe(staleBefore);
+
+    const malformedHome = temporaryHome();
+    mkdirSync(join(malformedHome, ".finbook.lock"), { mode: 0o700 });
+    writeFileSync(ownerPath(malformedHome), "not-json", { mode: 0o600 });
+    expect(inspectBookLock(malformedHome)).toMatchObject({ kind: "uncertain" });
+    expect(readFileSync(ownerPath(malformedHome), "utf8")).toBe("not-json");
+  });
+
   it("rejects a second writer while a valid lock is held", () => {
     const dataHome = temporaryHome();
 
