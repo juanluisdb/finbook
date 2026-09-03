@@ -45,6 +45,17 @@ const FILES = {
   fx: "fx.jsonl",
 } as const;
 
+export type BookInspection =
+  | { initialized: false }
+  | {
+      initialized: true;
+      schemaVersion: number;
+      snapshot: BookSnapshot;
+      replay: Result<void>;
+    };
+
+type ReplayValidation = { ok: true } | { ok: false; blockingEvent: Event; cause: DomainError };
+
 export class FileBookStore {
   readonly dataHome: string;
 
@@ -54,6 +65,32 @@ export class FileBookStore {
 
   load(): Result<BookSnapshot> {
     return withBookLock(this.dataHome, () => this.loadUnlocked());
+  }
+
+  inspect(): Result<BookInspection> {
+    try {
+      if (!existsSync(this.dataHome)) return succeed({ initialized: false });
+      const existingFiles = Object.values(FILES).filter((name) =>
+        existsSync(join(this.dataHome, name)),
+      );
+      if (existingFiles.length === 0) return succeed({ initialized: false });
+    } catch (error) {
+      if (!(error instanceof Error) || !isFileSystemError(error)) throw error;
+      return fail(storageException(this.dataHome, error.message));
+    }
+
+    const book = this.readBook();
+    if (!book.ok) return fail(book.error);
+    const replayed = this.replayCandidate(book.data.snapshot, book.data.snapshot.events);
+    const replay = replayed.ok
+      ? succeed(undefined)
+      : fail(bookReplayError(replayed.blockingEvent, replayed.cause));
+    return succeed({
+      initialized: true,
+      schemaVersion: book.data.schemaVersion,
+      snapshot: book.data.snapshot,
+      replay,
+    });
   }
 
   appendAccount(account: Account): Result<void> {
@@ -221,6 +258,11 @@ export class FileBookStore {
     const initialized = this.ensureInitialized();
     if (!initialized.ok) return fail(initialized.error);
 
+    const book = this.readBook();
+    return book.ok ? succeed(book.data.snapshot) : fail(book.error);
+  }
+
+  private readBook(): Result<{ schemaVersion: number; snapshot: BookSnapshot }> {
     const meta = this.readJson(FILES.meta, MetaSchema);
     if (!meta.ok) return fail(meta.error);
     if (meta.data.schemaVersion !== CURRENT_SCHEMA_VERSION) {
@@ -255,11 +297,14 @@ export class FileBookStore {
     if (!fx.ok) return fail(fx.error);
 
     return succeed({
-      accounts: accounts.data,
-      instruments: instruments.data,
-      events: events.data,
-      prices: prices.data,
-      fx: fx.data,
+      schemaVersion: meta.data.schemaVersion,
+      snapshot: {
+        accounts: accounts.data,
+        instruments: instruments.data,
+        events: events.data,
+        prices: prices.data,
+        fx: fx.data,
+      },
     });
   }
 
@@ -269,13 +314,20 @@ export class FileBookStore {
     mutation: "append" | "replace" | "delete",
     targetId: string,
   ): Result<void> {
+    const replayed = this.replayCandidate(snapshot, events);
+    return replayed.ok
+      ? succeed(undefined)
+      : fail(mutationError(mutation, targetId, replayed.blockingEvent, replayed.cause));
+  }
+
+  private replayCandidate(snapshot: BookSnapshot, events: readonly Event[]): ReplayValidation {
     let state = createInitialState(snapshot.accounts, snapshot.instruments);
     for (const event of orderEvents(events)) {
       const result = apply(state, event);
-      if (!result.ok) return fail(mutationError(mutation, targetId, event, result.error));
+      if (!result.ok) return { ok: false, blockingEvent: event, cause: result.error };
       state = result.data;
     }
-    return succeed(undefined);
+    return { ok: true };
   }
 
   private ensureInitialized(): Result<void> {
@@ -550,6 +602,21 @@ function mutationError(
     hint: "Correct the event mutation and retry.",
     details: {
       mutation: { kind: mutation, target: targetId },
+      blockingEvent: {
+        id: blockingEvent.id,
+        type: blockingEvent.type,
+        date: blockingEvent.date,
+      },
+    },
+  };
+}
+
+function bookReplayError(blockingEvent: Event, cause: DomainError): DomainError {
+  return {
+    type: cause.type,
+    message: `Book replay failed at event ${blockingEvent.id} (${blockingEvent.type}) on ${blockingEvent.date}: ${cause.message}`,
+    hint: "Correct the stored event before using the book.",
+    details: {
       blockingEvent: {
         id: blockingEvent.id,
         type: blockingEvent.type,

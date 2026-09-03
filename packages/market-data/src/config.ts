@@ -67,6 +67,11 @@ export function findBinding(
   });
 }
 
+export type MarketDataConfigInspection = {
+  exists: boolean;
+  config: MarketDataConfig;
+};
+
 export class MarketDataConfigStore {
   readonly dataHome: string;
 
@@ -79,6 +84,19 @@ export class MarketDataConfigStore {
       return withBookLock(this.dataHome, () => this.loadUnlocked());
     }
     return this.loadUnlocked();
+  }
+
+  inspect(): Result<MarketDataConfigInspection> {
+    try {
+      const path = join(this.dataHome, CONFIG_FILE);
+      if (!existsSync(path)) return succeed({ exists: false, config: defaultMarketDataConfig() });
+      const parsed = MarketDataConfigSchema.safeParse(JSON.parse(readFileSync(path, "utf8")));
+      return parsed.success
+        ? succeed({ exists: true, config: parsed.data })
+        : fail(validationError(parsed.error.message));
+    } catch (error) {
+      return fail(storageError(error instanceof Error ? error.message : "unknown config error"));
+    }
   }
 
   save(config: MarketDataConfig): Result<void> {

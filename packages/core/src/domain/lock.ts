@@ -27,6 +27,35 @@ const LockOwnerSchema = z
 
 export type LockOwner = z.infer<typeof LockOwnerSchema>;
 
+export type BookLockInspection =
+  | { kind: "absent" }
+  | { kind: "active"; owner: Omit<LockOwner, "token"> }
+  | { kind: "stale"; owner: Omit<LockOwner, "token"> }
+  | { kind: "uncertain"; reason: string; owner?: Omit<LockOwner, "token"> };
+
+export function inspectBookLock(dataHome: string): BookLockInspection {
+  const lockPath = join(dataHome, LOCK_DIRECTORY);
+  if (!existsSync(lockPath)) return { kind: "absent" };
+
+  const ownerResult = readLockOwner(lockPath);
+  if (!ownerResult.ok) {
+    return existsSync(lockPath)
+      ? { kind: "uncertain", reason: ownerResult.error }
+      : { kind: "absent" };
+  }
+
+  const { pid, hostname: ownerHostname, createdAt } = ownerResult.data;
+  const owner = { pid, hostname: ownerHostname, createdAt };
+  if (ownerHostname !== hostname()) {
+    return { kind: "uncertain", reason: "the lock belongs to another host", owner };
+  }
+
+  const alive = processIsAlive(pid);
+  if (alive === true) return { kind: "active", owner };
+  if (alive === false) return { kind: "stale", owner };
+  return { kind: "uncertain", reason: "the owner process could not be verified", owner };
+}
+
 export function withBookLock<T>(dataHome: string, operation: () => Result<T>): Result<T> {
   const acquired = acquireBookLock(dataHome);
   if (!acquired.ok) return fail(acquired.error);
@@ -108,37 +137,21 @@ function acquireBookLock(dataHome: string): Result<string> {
       }
     }
 
-    const owner = readLockOwner(lockPath);
-    if (!owner.ok) {
+    const inspection = inspectBookLock(dataHome);
+    if (inspection.kind === "absent") continue;
+    if (inspection.kind === "uncertain") {
       return fail(
         storageError(
-          `The book lock is active or uncertain; ${owner.error}; the mutation did not run`,
+          `The book lock is active or uncertain; ${inspection.reason}; the mutation did not run`,
           `Inspect ${lockPath} and remove it only after confirming no finbook process is using the book.`,
         ),
       );
     }
-    if (owner.data.hostname !== hostname()) {
+    if (inspection.kind === "active") {
       return fail(
         storageError(
-          `The book is locked by PID ${owner.data.pid} on ${owner.data.hostname}; the mutation did not run`,
-          "Retry after that process finishes; inspect the lock manually if the other host is unavailable.",
-        ),
-      );
-    }
-    const alive = processIsAlive(owner.data.pid);
-    if (alive === true) {
-      return fail(
-        storageError(
-          `The book is locked by PID ${owner.data.pid} on ${owner.data.hostname}; the mutation did not run`,
+          `The book is locked by PID ${inspection.owner.pid} on ${inspection.owner.hostname}; the mutation did not run`,
           "Retry after that process finishes.",
-        ),
-      );
-    }
-    if (alive === undefined) {
-      return fail(
-        storageError(
-          `The book lock owner PID ${owner.data.pid} could not be verified; the mutation did not run`,
-          `Inspect ${lockPath} and remove it only after confirming no finbook process is using the book.`,
         ),
       );
     }

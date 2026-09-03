@@ -116,6 +116,135 @@ describe("read CLI", () => {
     expect(JSON.parse(result.stdout)).toEqual({ ok: true, data: [first] });
   });
 
+  it("summarizes every event family in human history", () => {
+    const dataHome = temporaryHome();
+    const store = new FileBookStore(dataHome);
+    seedAccount(store);
+    expect(
+      store.appendAccount(
+        AccountSchema.parse({
+          id: "other",
+          name: "Other account",
+          platform: "cash",
+          country: "ES",
+          custodial: "cash",
+        }),
+      ).ok,
+    ).toBe(true);
+    const events = [
+      {
+        id: "deposit-1",
+        date: "2026-03-01",
+        source: "manual",
+        type: "deposit",
+        account: "ib",
+        amount: { amount: "1000", currency: "EUR" },
+        eurPerUnit: "1",
+      },
+      {
+        id: "withdrawal-1",
+        date: "2026-03-02",
+        source: "manual",
+        type: "withdrawal",
+        account: "ib",
+        amount: { amount: "10", currency: "EUR" },
+        eurPerUnit: "1",
+      },
+      {
+        id: "transfer-1",
+        date: "2026-03-03",
+        source: "manual",
+        type: "transfer",
+        from: "ib",
+        to: "other",
+        amount: { amount: "20", currency: "EUR" },
+      },
+      {
+        id: "fx-1",
+        date: "2026-03-04",
+        source: "manual",
+        type: "fx",
+        account: "ib",
+        from: { amount: "100", currency: "EUR" },
+        to: { amount: "120", currency: "USD" },
+        fee: { amount: "1", currency: "EUR" },
+      },
+      {
+        id: "buy-1",
+        date: "2026-03-05",
+        source: "manual",
+        type: "buy",
+        account: "ib",
+        instrument: "HROW",
+        qty: "2",
+        price: { amount: "10", currency: "USD" },
+        fee: { amount: "1", currency: "USD" },
+        eurPerUnit: "0.9",
+      },
+      {
+        id: "sell-1",
+        date: "2026-03-06",
+        source: "manual",
+        type: "sell",
+        account: "ib",
+        instrument: "HROW",
+        qty: "1",
+        price: { amount: "12", currency: "USD" },
+        fee: { amount: "1", currency: "USD" },
+        eurPerUnit: "0.9",
+      },
+      {
+        id: "dividend-1",
+        date: "2026-03-07",
+        source: "manual",
+        type: "dividend",
+        account: "ib",
+        instrument: "HROW",
+        gross: { amount: "10", currency: "USD" },
+        withholdingForeign: { amount: "2", currency: "USD" },
+        eurPerUnit: "0.9",
+      },
+      {
+        id: "interest-1",
+        date: "2026-03-08",
+        source: "manual",
+        type: "interest",
+        account: "ib",
+        gross: { amount: "5", currency: "EUR" },
+        withholdingDomestic: { amount: "1", currency: "EUR" },
+        eurPerUnit: "1",
+      },
+      {
+        id: "fee-1",
+        date: "2026-03-09",
+        source: "manual",
+        type: "fee",
+        account: "ib",
+        amount: { amount: "2", currency: "EUR" },
+        eurPerUnit: "1",
+      },
+    ].map((event) => EventSchema.parse(event));
+    for (const event of events) expect(store.appendEvent(event).ok).toBe(true);
+
+    const result = runCli(dataHome, ["event", "list"]);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    for (const summary of [
+      "+1000 EUR → ib",
+      "-10 EUR ← ib",
+      "20 EUR ib → other",
+      "ib: 100 EUR → 120 USD; fee 1 EUR",
+      "ib: buy 2 HROW @ 10 USD; fee 1 USD",
+      "ib: sell 1 HROW @ 12 USD; fee 1 USD",
+      "ib: HROW gross 10 USD; net 8 USD",
+      "ib: gross 5 EUR; net 4 EUR",
+      "ib: -2 EUR",
+    ]) {
+      expect(result.stdout).toContain(summary);
+    }
+  });
+
   it("returns not-found errors with exit code 3", () => {
     const dataHome = temporaryHome();
     const jsonResult = runCli(dataHome, ["account", "get", "missing", "--json"]);
@@ -166,6 +295,45 @@ describe("read CLI", () => {
         holes: [],
         byPlatform: [{ key: "interactive-brokers", valueEur: { amount: "100" }, weight: "1" }],
       },
+    });
+  });
+
+  it("renders reachable valuation holes with exact remedies in both human views", () => {
+    const dataHome = temporaryHome();
+    const store = new FileBookStore(dataHome);
+    seedAccount(store);
+    expect(
+      store.appendEvent(
+        EventSchema.parse({
+          id: "deposit-usd",
+          date: "2026-03-01",
+          source: "manual",
+          type: "deposit",
+          account: "ib",
+          amount: { amount: "100", currency: "USD" },
+          eurPerUnit: "0.9",
+        }),
+      ).ok,
+    ).toBe(true);
+
+    for (const view of ["glance", "positions"] as const) {
+      const result = runCli(dataHome, ["show", view, "--as-of", "2026-03-05"]);
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("as of: 2026-03-05");
+      expect(result.stdout).toContain("missing data");
+      expect(result.stdout).toContain("FX USD/EUR as of 2026-03-05");
+      expect(result.stdout).toContain(
+        "finbook fx set --pair USD/EUR --rate <decimal> --as-of 2026-03-05",
+      );
+      expect(result.stdout).toContain(`finbook show ${view} --as-of 2026-03-05 --fetch`);
+    }
+
+    const json = runCli(dataHome, ["show", "glance", "--as-of", "2026-03-05", "--json"]);
+    expect(JSON.parse(json.stdout)).toMatchObject({
+      ok: true,
+      data: { asOf: "2026-03-05", holes: [{ sourceId: "fx:USD/EUR" }] },
     });
   });
 

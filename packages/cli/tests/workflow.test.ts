@@ -259,7 +259,7 @@ describe("normal week workflow", () => {
     });
     expect(doctor).toMatchObject({
       ok: true,
-      data: { eventCount: 6, holeCount: 0 },
+      data: { status: "ok", eventCount: 6, holeCount: 0 },
     });
   });
 });
