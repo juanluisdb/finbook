@@ -203,7 +203,7 @@ The program is five substantial PRs: three are merged and the final two are spec
 | **PR 1 — Make reads and market-data fetching correct and honest**        | **Done:** merged as [PR #1](https://github.com/juanluisdb/finbook/pull/1) | Current and historical views use the right date and provider behavior; a partial fetch cannot look successful.     | N1, N2, N6, contract docs, tests             | None       |
 | **PR 2 — Make book mutations safe and add corrections**                  | **Done:** merged as [PR #2](https://github.com/juanluisdb/finbook/pull/2) | Every write uses one locked domain-aware boundary; users can edit/delete events through strict typed commands.     | N3, N4, N5, relevant N8 cases, contract docs | PR 1       |
 | **PR 3 — Make history, holes, and book health actionable**               | **Done:** merged as [PR #3](https://github.com/juanluisdb/finbook/pull/3) | Human reads explain what happened and what is missing; `doctor` diagnoses the local book without changing it.      | N7, focused docs and tests                   | PR 2       |
-| **PR 4 — Make the remaining correctness guarantees explicit in tests**   | **Implemented:** awaiting review                                          | The suite pins the remaining domain, replay, filesystem, CLI, and provider guarantees without brittle test layers. | N8, provider-fixture maintenance notes       | PR 3       |
+| **PR 4 — Make the remaining correctness guarantees explicit in tests**   | **In review:** [PR #4](https://github.com/juanluisdb/finbook/pull/4)      | The suite pins the remaining domain, replay, filesystem, CLI, and provider guarantees without brittle test layers. | N8, provider-fixture maintenance notes       | PR 3       |
 | **PR 5 — Finish inspection guardrails, onboarding, and the v1 contract** | Planned                                                                   | Growing books remain easy to inspect, binding typos fail early, and docs/help match the final product end to end.  | N9, N10, final acceptance pass               | PR 4       |
 
 Each PR must be internally complete: tests ship with behavior, `DESIGN.md` changes ship with the contract they describe, and `corepack pnpm check` is green. A later PR may strengthen an already-shipped guarantee, but it must not be used to defer the minimum regression test required by the PR that changes behavior.
@@ -888,7 +888,7 @@ Trace three things: whether doctor can write on any path, whether it reuses rath
 
 ### PR 4 — Make the remaining correctness guarantees explicit in tests
 
-**Status:** implemented on `codex/pr4-test-hardening`; awaiting review. It starts from merged PR 3 at `ec423ee`.
+**Status:** implemented and in review as [PR #4](https://github.com/juanluisdb/finbook/pull/4). It starts from merged PR 3 at `ec423ee`.
 
 #### Outcome and scope
 
