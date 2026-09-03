@@ -18,6 +18,7 @@ import {
   FileBookStore,
   InstrumentSchema,
   getGlance,
+  getPositions,
   type Account,
   type BookSnapshot,
   type Instrument,
@@ -534,6 +535,104 @@ describe("FileBookStore", () => {
     expect(result.error.message).toContain("events.jsonl:2");
   });
 
+  it("reports the exact line for schema-invalid JSONL and preserves bytes", () => {
+    const store = temporaryStore();
+    expect(store.load().ok).toBe(true);
+    const eventPath = join(store.dataHome, "events.jsonl");
+    const invalidEvent = { ...event, amount: { amount: "0", currency: "USD" } };
+    writeFileSync(eventPath, `${JSON.stringify(event)}\n${JSON.stringify(invalidEvent)}\n`);
+    const before = readFileSync(eventPath, "utf8");
+
+    const result = store.load();
+
+    expect(result).toMatchObject({ ok: false });
+    if (result.ok) throw new Error("Expected schema-invalid JSONL to fail");
+    expect(result.error.message).toContain("events.jsonl:2");
+    expect(readFileSync(eventPath, "utf8")).toBe(before);
+  });
+
+  it("rejects a blank interior JSONL line without rewriting the ledger", () => {
+    const store = temporaryStore();
+    expect(store.load().ok).toBe(true);
+    const eventPath = join(store.dataHome, "events.jsonl");
+    writeFileSync(eventPath, `${JSON.stringify(event)}\n\n${JSON.stringify(event)}\n`);
+    const before = readFileSync(eventPath, "utf8");
+
+    const result = store.load();
+
+    expect(result).toMatchObject({ ok: false });
+    if (result.ok) throw new Error("Expected blank JSONL line to fail");
+    expect(result.error.message).toContain("events.jsonl:2");
+    expect(readFileSync(eventPath, "utf8")).toBe(before);
+  });
+
+  it("rejects an unsupported schema version without rewriting metadata", () => {
+    const store = temporaryStore();
+    expect(store.load().ok).toBe(true);
+    const metaPath = join(store.dataHome, "meta.json");
+    writeFileSync(metaPath, '{"schemaVersion":2}\n');
+    const before = readFileSync(metaPath, "utf8");
+
+    expect(store.load()).toMatchObject({
+      ok: false,
+      error: { type: "storage", message: expect.stringContaining("schema version: 2") },
+    });
+    expect(readFileSync(metaPath, "utf8")).toBe(before);
+  });
+
+  it.each([
+    ["account", "accounts.json", account],
+    ["instrument", "instruments.json", instrument],
+  ] as const)("rejects duplicate %s IDs loaded from disk", (kind, name, value) => {
+    const store = temporaryStore();
+    expect(store.load().ok).toBe(true);
+    const path = join(store.dataHome, name);
+    writeFileSync(path, `${JSON.stringify([value, value])}\n`);
+    const before = readFileSync(path, "utf8");
+
+    const result = store.load();
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { message: expect.stringContaining(`Duplicate ${kind} ID`) },
+    });
+    expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
+  it("rejects a price for an unknown instrument without appending it", () => {
+    const store = temporaryStore();
+    expect(store.load().ok).toBe(true);
+    const pricePath = join(store.dataHome, "prices.jsonl");
+    const before = readFileSync(pricePath, "utf8");
+
+    const result = store.appendPrice({
+      instrument: "UNKNOWN",
+      price: { amount: "41", currency: "USD" },
+      asOf: "2026-03-01",
+      provenance: { kind: "manual" },
+    });
+
+    expect(result).toMatchObject({ ok: false, error: { type: "not-found" } });
+    expect(readFileSync(pricePath, "utf8")).toBe(before);
+  });
+
+  it("rejects a price outside the instrument quote currency without appending it", () => {
+    const store = temporaryStore();
+    expect(store.appendInstrument(instrument).ok).toBe(true);
+    const pricePath = join(store.dataHome, "prices.jsonl");
+    const before = readFileSync(pricePath, "utf8");
+
+    const result = store.appendPrice({
+      instrument: "HROW",
+      price: { amount: "41", currency: "EUR" },
+      asOf: "2026-03-01",
+      provenance: { kind: "manual" },
+    });
+
+    expect(result).toMatchObject({ ok: false, error: { type: "invariant" } });
+    expect(readFileSync(pricePath, "utf8")).toBe(before);
+  });
+
   it("inspects corrupt JSONL without changing its bytes", () => {
     const store = temporaryStore();
     expect(store.load().ok).toBe(true);
@@ -655,5 +754,60 @@ describe("FileBookStore", () => {
     );
 
     expect(result).toMatchObject({ ok: true, data: { totalEur: { amount: "90.9" } } });
+  });
+
+  it("preserves derived positions and glance values after reload", () => {
+    const store = temporaryStore();
+    seedBook(store);
+    expect(store.appendEvent(event).ok).toBe(true);
+    expect(
+      store.appendEvent(
+        EventSchema.parse({
+          id: "buy-1",
+          date: "2026-03-02",
+          source: "manual",
+          type: "buy",
+          account: "ib",
+          instrument: "HROW",
+          qty: "2",
+          price: { amount: "20", currency: "USD" },
+          eurPerUnit: "0.9",
+        }),
+      ).ok,
+    ).toBe(true);
+    expect(
+      store.appendPrice({
+        instrument: "HROW",
+        price: { amount: "25", currency: "USD" },
+        asOf: "2026-03-03",
+        provenance: { kind: "manual" },
+      }).ok,
+    ).toBe(true);
+    expect(
+      store.appendFx({
+        pair: "USD/EUR",
+        rate: "0.8",
+        asOf: "2026-03-03",
+        provenance: { kind: "manual" },
+      }).ok,
+    ).toBe(true);
+
+    const reloaded = loaded(new FileBookStore(store.dataHome));
+
+    expect(getGlance(reloaded, "2026-03-03")).toMatchObject({
+      ok: true,
+      data: {
+        totalEur: { amount: "88", currency: "EUR" },
+        contributedEur: { amount: "90", currency: "EUR" },
+        pnlEur: { amount: "-2", currency: "EUR" },
+      },
+    });
+    expect(getPositions(reloaded, "2026-03-03")).toMatchObject({
+      ok: true,
+      data: {
+        positions: [{ instrument: "HROW", quantity: "2", valueEur: { amount: "40" } }],
+        cash: [{ currency: "USD", balance: { amount: "60" }, valueEur: { amount: "48" } }],
+      },
+    });
   });
 });

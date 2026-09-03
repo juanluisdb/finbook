@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AccountSchema, FileBookStore } from "@finbook/core";
 import type { EurRateNeed, EurRateResolution, ResolvePriceOptions } from "@finbook/market-data";
@@ -12,6 +12,7 @@ import { addEvent, type DepositAddInput } from "../src/event-input.js";
 const temporaryDirectories: string[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const directory of temporaryDirectories.splice(0)) {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -79,11 +80,14 @@ describe("event historical-rate fetching", () => {
       },
     };
 
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
     await addEvent(store, depositOptions(), true, () => "deposit-1", resolver);
 
     const snapshot = store.load();
     if (!snapshot.ok) throw new Error(snapshot.error.message);
     expect(calls).toEqual([{ currency: "USD", date: "2026-03-03" }]);
+    expect(stdout).toHaveBeenCalledOnce();
     expect(snapshot.data.events[0]).toMatchObject({
       id: "deposit-1",
       eurPerUnit: "0.9",
@@ -104,11 +108,14 @@ describe("event historical-rate fetching", () => {
       }),
     };
 
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
     await expect(
       addEvent(store, depositOptions(), true, () => "deposit-1", resolver),
     ).rejects.toBeInstanceOf(CliFailure);
     const snapshot = store.load();
     if (!snapshot.ok) throw new Error(snapshot.error.message);
     expect(snapshot.data.events).toEqual([]);
+    expect(stdout).not.toHaveBeenCalled();
   });
 });

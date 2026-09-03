@@ -204,7 +204,6 @@ state
   cash[account][currency]          // Money
   lots[account][instrument]        // qty + native cost (fee-inclusive) + event ids
   contributedEur                   // rated deposits − withdrawals
-  holes                            // valuation holes with source and reason
 ```
 
 v1 may reduce lots on sell **proportionally** so holdings look right. That is **not** the official FIFO report. FIFO matching (valores homogéneos, one instrument across accounts as required later) is a later reader of the same lots.
@@ -447,7 +446,10 @@ Dependency strategy:
 - Core domain tests are in-process and deterministic. Pass the clock and ID generator; do not freeze globals.
 - File-store tests use a real temporary `FINBOOK_HOME`, not an in-memory fake.
 - CLI tests spawn the built `dist` binary with a temporary data directory. They do not mock modules.
+- Provider normalization tests use sanitized response fixtures at the real gateway boundary; fixture refresh is manual and never part of the gate.
 - Tests assert the invariant itself, not an incidental object shape or implementation detail.
+
+`pnpm test` force-builds project references before running Vitest, so it is reliable even when emitted `dist` directories are absent but incremental build metadata remains. `pnpm check` remains the complete type, lint, format, and test gate.
 
 ### Schema and boundary cases
 

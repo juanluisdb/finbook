@@ -151,7 +151,7 @@ function valueState(
   fxStamps: readonly FxStamp[],
   asOf: string,
 ): Valuation {
-  const holes = state.holes.map((hole) => ({ ...hole }));
+  const holes: Hole[] = [];
   const positions: Position[] = [];
   const cash: CashPosition[] = [];
   const byPlatform = new Map<string, Bucket>();

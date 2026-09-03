@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   AccountSchema,
@@ -17,7 +17,12 @@ import { addEvent, editEvent } from "../src/event-input.js";
 
 const temporaryDirectories: string[] = [];
 
+beforeEach(() => {
+  vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+});
+
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const directory of temporaryDirectories.splice(0)) {
     rmSync(directory, { recursive: true, force: true });
   }

@@ -57,9 +57,19 @@ function runCliAsync(
 }
 
 describe("provider configuration CLI", () => {
-  it("shows deterministic defaults and persists safe overrides", () => {
+  it("shows deterministic defaults", () => {
     const dataHome = temporaryHome();
-    const defaults = runCli(dataHome, ["config", "show", "--json"]);
+    const result = runCli(dataHome, ["config", "show", "--json"]);
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: true,
+      data: { disabledProviders: [], routes: {}, bindings: [] },
+    });
+  });
+
+  it("persists safe provider, route, and binding overrides", () => {
+    const dataHome = temporaryHome();
     const disabled = runCli(dataHome, ["config", "provider", "disable", "yahoo", "--json"]);
     const route = runCli(dataHome, ["config", "route", "set", "price:fund", "yahoo", "--json"]);
     const binding = runCli(dataHome, [
@@ -76,11 +86,6 @@ describe("provider configuration CLI", () => {
     ]);
     const shown = runCli(dataHome, ["config", "show", "--json"]);
 
-    expect(defaults.status).toBe(0);
-    expect(JSON.parse(defaults.stdout)).toMatchObject({
-      ok: true,
-      data: { disabledProviders: [], routes: {}, bindings: [] },
-    });
     expect(disabled.status).toBe(0);
     expect(route.status).toBe(0);
     expect(binding.status).toBe(0);

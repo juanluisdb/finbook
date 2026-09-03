@@ -21,7 +21,6 @@ export type BookState = {
   cash: CashBalances;
   lots: LotBalances;
   contributedEur: Money;
-  holes: readonly Hole[];
 };
 
 export function createInitialState(
@@ -42,7 +41,6 @@ export function createInitialState(
     cash,
     lots,
     contributedEur: { amount: "0", currency: "EUR" },
-    holes: [],
   };
 }
 
@@ -75,6 +73,5 @@ export function cloneState(state: BookState): BookState {
     cash,
     lots,
     contributedEur: { ...state.contributedEur },
-    holes: state.holes.map((hole) => ({ ...hole })),
   };
 }

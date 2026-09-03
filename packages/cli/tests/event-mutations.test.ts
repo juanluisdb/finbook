@@ -309,6 +309,60 @@ describe("typed event CLI", () => {
     });
   });
 
+  it("rejects an unreadable event file without writing", () => {
+    const dataHome = temporaryHome();
+    seedBook(dataHome);
+    const directory = join(dataHome, "event-directory");
+    mkdirSync(directory);
+
+    const result = runCli(dataHome, ["event", "add", "--file", directory, "--json"]);
+
+    expect(result.status).toBe(2);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: false,
+      error: { type: "validation" },
+    });
+    expect(JSON.parse(runCli(dataHome, ["event", "list", "--json"]).stdout)).toEqual({
+      ok: true,
+      data: [],
+    });
+  });
+
+  it("fails an unavailable historical-rate fetch before appending", () => {
+    const dataHome = temporaryHome();
+    seedBook(dataHome);
+    expect(runCli(dataHome, ["config", "provider", "disable", "ecb", "--json"]).status).toBe(0);
+
+    const result = runCli(dataHome, [
+      "event",
+      "add",
+      "deposit",
+      "--id",
+      "fetched-rate-deposit",
+      "--date",
+      "2026-03-03",
+      "--account",
+      "ib",
+      "--amount",
+      "100",
+      "--currency",
+      "USD",
+      "--fetch-rate",
+      "--json",
+    ]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: false,
+      error: { type: "external" },
+    });
+    expect(JSON.parse(runCli(dataHome, ["event", "list", "--json"]).stdout)).toEqual({
+      ok: true,
+      data: [],
+    });
+  });
+
   it("rejects --file combined with a typed event in either argument order", () => {
     const dataHome = temporaryHome();
     seedBook(dataHome);

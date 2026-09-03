@@ -196,14 +196,14 @@ The relevant threat is another local OS user reading financial data or a credent
 
 ## Now: pull request roadmap
 
-The program is five substantial PRs: two are merged and the final three are specified below. The N1–N10 sections are case-level workstreams inside those PRs, not a request to open ten small reviews.
+The program is five substantial PRs: three are merged and the final two are specified below. The N1–N10 sections are case-level workstreams inside those PRs, not a request to open ten small reviews.
 
 | PR                                                                       | Status                                                                    | Outcome                                                                                                            | Workstreams                                  | Dependency |
 | ------------------------------------------------------------------------ | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | -------------------------------------------- | ---------- |
 | **PR 1 — Make reads and market-data fetching correct and honest**        | **Done:** merged as [PR #1](https://github.com/juanluisdb/finbook/pull/1) | Current and historical views use the right date and provider behavior; a partial fetch cannot look successful.     | N1, N2, N6, contract docs, tests             | None       |
 | **PR 2 — Make book mutations safe and add corrections**                  | **Done:** merged as [PR #2](https://github.com/juanluisdb/finbook/pull/2) | Every write uses one locked domain-aware boundary; users can edit/delete events through strict typed commands.     | N3, N4, N5, relevant N8 cases, contract docs | PR 1       |
-| **PR 3 — Make history, holes, and book health actionable**               | **In review:** [PR #3](https://github.com/juanluisdb/finbook/pull/3)      | Human reads explain what happened and what is missing; `doctor` diagnoses the local book without changing it.      | N7, focused docs and tests                   | PR 2       |
-| **PR 4 — Make the remaining correctness guarantees explicit in tests**   | Planned                                                                   | The suite pins the remaining domain, replay, filesystem, CLI, and provider guarantees without brittle test layers. | N8, provider-fixture maintenance notes       | PR 3       |
+| **PR 3 — Make history, holes, and book health actionable**               | **Done:** merged as [PR #3](https://github.com/juanluisdb/finbook/pull/3) | Human reads explain what happened and what is missing; `doctor` diagnoses the local book without changing it.      | N7, focused docs and tests                   | PR 2       |
+| **PR 4 — Make the remaining correctness guarantees explicit in tests**   | **Implemented:** awaiting review                                          | The suite pins the remaining domain, replay, filesystem, CLI, and provider guarantees without brittle test layers. | N8, provider-fixture maintenance notes       | PR 3       |
 | **PR 5 — Finish inspection guardrails, onboarding, and the v1 contract** | Planned                                                                   | Growing books remain easy to inspect, binding typos fail early, and docs/help match the final product end to end.  | N9, N10, final acceptance pass               | PR 4       |
 
 Each PR must be internally complete: tests ship with behavior, `DESIGN.md` changes ship with the contract they describe, and `corepack pnpm check` is green. A later PR may strengthen an already-shipped guarantee, but it must not be used to defer the minimum regression test required by the PR that changes behavior.
@@ -715,7 +715,7 @@ Avoid expanding review into Git history, backups, database durability, generaliz
 
 ### PR 3 — Make history, holes, and book health actionable
 
-**Status:** implemented and in review as [PR #3](https://github.com/juanluisdb/finbook/pull/3). It starts from merged PR 2 at `2003ef1`.
+**Status:** completed and merged in [PR #3](https://github.com/juanluisdb/finbook/pull/3) on 2026-09-03. The merge commit on `main` is `ec423ee`; `corepack pnpm check` passed with 187 tests across 26 files. This section remains as the decision and acceptance record for the shipped work.
 
 #### User-visible result
 
@@ -888,7 +888,7 @@ Trace three things: whether doctor can write on any path, whether it reuses rath
 
 ### PR 4 — Make the remaining correctness guarantees explicit in tests
 
-**Status:** planned; starts after PR 3 so output tests are not rewritten twice.
+**Status:** implemented on `codex/pr4-test-hardening`; awaiting review. It starts from merged PR 3 at `ec423ee`.
 
 #### Outcome and scope
 
@@ -938,6 +938,8 @@ Use the case inventory in N8 as the source of truth. At minimum, the PR is not c
 - Falling back after an explicit provider pin, duplicating writes for duplicate needs, or refetching completed historical batch items fails coordinator tests.
 - Changing Yahoo/CoinGecko normalization to match an invented provider shape fails captured-fixture tests.
 
+The planned missing-price query case is intentionally represented by two stronger reachable guarantees: queries must retain the last-trade price fallback, and the pure human renderer must keep the exact missing-price remedy. A replayed live lot always originates in a buy and therefore always has a trade-price fallback; manufacturing a query-level price hole would test an impossible v1 state. PR 2 already pins successful historical-rate fetch ordering and persistence below the process boundary; PR 4 adds the built-process unavailable-fetch/no-write contract.
+
 #### Compatibility, rollback, and risks
 
 - Removing `BookState.holes` is an internal type cleanup. Public query results keep `holes`; no stored data changes.
@@ -948,13 +950,13 @@ Use the case inventory in N8 as the source of truth. At minimum, the PR is not c
 
 #### PR 4 acceptance checklist
 
-- [ ] Every N8 guarantee is either pinned by one clear test or explicitly recorded as already covered by PR 1/2/3.
-- [ ] Dead state and tautological tests are gone; new interface-level tests retire redundant shallow tests.
-- [ ] Provider response validation is exercised with captured, sanitized raw fixtures.
-- [ ] No module mocks or live provider calls enter the normal gate.
-- [ ] `pnpm test` works from a clean built-artifact state and emits no accidental application output.
-- [ ] The normal-week built-CLI workflow remains the single broad acceptance path.
-- [ ] `corepack pnpm check` passes reproducibly.
+- [x] Every N8 guarantee is either pinned by one clear test or explicitly recorded as already covered by PR 1/2/3.
+- [x] Dead state and tautological tests are gone; new interface-level tests retire redundant shallow tests.
+- [x] Provider response validation is exercised with captured, sanitized raw fixtures.
+- [x] No module mocks or live provider calls enter the normal gate.
+- [x] `pnpm test` works from a clean built-artifact state and emits no accidental application output.
+- [x] The normal-week built-CLI workflow remains the single broad acceptance path.
+- [x] `corepack pnpm check` passes reproducibly.
 
 #### PR 4 review focus
 
@@ -1233,7 +1235,7 @@ The sections below remain the authoritative case inventory used by the five PRs.
 
 ### N7. Make incomplete and historical state easy to read
 
-**Status:** owned by PR 3.
+**Status:** completed in PR 3.
 
 **Shape**
 
@@ -1257,7 +1259,7 @@ The sections below remain the authoritative case inventory used by the five PRs.
 
 ### N8. Close the remaining load-bearing test gaps and clean the suite
 
-**Status:** owned by PR 4. Cases already added in PRs 1–3 are recorded rather than duplicated.
+**Status:** implemented in PR 4. Cases already added in PRs 1–3 are recorded rather than duplicated.
 
 This is a focused acceptance sweep, not a coverage campaign.
 
