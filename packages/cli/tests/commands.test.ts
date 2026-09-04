@@ -116,6 +116,170 @@ describe("read CLI", () => {
     expect(JSON.parse(result.stdout)).toEqual({ ok: true, data: [first] });
   });
 
+  it("composes repeated event filters without changing ledger order", () => {
+    const dataHome = temporaryHome();
+    const store = new FileBookStore(dataHome);
+    seedAccount(store);
+    const secondInstrument = InstrumentSchema.parse({
+      id: "ALT",
+      name: "Alternative holding",
+      type: "fund",
+      quoteCurrency: "USD",
+    });
+    expect(store.appendInstrument(secondInstrument).ok).toBe(true);
+    const events = [
+      {
+        id: "funding",
+        date: "2026-03-01",
+        source: "manual",
+        type: "deposit",
+        account: "ib",
+        amount: { amount: "200", currency: "USD" },
+        eurPerUnit: "0.9",
+      },
+      {
+        id: "buy-hrow",
+        date: "2026-03-02",
+        source: "broker-a",
+        type: "buy",
+        account: "ib",
+        instrument: "HROW",
+        qty: "1",
+        price: { amount: "20", currency: "USD" },
+        eurPerUnit: "0.9",
+      },
+      {
+        id: "buy-alt",
+        date: "2026-03-03",
+        source: "broker-b",
+        type: "buy",
+        account: "ib",
+        instrument: "ALT",
+        qty: "1",
+        price: { amount: "30", currency: "USD" },
+        eurPerUnit: "0.9",
+      },
+      {
+        id: "dividend-hrow",
+        date: "2026-03-04",
+        source: "broker-a",
+        type: "dividend",
+        account: "ib",
+        instrument: "HROW",
+        gross: { amount: "2", currency: "USD" },
+        eurPerUnit: "0.9",
+      },
+    ].map((value) => EventSchema.parse(value));
+    for (const event of events) expect(store.appendEvent(event).ok).toBe(true);
+
+    const result = runCli(dataHome, [
+      "event",
+      "list",
+      "--type",
+      "buy",
+      "--type",
+      "dividend",
+      "--instrument",
+      "HROW",
+      "--instrument",
+      "ALT",
+      "--source",
+      "broker-a",
+      "--source",
+      "broker-b",
+      "--account",
+      "ib",
+      "--from",
+      "2026-03-02",
+      "--to",
+      "2026-03-04",
+      "--json",
+    ]);
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      ok: true,
+      data: [events[1], events[2], events[3]],
+    });
+  });
+
+  it("matches transfers through either account and excludes them from instrument filters", () => {
+    const dataHome = temporaryHome();
+    const store = new FileBookStore(dataHome);
+    seedAccount(store);
+    expect(
+      store.appendAccount(
+        AccountSchema.parse({
+          id: "cash",
+          name: "Cash account",
+          platform: "cash",
+          country: "ES",
+          custodial: "cash",
+        }),
+      ).ok,
+    ).toBe(true);
+    const funding = EventSchema.parse({
+      id: "funding",
+      date: "2026-03-01",
+      source: "manual",
+      type: "deposit",
+      account: "ib",
+      amount: { amount: "100", currency: "EUR" },
+      eurPerUnit: "1",
+    });
+    const transfer = EventSchema.parse({
+      id: "transfer",
+      date: "2026-03-02",
+      source: "manual",
+      type: "transfer",
+      from: "ib",
+      to: "cash",
+      amount: { amount: "40", currency: "EUR" },
+    });
+    expect(store.appendEvent(funding).ok).toBe(true);
+    expect(store.appendEvent(transfer).ok).toBe(true);
+
+    const byDestination = runCli(dataHome, ["event", "list", "--account", "cash", "--json"]);
+    const byInstrument = runCli(dataHome, ["event", "list", "--instrument", "HROW", "--json"]);
+
+    expect(JSON.parse(byDestination.stdout)).toEqual({ ok: true, data: [transfer] });
+    expect(JSON.parse(byInstrument.stdout)).toEqual({ ok: true, data: [] });
+  });
+
+  it("returns successful empty event lists in JSON and human modes", () => {
+    const dataHome = temporaryHome();
+    const store = new FileBookStore(dataHome);
+    seedAccount(store);
+
+    const json = runCli(dataHome, ["event", "list", "--source", "missing", "--json"]);
+    const human = runCli(dataHome, ["event", "list", "--source", "missing"]);
+
+    expect(json.status).toBe(0);
+    expect(JSON.parse(json.stdout)).toEqual({ ok: true, data: [] });
+    expect(human.status).toBe(0);
+    expect(human.stdout).toBe("(empty)\n");
+  });
+
+  it.each([
+    ["type", ["--type", "mystery"], 2, "Unknown event type: mystery"],
+    ["date", ["--from", "2026-02-30"], 2, "Invalid --from: 2026-02-30"],
+    ["account", ["--account", "missing"], 3, "Unknown account ID: missing"],
+    ["instrument", ["--instrument", "MISSING"], 3, "Unknown instrument ID: MISSING"],
+  ] as const)(
+    "distinguishes an invalid or unknown event-filter %s",
+    (_case, filter, status, message) => {
+      const dataHome = temporaryHome();
+      const store = new FileBookStore(dataHome);
+      seedAccount(store);
+
+      for (const json of [false, true]) {
+        const result = runCli(dataHome, ["event", "list", ...filter, ...(json ? ["--json"] : [])]);
+        expect(result.status).toBe(status);
+        expect(`${result.stdout}${result.stderr}`).toContain(message);
+      }
+    },
+  );
+
   it("summarizes every event family in human history", () => {
     const dataHome = temporaryHome();
     const store = new FileBookStore(dataHome);
@@ -358,6 +522,27 @@ describe("read CLI", () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("Usage: finbook");
+    expect(result.stdout).toContain("Get started:");
+    expect(result.stdout).toContain("finbook account add");
+    expect(result.stdout).toContain("finbook show glance");
+    expect(result.stdout).toContain("finbook event edit");
+    expect(readdirSync(dataHome)).toEqual([]);
+  });
+
+  it("shows complete typed-event examples without initializing the book", () => {
+    const dataHome = temporaryHome();
+    const add = runCli(dataHome, ["event", "add", "deposit", "--help"]);
+    const edit = runCli(dataHome, ["event", "edit", "buy", "--help"]);
+
+    expect(add.status).toBe(0);
+    expect(add.stdout).toContain("Example:");
+    expect(add.stdout).toContain(
+      "finbook event add deposit --date 2026-03-03 --account ib --amount 800 --currency EUR",
+    );
+    expect(edit.status).toBe(0);
+    expect(edit.stdout).toContain("finbook event edit buy buy-1 --qty 15");
+    expect(edit.stdout).toContain("--clear-fee");
+    expect(edit.stdout).not.toContain("--gross-amount");
     expect(readdirSync(dataHome)).toEqual([]);
   });
 

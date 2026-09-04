@@ -1,4 +1,4 @@
-import { CurrencySchema, InstrumentIdSchema } from "@finbook/core";
+import { CurrencySchema, InstrumentIdSchema, type FileBookStore } from "@finbook/core";
 import {
   MarketDataConfigStore,
   ProviderIdSchema,
@@ -11,7 +11,7 @@ import {
   type SourceBinding,
 } from "@finbook/market-data";
 
-import { requireResult, validationFailure } from "./errors.js";
+import { notFoundFailure, requireResult, validationFailure } from "./errors.js";
 import { formatRows, writeSuccess } from "./output.js";
 
 export type SourceConfigOptions = {
@@ -88,13 +88,22 @@ export function setRoute(
 }
 
 export function setSource(
-  store: MarketDataConfigStore,
+  bookStore: FileBookStore,
+  configStore: MarketDataConfigStore,
   options: SourceConfigOptions,
   json: boolean,
 ): void {
   const binding = sourceBinding(options);
+  if (
+    binding.kind === "instrument" &&
+    !requireResult(bookStore.load()).instruments.some(
+      (instrument) => instrument.id === binding.instrument,
+    )
+  ) {
+    throw notFoundFailure("instrument", binding.instrument);
+  }
   requireResult(
-    store.update((config) => ({
+    configStore.update((config) => ({
       ...config,
       bindings: [
         ...config.bindings.filter((candidate) => !sameSubject(candidate, binding)),

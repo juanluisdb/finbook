@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -56,6 +56,23 @@ function runCliAsync(
   });
 }
 
+function addInstrument(dataHome: string, id: string): void {
+  const result = runCli(dataHome, [
+    "instrument",
+    "add",
+    "--id",
+    id,
+    "--name",
+    "Test instrument",
+    "--type",
+    "fund",
+    "--quote-currency",
+    "EUR",
+    "--json",
+  ]);
+  expect(result.status).toBe(0);
+}
+
 describe("provider configuration CLI", () => {
   it("shows deterministic defaults", () => {
     const dataHome = temporaryHome();
@@ -70,6 +87,7 @@ describe("provider configuration CLI", () => {
 
   it("persists safe provider, route, and binding overrides", () => {
     const dataHome = temporaryHome();
+    addInstrument(dataHome, "fund-x");
     const disabled = runCli(dataHome, ["config", "provider", "disable", "yahoo", "--json"]);
     const route = runCli(dataHome, ["config", "route", "set", "price:fund", "yahoo", "--json"]);
     const binding = runCli(dataHome, [
@@ -98,6 +116,56 @@ describe("provider configuration CLI", () => {
           { kind: "instrument", instrument: "fund-x", provider: "yahoo", identifier: "FUND.X" },
         ],
       },
+    });
+  });
+
+  it("rejects an unknown instrument binding without changing configuration bytes", () => {
+    const dataHome = temporaryHome();
+    expect(runCli(dataHome, ["config", "show", "--json"]).status).toBe(0);
+    const path = join(dataHome, "market-data.json");
+    const before = readFileSync(path, "utf8");
+
+    const result = runCli(dataHome, [
+      "config",
+      "source",
+      "set",
+      "--instrument",
+      "missing",
+      "--provider",
+      "yahoo",
+      "--identifier",
+      "MISSING",
+      "--json",
+    ]);
+
+    expect(result.status).toBe(3);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: false,
+      error: { type: "not-found", message: "Unknown instrument ID: missing." },
+    });
+    expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
+  it("allows a currency binding without a local registry entry", () => {
+    const dataHome = temporaryHome();
+
+    const result = runCli(dataHome, [
+      "config",
+      "source",
+      "set",
+      "--currency",
+      "BTC",
+      "--provider",
+      "coingecko",
+      "--identifier",
+      "bitcoin",
+      "--json",
+    ]);
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: true,
+      data: { kind: "currency", currency: "BTC", provider: "coingecko" },
     });
   });
 

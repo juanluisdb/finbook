@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  EventTypeSchema,
   FileBookStore,
+  InstrumentIdSchema,
+  NonEmptyStringSchema,
   getGlance,
   getPositions,
   type BookSnapshot,
@@ -110,7 +113,7 @@ export function createProgram(
     .requiredOption("--identifier <id>", "provider identifier");
   addJsonOption(sourceSet);
   sourceSet.action((_options, command) =>
-    setSource(marketDataConfig, command.opts(), jsonMode(command)),
+    setSource(store, marketDataConfig, command.opts(), jsonMode(command)),
   );
   const sourceRemove = source
     .command("remove")
@@ -164,14 +167,22 @@ export function createProgram(
   const eventList = event.command("list").description("list events");
   eventList
     .option("--account <id>", "filter by account")
+    .option("--type <type>", "filter by event type; repeatable", collectOption, [])
+    .option("--instrument <id>", "filter by instrument; repeatable", collectOption, [])
+    .option("--source <source>", "filter by exact source; repeatable", collectOption, [])
     .option("--from <date>", "inclusive start date")
     .option("--to <date>", "inclusive end date");
   addJsonOption(eventList);
+  eventList.addHelpText(
+    "after",
+    "\nExample:\n  finbook event list --type buy --instrument HROW --from 2026-01-01",
+  );
   eventList.action((_options, command) =>
     listEvents(store, command.opts(), jsonMode(command), defaultDate),
   );
   const eventGet = event.command("get <id>").description("get one event");
   addJsonOption(eventGet);
+  eventGet.addHelpText("after", "\nExample:\n  finbook event get buy-1");
   eventGet.action((id, _options, command) => getEvent(store, id, jsonMode(command)));
 
   const price = program.command("price").description("manage price stamps");
@@ -217,6 +228,22 @@ export function createProgram(
     showPositions(store, command.opts(), jsonMode(command), defaultDate, marketDataFactory),
   );
 
+  program.addHelpText(
+    "after",
+    [
+      "",
+      "Get started:",
+      "  finbook account add --help",
+      "  finbook instrument add --help",
+      "  finbook event add --help",
+      "  finbook price set --help",
+      "  finbook show glance --fetch",
+      "  finbook show glance",
+      "  finbook event get <id>",
+      "  finbook event edit <type> <id> --help",
+    ].join("\n"),
+  );
+
   return program;
 }
 
@@ -226,6 +253,9 @@ type JsonOptions = {
 
 type EventListOptions = JsonOptions & {
   account?: string | undefined;
+  type?: readonly string[] | undefined;
+  instrument?: readonly string[] | undefined;
+  source?: readonly string[] | undefined;
   from?: string | undefined;
   to?: string | undefined;
 };
@@ -237,6 +267,10 @@ type AsOfOptions = JsonOptions & {
 
 function addJsonOption(command: Command): void {
   command.option("--json", "return the stable JSON envelope");
+}
+
+function collectOption(value: string, previous: readonly string[]): string[] {
+  return [...previous, value];
 }
 
 function jsonMode(command: Command): boolean {
@@ -296,6 +330,17 @@ function listEvents(
   ) {
     throw notFoundFailure("account", options.account);
   }
+  const types = options.type?.map(parseEventType) ?? [];
+  const instruments = options.instrument?.map(parseInstrumentFilter) ?? [];
+  const sources = options.source?.map(parseSourceFilter) ?? [];
+  for (const instrument of instruments) {
+    if (!snapshot.instruments.some((candidate) => candidate.id === instrument)) {
+      throw notFoundFailure("instrument", instrument);
+    }
+  }
+  const typeSet = new Set(types);
+  const instrumentSet = new Set(instruments);
+  const sourceSet = new Set(sources);
   const from =
     options.from === undefined ? undefined : requireDate(options.from, "--from", defaultDate);
   const to = options.to === undefined ? undefined : requireDate(options.to, "--to", defaultDate);
@@ -308,11 +353,41 @@ function listEvents(
   const events = snapshot.events.filter((event) => {
     if (options.account !== undefined && !eventBelongsToAccount(event, options.account))
       return false;
+    if (typeSet.size > 0 && !typeSet.has(event.type)) return false;
+    if (instrumentSet.size > 0 && !eventBelongsToInstrument(event, instrumentSet)) return false;
+    if (sourceSet.size > 0 && !sourceSet.has(event.source)) return false;
     if (from !== undefined && event.date < from) return false;
     if (to !== undefined && event.date > to) return false;
     return true;
   });
   writeSuccess(events, json, renderEvents(events));
+}
+
+function parseEventType(value: string): Event["type"] {
+  const parsed = EventTypeSchema.safeParse(value);
+  if (!parsed.success) {
+    throw validationFailure(
+      `Unknown event type: ${value}.`,
+      `Use one of: ${EventTypeSchema.options.join(", ")}.`,
+    );
+  }
+  return parsed.data;
+}
+
+function parseInstrumentFilter(value: string): string {
+  const parsed = InstrumentIdSchema.safeParse(value);
+  if (!parsed.success) {
+    throw validationFailure("Invalid instrument ID.", "Use a valid local instrument ID.");
+  }
+  return parsed.data;
+}
+
+function parseSourceFilter(value: string): string {
+  const parsed = NonEmptyStringSchema.safeParse(value);
+  if (!parsed.success) {
+    throw validationFailure("Invalid event source.", "Use a non-empty exact source ID.");
+  }
+  return parsed.data;
 }
 
 function getEvent(store: FileBookStore, id: string, json: boolean): void {
@@ -459,4 +534,8 @@ function eventBelongsToAccount(event: Event, accountId: string): boolean {
   return event.type === "transfer"
     ? event.from === accountId || event.to === accountId
     : event.account === accountId;
+}
+
+function eventBelongsToInstrument(event: Event, instruments: ReadonlySet<string>): boolean {
+  return "instrument" in event && instruments.has(event.instrument);
 }

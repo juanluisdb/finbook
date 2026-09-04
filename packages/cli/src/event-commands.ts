@@ -22,6 +22,7 @@ export function registerEventCommands(
   const add = event.command("add").description("add an event");
   add.option("--file <path>", "read one canonical event object");
   addJsonOption(add);
+  addExample(add, "finbook event add --file event.json");
   add.action((_options, command) => {
     const options = command.opts();
     if (options.file === undefined) {
@@ -56,6 +57,7 @@ export function registerEventCommands(
 
   const remove = event.command("delete <id>").description("delete one event");
   addJsonOption(remove);
+  addExample(remove, "finbook event delete buy-1");
   remove.action((id, _options, command) => deleteEvent(store, id, jsonMode(command)));
 }
 
@@ -70,6 +72,10 @@ function registerDepositAdd(
   addAccountMoneyOptions(command, true);
   addRateOptions(command);
   addJsonOption(command);
+  addExample(
+    command,
+    "finbook event add deposit --date 2026-03-03 --account ib --amount 800 --currency EUR",
+  );
   command.action((_options, current) =>
     addEvent(
       store,
@@ -92,6 +98,10 @@ function registerWithdrawalAdd(
   addAccountMoneyOptions(command, true);
   addRateOptions(command);
   addJsonOption(command);
+  addExample(
+    command,
+    "finbook event add withdrawal --date 2026-03-04 --account ib --amount 100 --currency EUR",
+  );
   command.action((_options, current) =>
     addEvent(
       store,
@@ -115,6 +125,10 @@ function registerTransferAdd(
     .option("--to <id>", "required destination account");
   addMoneyOptions(command, true);
   addJsonOption(command);
+  addExample(
+    command,
+    "finbook event add transfer --date 2026-03-03 --from myinvestor --to ib --amount 800 --currency EUR",
+  );
   command.action((_options, current) =>
     addEvent(store, typedAddEventInput(current, "transfer"), jsonMode(current), generateId),
   );
@@ -129,6 +143,10 @@ function registerFxAdd(parent: Command, store: FileBookStore, generateId: () => 
     .option("--fee-amount <decimal>", "FX fee amount")
     .option("--fee-currency <code>", "FX fee currency");
   addJsonOption(command);
+  addExample(
+    command,
+    "finbook event add fx --date 2026-03-03 --account ib --from-amount 798 --from-currency EUR --to-amount 927.04 --to-currency USD",
+  );
   command.action((_options, current) =>
     addEvent(store, typedAddEventInput(current, "fx"), jsonMode(current), generateId),
   );
@@ -146,6 +164,10 @@ function registerTradeAdd(
   addTradeOptions(command, true);
   addRateOptions(command);
   addJsonOption(command);
+  addExample(
+    command,
+    `finbook event add ${type} --date 2026-03-05 --account ib --instrument HROW --qty 2 --price-amount 40 --price-currency USD --eur-per-unit 0.9`,
+  );
   command.action((_options, current) =>
     addEvent(
       store,
@@ -195,6 +217,12 @@ function registerIncomeAdd(
     .option("--withholding-domestic-amount <decimal>", "domestic withholding");
   addRateOptions(command);
   addJsonOption(command);
+  addExample(
+    command,
+    type === "dividend"
+      ? "finbook event add dividend --date 2026-03-06 --account ib --instrument HROW --gross-amount 10 --gross-currency USD --eur-per-unit 0.9"
+      : "finbook event add interest --date 2026-03-06 --account ib --gross-amount 5 --gross-currency EUR",
+  );
   command.action((_options, current) =>
     addEvent(
       store,
@@ -235,6 +263,10 @@ function registerFeeAdd(
   addAccountMoneyOptions(command, true);
   addRateOptions(command);
   addJsonOption(command);
+  addExample(
+    command,
+    "finbook event add fee --date 2026-03-06 --account ib --amount 2 --currency EUR",
+  );
   command.action((_options, current) =>
     addEvent(
       store,
@@ -256,6 +288,7 @@ function registerDepositEdit(
   addAccountMoneyEditOptions(command);
   addRateOptions(command);
   addJsonOption(command);
+  addExample(command, "finbook event edit deposit deposit-1 --amount 900");
   command.action((id, _options, current) =>
     editEvent(
       store,
@@ -277,6 +310,7 @@ function registerWithdrawalEdit(
   addAccountMoneyEditOptions(command);
   addRateOptions(command);
   addJsonOption(command);
+  addExample(command, "finbook event edit withdrawal withdrawal-1 --amount 75");
   command.action((id, _options, current) =>
     editEvent(
       store,
@@ -294,6 +328,7 @@ function registerTransferEdit(parent: Command, store: FileBookStore): void {
   command.option("--from <id>", "source account").option("--to <id>", "destination account");
   addMoneyEditOptions(command);
   addJsonOption(command);
+  addExample(command, "finbook event edit transfer transfer-1 --amount 700");
   command.action((id, _options, current) =>
     editEvent(store, typedEditEventInput(current, "transfer"), id, jsonMode(current)),
   );
@@ -309,6 +344,7 @@ function registerFxEdit(parent: Command, store: FileBookStore): void {
     .option("--fee-currency <code>", "FX fee currency")
     .option("--clear-fee", "remove the fee");
   addJsonOption(command);
+  addExample(command, "finbook event edit fx fx-1 --to-amount 930");
   command.action((id, _options, current) =>
     editEvent(store, typedEditEventInput(current, "fx"), id, jsonMode(current)),
   );
@@ -325,6 +361,7 @@ function registerTradeEdit(
   addTradeEditOptions(command);
   addRateOptions(command);
   addJsonOption(command);
+  addExample(command, `finbook event edit ${type} ${type}-1 --qty 15`);
   command.action((id, _options, current) =>
     editEvent(
       store,
@@ -370,6 +407,10 @@ function registerIncomeEdit(
     .option("--clear-withholding-domestic", "remove domestic withholding");
   addRateOptions(command);
   addJsonOption(command);
+  addExample(
+    command,
+    `finbook event edit ${type} ${type}-1 --gross-amount ${type === "dividend" ? "12" : "6"}`,
+  );
   command.action((id, _options, current) =>
     editEvent(
       store,
@@ -407,6 +448,7 @@ function registerFeeEdit(
   addAccountMoneyEditOptions(command);
   addRateOptions(command);
   addJsonOption(command);
+  addExample(command, "finbook event edit fee fee-1 --amount 3");
   command.action((id, _options, current) =>
     editEvent(
       store,
@@ -529,6 +571,10 @@ function rateResolver(
 
 function addJsonOption(command: Command): void {
   command.option("--json", "return the stable JSON envelope");
+}
+
+function addExample(command: Command, example: string): void {
+  command.addHelpText("after", `\nExample:\n  ${example}`);
 }
 
 function typedAddEventInput(command: Command, type: EventAddOptions["type"]): EventAddOptions {

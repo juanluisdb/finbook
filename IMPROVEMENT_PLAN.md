@@ -196,15 +196,15 @@ The relevant threat is another local OS user reading financial data or a credent
 
 ## Now: pull request roadmap
 
-The program is five substantial PRs: three are merged and the final two are specified below. The N1–N10 sections are case-level workstreams inside those PRs, not a request to open ten small reviews.
+The program is five substantial PRs: four are merged and the final one is implemented below. The N1–N10 sections are case-level workstreams inside those PRs, not a request to open ten small reviews.
 
 | PR                                                                       | Status                                                                    | Outcome                                                                                                            | Workstreams                                  | Dependency |
 | ------------------------------------------------------------------------ | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | -------------------------------------------- | ---------- |
 | **PR 1 — Make reads and market-data fetching correct and honest**        | **Done:** merged as [PR #1](https://github.com/juanluisdb/finbook/pull/1) | Current and historical views use the right date and provider behavior; a partial fetch cannot look successful.     | N1, N2, N6, contract docs, tests             | None       |
 | **PR 2 — Make book mutations safe and add corrections**                  | **Done:** merged as [PR #2](https://github.com/juanluisdb/finbook/pull/2) | Every write uses one locked domain-aware boundary; users can edit/delete events through strict typed commands.     | N3, N4, N5, relevant N8 cases, contract docs | PR 1       |
 | **PR 3 — Make history, holes, and book health actionable**               | **Done:** merged as [PR #3](https://github.com/juanluisdb/finbook/pull/3) | Human reads explain what happened and what is missing; `doctor` diagnoses the local book without changing it.      | N7, focused docs and tests                   | PR 2       |
-| **PR 4 — Make the remaining correctness guarantees explicit in tests**   | **In review:** [PR #4](https://github.com/juanluisdb/finbook/pull/4)      | The suite pins the remaining domain, replay, filesystem, CLI, and provider guarantees without brittle test layers. | N8, provider-fixture maintenance notes       | PR 3       |
-| **PR 5 — Finish inspection guardrails, onboarding, and the v1 contract** | Planned                                                                   | Growing books remain easy to inspect, binding typos fail early, and docs/help match the final product end to end.  | N9, N10, final acceptance pass               | PR 4       |
+| **PR 4 — Make the remaining correctness guarantees explicit in tests**   | **Done:** merged as [PR #4](https://github.com/juanluisdb/finbook/pull/4) | The suite pins the remaining domain, replay, filesystem, CLI, and provider guarantees without brittle test layers. | N8, provider-fixture maintenance notes       | PR 3       |
+| **PR 5 — Finish inspection guardrails, onboarding, and the v1 contract** | **Implemented:** awaiting review                                          | Growing books remain easy to inspect, binding typos fail early, and docs/help match the final product end to end.  | N9, N10, final acceptance pass               | PR 4       |
 
 Each PR must be internally complete: tests ship with behavior, `DESIGN.md` changes ship with the contract they describe, and `corepack pnpm check` is green. A later PR may strengthen an already-shipped guarantee, but it must not be used to defer the minimum regression test required by the PR that changes behavior.
 
@@ -888,7 +888,7 @@ Trace three things: whether doctor can write on any path, whether it reuses rath
 
 ### PR 4 — Make the remaining correctness guarantees explicit in tests
 
-**Status:** implemented and in review as [PR #4](https://github.com/juanluisdb/finbook/pull/4). It starts from merged PR 3 at `ec423ee`.
+**Status:** completed and merged in [PR #4](https://github.com/juanluisdb/finbook/pull/4) on 2026-09-04. The merge commit on `main` is `c5f5ddb`; `corepack pnpm check` passed with 229 tests across 25 files. This section remains as the decision and acceptance record for the shipped work.
 
 #### Outcome and scope
 
@@ -964,7 +964,7 @@ For each new test, ask what production guarantee can be deleted to make it fail.
 
 ### PR 5 — Finish inspection guardrails, onboarding, and the v1 contract
 
-**Status:** planned; final PR in the improvement program.
+**Status:** implemented on `codex/pr5-inspection-onboarding`; awaiting review. It starts from merged PR 4 at `c5f5ddb`.
 
 #### User-visible result
 
@@ -1059,13 +1059,13 @@ Rules:
 
 #### PR 5 acceptance checklist
 
-- [ ] Event inspection filters compose predictably, preserve ledger order, and keep empty results successful.
-- [ ] Instrument binding typos fail before any config write; currency bindings remain appropriately permissive.
-- [ ] Help is complete, non-interactive, side-effect free, and consistent with the actual command tree.
-- [ ] README commands are copyable and cover setup, ordinary use, holes, corrections, and script failure behavior.
-- [ ] `DESIGN.md` acceptance cases and non-goals describe PRs 1–5 as shipped.
-- [ ] No speculative pagination, registry, backup/history, timezone, CI, or app work is pulled in.
-- [ ] `corepack pnpm check` passes and the normal-week workflow remains green.
+- [x] Event inspection filters compose predictably, preserve ledger order, and keep empty results successful.
+- [x] Instrument binding typos fail before any config write; currency bindings remain appropriately permissive.
+- [x] Help is complete, non-interactive, side-effect free, and consistent with the actual command tree.
+- [x] README commands are copyable and cover setup, ordinary use, holes, corrections, and script failure behavior.
+- [x] `DESIGN.md` acceptance cases and non-goals describe PRs 1–5 as shipped.
+- [x] No speculative pagination, registry, backup/history, timezone, CI, or app work is pulled in.
+- [x] `corepack pnpm check` passes and the normal-week workflow remains green.
 
 #### PR 5 review focus
 
@@ -1297,7 +1297,7 @@ Do not enforce Google's approximate 70/20/10 split. Test size should follow the 
 
 ### N9. Align the documentation with the product users will actually have
 
-**Status:** contract changes shipped with PRs 1–3; PR 5 owns the final reconciliation and first-book journey.
+**Status:** implemented in PR 5 after contract changes shipped incrementally in PRs 1–4.
 
 **DESIGN.md**
 
@@ -1322,7 +1322,7 @@ Do not enforce Google's approximate 70/20/10 split. Test size should follow the 
 
 ### N10. Finish inspection and configuration guardrails
 
-**Status:** owned by PR 5.
+**Status:** implemented in PR 5.
 
 **Shape**
 
