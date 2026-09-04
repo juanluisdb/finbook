@@ -68,6 +68,18 @@ const BaseEventSchema = z
   })
   .strict();
 
+export const EventTypeSchema = z.enum([
+  "deposit",
+  "withdrawal",
+  "transfer",
+  "fx",
+  "buy",
+  "sell",
+  "dividend",
+  "interest",
+  "fee",
+]);
+
 const AccountEventSchema = BaseEventSchema.extend({
   account: AccountIdSchema,
 });

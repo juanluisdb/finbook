@@ -1,94 +1,149 @@
 # finbook
 
-finbook is a local, CLI-first book of economic events. It derives cash, positions, contributions, and a EUR glance from an ordered event ledger. It is not a broker, trading tool, or tax-filing product.
+finbook is a local, single-user book of financial events. It derives cash, positions, contributions, and a EUR portfolio glance from an ordered ledger. It is not a broker, trading tool, tax calculator, or hosted service.
 
-`DESIGN.md` is the source of truth for scope, domain rules, CLI contracts, tests, and milestones.
+`DESIGN.md` is the source of truth for the domain and CLI contracts. `IMPROVEMENT_PLAN.md` records the decisions and improvement program that produced the current v1.
 
-## Development
+## Build and check
 
-The project requires Node 24.19.0 or newer within major 24 and pnpm 11.24.0.
+finbook requires Node 24.19.0 or newer within major 24 and pnpm 11.24.0.
 
 ```sh
 corepack pnpm install
 corepack pnpm check
-```
-
-Build the CLI and run it from the emitted `dist` path:
-
-```sh
 corepack pnpm build
-FINBOOK_HOME=/tmp/finbook-data node packages/cli/dist/main.js --help
-FINBOOK_HOME=/tmp/finbook-data node packages/cli/dist/main.js doctor --json
 ```
 
-## Market data
-
-Events that affect EUR accounting require `eurPerUnit`. Enter it directly, or explicitly fetch it while creating the event:
+For development from this checkout, define a shell function and use a temporary book:
 
 ```sh
-finbook event add buy ... --eur-per-unit 0.925
-finbook event add buy ... --fetch-rate
+export FINBOOK_HOME="$(mktemp -d)"
+finbook() { node packages/cli/dist/main.js "$@"; }
+finbook --help
 ```
 
-Current and historical visualization marks can be fetched explicitly:
+The CLI is non-interactive. Human-readable tables are the default; `--json` returns a stable `{ ok, data }` or `{ ok, error }` envelope. Empty lists are successful. Data goes to stdout, diagnostics go to stderr, and exit codes distinguish external failure (`1`), validation/conflict (`2`), and not found (`3`).
+
+## First book
+
+Create two owned accounts and one instrument:
 
 ```sh
-finbook show glance --fetch
-finbook show glance --as-of 2026-08-05 --fetch
+finbook account add --id myinvestor --name MyInvestor --platform myinvestor --country ES --custodial broker
+finbook account add --id ib --name "Interactive Brokers" --platform interactive-brokers --country IE --custodial broker
+finbook instrument add --id HROW --name Harrow --type stock --quote-currency USD
 ```
 
-With all requested providers available, the first command exits `0` and returns the ordinary glance success envelope (or the compact human view). A partial fetch keeps every successful mark, shows the usable partial view, reports each failed need, and exits `1`; JSON mode keeps one `ok: false` envelope with the partial view under `error.details` so scripts can retry safely.
+A `deposit` is money entering your financial life. A movement between two accounts you own is a `transfer`, so it does not inflate contributions:
 
-Fetched prices and FX marks are cached one observation at a time. If a command stops part-way through a batch, rerunning it naturally reuses the successful cached marks.
+```sh
+finbook event add deposit --id deposit-1 --date 2026-03-03 --account myinvestor --amount 800 --currency EUR
+finbook event add transfer --id transfer-1 --date 2026-03-03 --from myinvestor --to ib --amount 800 --currency EUR
+```
 
-When a human glance or positions view is incomplete, it still shows the usable partial result and lists every missing observation with both a manual command and the matching `--fetch` command. For example:
+Record an FX conversion and a purchase. `eurPerUnit` is the historical EUR value of one unit of the event currency:
+
+```sh
+finbook event add fx --id fx-1 --date 2026-03-03 --account ib --from-amount 798 --from-currency EUR --to-amount 927.04 --to-currency USD --fee-amount 1.71 --fee-currency EUR
+finbook event add buy --id buy-hrow --date 2026-03-03 --account ib --instrument HROW --qty 20 --price-amount 40.45 --price-currency USD --fee-amount 0.28 --fee-currency USD --eur-per-unit 0.861
+```
+
+Add current valuation marks and inspect the result:
+
+```sh
+finbook price set --instrument HROW --amount 41 --currency USD --as-of 2026-03-04
+finbook fx set --pair USD/EUR --rate 0.866 --as-of 2026-03-04
+finbook show glance --as-of 2026-03-04
+finbook show positions --as-of 2026-03-04
+finbook doctor
+```
+
+Event history keeps ledger order and can be narrowed without changing it. Repeated values in one filter are OR; different filter dimensions are AND:
+
+```sh
+finbook event list --type buy --type sell --instrument HROW --source manual --from 2026-01-01
+finbook event get buy-hrow
+```
+
+## Correcting events safely
+
+Edits keep omitted fields unchanged. Before committing an edit or deletion, finbook replays the complete candidate ledger and rejects any change that would make a later event invalid.
+
+This sale consumes all 20 units, so reducing the earlier purchase to 15 is rejected and writes nothing:
+
+```sh
+finbook event add sell --id sell-hrow --date 2026-03-05 --account ib --instrument HROW --qty 20 --price-amount 41 --price-currency USD --eur-per-unit 0.866
+finbook event edit buy buy-hrow --qty 15
+```
+
+After removing the dependent sale, the edit is valid:
+
+```sh
+finbook event delete sell-hrow
+finbook event edit buy buy-hrow --qty 15
+finbook event get buy-hrow
+```
+
+Deletion is immediate and non-interactive. There is no automatic backup, undo log, tombstone, or hidden history. If you want a safety copy before a bulk correction, copy `$FINBOOK_HOME` yourself.
+
+## Missing and fetched market data
+
+Views remain useful when a valuation mark is missing. They show partial totals plus an exact manual remedy and the corresponding fetch command:
 
 ```text
 missing data
-- FX USD/EUR as of 2026-08-05
-  add: finbook fx set --pair USD/EUR --rate <decimal> --as-of 2026-08-05
-  or:  finbook show glance --as-of 2026-08-05 --fetch
+- FX USD/EUR as of 2026-03-04
+  add: finbook fx set --pair USD/EUR --rate <decimal> --as-of 2026-03-04
+  or:  finbook show glance --as-of 2026-03-04 --fetch
 ```
 
-Provider configuration is non-secret:
+Resolve that hole manually with a known rate:
+
+```sh
+finbook fx set --pair USD/EUR --rate 0.866 --as-of 2026-03-04
+```
+
+Or fetch only the marks required by a view:
+
+```sh
+finbook show glance --fetch
+finbook show glance --as-of 2026-03-04 --fetch
+```
+
+A complete fetch exits `0`. A partial fetch preserves every successful mark, returns the usable partial view, reports each failed need, and exits `1`. JSON mode returns one `ok: false` envelope with the partial view under `error.details`, so a script can inspect the saved work and retry safely.
+
+Rate-bearing events require their historical `eurPerUnit`. Supply it directly or explicitly fetch it before writing:
+
+```sh
+finbook event add buy --date 2026-03-06 --account ib --instrument HROW --qty 1 --price-amount 42 --price-currency USD --eur-per-unit 0.87
+finbook event add buy --date 2026-03-06 --account ib --instrument HROW --qty 1 --price-amount 42 --price-currency USD --fetch-rate
+```
+
+Configure non-secret routes and source bindings separately:
 
 ```sh
 finbook config provider list
-finbook config source set --instrument VWCE --provider yahoo --identifier VWCE.DE
+finbook config source set --instrument HROW --provider yahoo --identifier HROW
 finbook config source set --currency BTC --provider coingecko --identifier bitcoin
 ```
 
-Provider credentials use environment variables and are never stored in the book. For example:
+An instrument binding must reference an instrument already in the book. Currency bindings only require a valid uppercase currency shape because finbook has no currency registry.
+
+CoinGecko credentials come from the environment and are never stored:
 
 ```sh
-export FINBOOK_COINGECKO_DEMO_API_KEY=...
+export FINBOOK_COINGECKO_DEMO_API_KEY="replace-with-your-key"
 ```
 
-The CLI is non-interactive. Use `--json` for the stable `{ ok, data }` or `{ ok, error }` envelope. Monetary values are decimal strings inside `Money` objects.
+## Dates and local data
 
-Book data belongs in `$FINBOOK_HOME` (default `~/.finbook`), never in this checkout. Use a temporary directory for tests and examples.
+Event dates, mark dates, and `asOf` values are daily economic dates written as `YYYY-MM-DD`; they do not represent a time of day or timezone. An omitted current-view date uses the machine-local calendar day. Provider retrieval timestamps are stored as UTC instants.
 
-## Checking book health
+Book data lives in `$FINBOOK_HOME` (default `~/.finbook`), never in this checkout. It contains private financial information. Do not commit or upload it to a remote repository. Provider credentials also do not belong in the checkout, book files, command output, or logs.
 
-`finbook doctor` is an offline, read-only inspection of the local book:
+`finbook doctor` is offline and read-only. It validates stored schemas, replay, configuration, permissions, lock ownership, and valuation completeness without initializing, repairing, unlocking, fetching, or exposing event payloads or credentials:
 
 ```sh
 finbook doctor
 finbook doctor --json
 ```
-
-It validates stored schemas, replays the complete event ledger, checks market-data configuration, permissions, lock ownership, and valuation completeness. A healthy or merely incomplete/busy book exits `0`; warnings remain visible in the report. Corrupt data, invalid replay, unsafe permissions, or uncertain lock ownership exit `1`, with the full report under `error.details.report` in JSON mode.
-
-Doctor does not initialize a missing book, fetch data, repair permissions, reclaim locks, or expose event payloads and provider credentials.
-
-## Correcting events
-
-Inspect an event before changing it, then use the matching typed edit command:
-
-```sh
-finbook event get buy-1
-finbook event edit buy buy-1 --qty 15
-finbook event delete deposit-old
-```
-
-Edits preserve the event identity and leave omitted fields unchanged when the edit commits. The complete remaining ledger is replayed before a correction is committed, so changing a buy from 20 units to 15 can be rejected if a later sale consumes all 20; the error identifies that blocking event and says no changes were written. If another process changes the event while it is being prepared or its rate is fetched, the edit fails with a conflict; inspect the event again and retry. When gross income changes currency, omitted withholdings keep their complete values only when their currency still matches; otherwise provide new withholding amounts or clear them explicitly. Deletion is non-interactive and successful corrections are irreversible. Copy `$FINBOOK_HOME` yourself before making bulk corrections.

@@ -6,7 +6,7 @@ Handoff for a developer who was not in the planning conversation. This file is t
 **Binary:** `finbook`
 **Repo:** this repository
 **Data dir:** `$FINBOOK_HOME`, default `~/.finbook`
-**Audience:** one person, this machine. Backup is copy the data folder.
+**Audience:** one person, this machine. Persistence is the local data folder; finbook creates no automatic backup or history.
 
 ---
 
@@ -46,14 +46,15 @@ A spreadsheet is still a valid cheaper path if the owner does not want to type e
 - Manual event entry (flags or one JSON object)
 - Accounts, instruments, price stamps, FX stamps
 - Derived glance and positions
-- Typed history (list/get events)
-- Local files only
+- Typed history with composable event filters
+- Explicit Yahoo, CoinGecko, and ECB fetching for missing prices and rates
+- Local files as the only persisted book state
 - CLI only
 
 **Out (same book, later work)**
 
 - Broker parsers (IB, MyInvestor, Revolut X, …). When they exist they **emit these events**; they do not invent a second schema. Broker row types are not the book. IB “FX Translations P&L”, withholding as a sibling row, and “Deposit” that is really an own-account transfer must be collapsed or classified by the user/parser — never ingested raw.
-- Schedulers, live price APIs, Effect, background jobs
+- Schedulers, background fetching, provider discovery, Effect
 - Desktop/web app (`packages/app` is reserved and empty)
 - FIFO *report*, currency-FIFO / DGT V0282-22 figures, casillas
 - 720/721 cockpit (we still store the fields those views will need)
@@ -302,7 +303,7 @@ $FINBOOK_HOME/          # default ~/.finbook
   market-data.json       # non-secret provider routes and bindings
 ```
 
-- Inspectable files. Backup = copy this folder.
+- Inspectable files. There is no automatic backup or history; a manual safety copy means copying this folder.
 - Never commit this folder. Never write the book into the git checkout.
 - `prices.jsonl` and `fx.jsonl` are append-only. For a repeated price or FX key at the same date, the last appended record wins.
 - `events.jsonl` preserves stable line order and is rewritten only by a validated add, edit, or delete through the local mutation boundary. Validation, not-found, and domain rejection leave its bytes unchanged; a post-commit filesystem failure explicitly reports that the mutation may have committed.
@@ -334,7 +335,8 @@ finbook event add <type> …          # flags, --eur-per-unit or --fetch-rate
 finbook event add --file …          # canonical event object
 finbook event edit <type> <id> …    # typed, validated correction
 finbook event delete <id>            # irreversible, non-interactive correction
-finbook event list [--account] [--from] [--to]
+finbook event list [--account <id>] [--type <type>...] [--instrument <id>...]
+                   [--source <source>...] [--from <date>] [--to <date>]
 finbook event get <id>
 finbook price set|list
 finbook fx set|list                 # glance rates, not tax rates
@@ -352,6 +354,8 @@ Monetary fields in `data` use `Money` (`amount` is a decimal string). Quantities
 
 Exit codes: `0` success (including empty lists), `1` external/provider failure or unexpected bug, `2` validation or concurrent-edit conflict, `3` not found.
 
+Event-list filters are applied once before either renderer. Different dimensions combine with AND; repeated type, instrument, and source values combine with OR; ledger order is preserved. Instrument filters match buy, sell, and dividend events. Account filters match either transfer endpoint. Invalid types/dates return validation, unknown account/instrument filters return not-found, and no matches produce an ordinary empty success.
+
 Each event type has its own legal flags; an irrelevant flag is a validation error. Required fields are marked in typed-command help and reported together when omitted. `--file` contains one canonical event object and cannot be combined with a typed event. Typed and file-based event writes call the same core mutation boundary, which loads the latest book, validates uniqueness, replays the complete candidate, and commits only a valid result.
 
 An event edit reads its target before any rate fetch and supplies that version to the replacement boundary. If another process changes or deletes the target before the replacement commits, the edit returns a conflict with exit code `2`; reload the event and retry.
@@ -363,6 +367,8 @@ An event edit reads its target before any rate fetch and supplies that version t
 Event dates, mark dates, and `asOf` values are timezone-free economic calendar dates. An omitted current-view date uses the machine-local calendar day; fetched `retrievedAt` values remain UTC instants.
 
 Provider capabilities are defined once: Yahoo serves price routes, including explicitly selected or configured-fallback crypto symbols, CoinGecko is the default crypto provider and also serves crypto FX/rates and bound crypto currencies, and ECB serves fiat FX/rates. Configured routes are rejected when their provider is incapable, disabled providers are removed from fallback routes and rejected through bindings or explicit pins, and a crypto currency binding selects the crypto EUR-rate route with its provider identifier.
+
+An instrument source binding is accepted only when its local instrument already exists; a failed lookup leaves market configuration unchanged. Currency bindings remain shape-validated without a local registry.
 
 Historical Yahoo requests cover a bounded ten-calendar-day window ending on the requested date and select the last close on or before that date. CoinGecko partitions current price requests by quote currency inside its adapter.
 
@@ -515,14 +521,18 @@ Dependency strategy:
 | C11 | List all event families in human mode | Every row has a compact type-specific summary; JSON event shapes are unchanged. |
 | C12 | Show an incomplete glance or positions view | Human output includes the resolved date, every hole, and exact manual/fetch remedies; a non-fetching view still exits 0. |
 | C13 | Doctor an incomplete, locked, insecure, corrupt, or replay-invalid book | Warnings exit 0; hard failures exit 1 with the report in the JSON error envelope; every case is offline, redacted, and byte-preserving. |
+| C14 | Compose repeated event type/instrument/source filters with account and date | OR within one dimension and AND across dimensions; original ledger order is unchanged. |
+| C15 | Empty, invalid, and unknown event filters | Empty is exit 0; bad type/date is exit 2; unknown account/instrument is exit 3 in human and JSON modes. |
+| C16 | Set an instrument or currency source binding | Unknown instruments return exit 3 without changing config bytes; valid instrument and currency bindings persist. |
+| C17 | Root and representative typed-event help against a fresh home | The workflow and a complete legal example are shown without creating book files. |
 
-Do **not** test FIFO tax matching, V0282-22, 720/721 obligations, broker parsing, live prices, or scheduler behavior in v1.
+Do **not** test FIFO tax matching, V0282-22, 720/721 obligations, broker parsing, live provider calls, or scheduler behavior in the normal gate.
 
 ---
 
-## 12. Full implementation plan
+## 12. Shipped implementation record
 
-Every behavior commit writes its test case first, then the implementation, and is committed only while the available gate is green. No intentionally red commits. From the tooling commit onward, every commit must pass `pnpm check`. The plan stops at v1 CLI; `packages/app` remains empty.
+The milestones below record how the current v1 was built. They are history, not unfinished work. New behavior still starts with its boundary test and must pass `pnpm check`; `packages/app` remains reserved and empty.
 
 ### Target repository shape
 
@@ -548,6 +558,11 @@ finbook/
       tsconfig.json
       src/                      # schemas, money, apply, replay, queries, file store
       tests/                    # core and file-store tests
+    market-data/
+      package.json
+      tsconfig.json
+      src/                      # provider adapters, routing, cache coordination
+      tests/                    # fixtures, local HTTP, coordinator behavior
     cli/
       package.json
       tsconfig.json
@@ -599,7 +614,7 @@ finbook/
 | M3.1 `feat(core): add filesystem book store` | Create/load `meta.json`, config JSON, and validated JSONL files; parse every line with Zod; return file/line-aware corruption errors. | P1, P3 |
 | M3.2 `feat(core): add append policies` | Enforce `source` + `externalId` idempotency, last-appended stamp semantics, owner-only modes where supported, safe directory creation, and reload equivalence. | P2, P4, P5 |
 
-**M3 acceptance:** copying `FINBOOK_HOME` is a complete backup; append/reload produces the same derived result; malformed data is loud and never silently skipped.
+**M3 acceptance:** a manual copy of `FINBOOK_HOME` captures the complete book; append/reload produces the same derived result; malformed data is loud and never silently skipped.
 
 ### Milestone 4 — CLI read surface
 
@@ -626,9 +641,9 @@ finbook/
 | Commit | Change | Evidence |
 |---|---|---|
 | M6.1 `chore: harden v1 edges` | Exercise empty, one-item, many-item, long-note, missing-mark, malformed-file, duplicate, wrong-runtime, and permission paths; remove temporary scaffolding. | Full S/A/P/C suite and manual smoke script pass. |
-| M6.2 `docs: record v1 boundary` | Finalize README examples, CLI help, known limitations, and the no-app/no-parser/no-network boundary. | `pnpm check` passes; no tax/FIFO behavior is exposed accidentally. |
+| M6.2 `docs: record v1 boundary` | Finalize README examples, CLI help, known limitations, and the no-app/no-parser/explicit-network boundary. | `pnpm check` passes; no tax/FIFO behavior is exposed accidentally. |
 
-**v1 stop condition:** a normal week of transfer or deposit, FX, buy, dividend, sell, and fee can be entered without turning a transfer into a contribution; glance and positions are correct as-of a date; typed history is inspectable; holes are explicit; and all acceptance cases pass. Do not add the app, broker parsers, live prices, schedulers, CI, or tax reports as part of this milestone.
+**v1 stop condition:** a normal week of transfer or deposit, FX, buy, dividend, sell, and fee can be entered without turning a transfer into a contribution; glance and positions are correct as-of a date; typed history is inspectable; holes are explicit; and all acceptance cases pass. Do not add the app, broker parsers, schedulers, CI, or tax reports as part of this milestone.
 
 ---
 
@@ -681,13 +696,13 @@ Do not reopen these without changing this file.
 - TypeScript 7 → 5.9.3 if the toolchain is broken.
 - oxfmt → Prettier 3.9.6 if oxfmt is painful.
 
-Everything required for the current CLI and initial market-data phase is decided. Build milestone M0.
+Everything required for the current CLI and initial market-data surface is shipped. Reopen these questions only when a concrete next feature requires it.
 
 ---
 
-## 16. Market-data phase
+## 16. Market-data contract
 
-This phase extends the completed offline v1 without changing the accounting model.
+Explicit market-data fetching extends the local v1 without changing the accounting model.
 
 **Minimum provider response**
 
@@ -726,4 +741,4 @@ Defaults are deterministic and code-owned. `market-data.json` may disable provid
 - `429` honors `Retry-After` within a bounded wait budget, then retries or falls back according to the route.
 - Credentials are environment variables. Provider HTTP and response parsing stay outside `packages/core`.
 
-**M7 stop condition:** manual and explicit fetched rates produce complete events; current and historical visualization can fetch Yahoo, CoinGecko, and ECB marks; interrupted fetches resume from the append-only cache; provider configuration is inspectable without secrets; and `pnpm check` remains the gate.
+**Shipped boundary:** manual and explicitly fetched rates produce complete events; current and historical visualization can fetch Yahoo, CoinGecko, and ECB marks; interrupted fetches resume from the append-only cache; provider configuration is inspectable without secrets; and `pnpm check` remains the gate.
