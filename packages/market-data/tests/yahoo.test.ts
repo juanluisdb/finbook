@@ -1,4 +1,7 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import { InstrumentSchema } from "@finbook/core";
 
@@ -18,6 +21,30 @@ const stock = InstrumentSchema.parse({
   quoteCurrency: "USD",
 });
 
+const fixtureDirectory = resolve(import.meta.dirname, "fixtures");
+const capturedQuotes = z
+  .array(
+    z
+      .object({
+        symbol: z.string(),
+        currency: z.string(),
+        regularMarketPrice: z.number(),
+        regularMarketTime: z.coerce.date(),
+      })
+      .passthrough(),
+  )
+  .parse(JSON.parse(readFileSync(resolve(fixtureDirectory, "yahoo-quote.json"), "utf8")));
+const capturedHistory = z
+  .array(
+    z
+      .object({
+        date: z.coerce.date(),
+        close: z.number().nullable(),
+      })
+      .passthrough(),
+  )
+  .parse(JSON.parse(readFileSync(resolve(fixtureDirectory, "yahoo-chart.json"), "utf8")));
+
 function need(mode: PriceNeed["mode"], asOf = "2026-03-03"): PriceNeed {
   return { instrument: stock, asOf, mode, identifier: "HROW" };
 }
@@ -30,18 +57,8 @@ class FixtureGateway implements YahooGateway {
   readonly history: readonly YahooHistoryPoint[];
 
   constructor(
-    quotes: readonly YahooQuote[] = [
-      {
-        symbol: "HROW",
-        currency: "USD",
-        regularMarketPrice: 40.5,
-        regularMarketTime: new Date("2026-03-03T21:00:00.000Z"),
-      },
-    ],
-    history: readonly YahooHistoryPoint[] = [
-      { date: new Date("2026-03-01T21:00:00.000Z"), close: 39 },
-      { date: new Date("2026-03-02T21:00:00.000Z"), close: 39.2 },
-    ],
+    quotes: readonly YahooQuote[] = capturedQuotes,
+    history: readonly YahooHistoryPoint[] = capturedHistory,
   ) {
     this.quotes = quotes;
     this.history = history;
@@ -67,7 +84,7 @@ function source(gateway: YahooGateway): YahooSource {
 }
 
 describe("Yahoo source", () => {
-  it("normalizes current quotes into price marks", async () => {
+  it("normalizes a captured Yahoo quote shape into a price mark", async () => {
     const gateway = new FixtureGateway();
 
     const result = await source(gateway).fetchPrices([need("latest")]);
@@ -106,7 +123,7 @@ describe("Yahoo source", () => {
     expect(result).toMatchObject([{ ok: true, data: { asOf: "2026-03-01" } }]);
   });
 
-  it("selects the latest historical close on or before the requested date", async () => {
+  it("selects the latest close from a captured Yahoo chart shape", async () => {
     const gateway = new FixtureGateway();
 
     const result = await source(gateway).fetchPrices([need("historical", "2026-03-02")]);

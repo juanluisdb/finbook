@@ -64,6 +64,23 @@ function success(need: PriceNeed): PriceOutcome {
   };
 }
 
+function fxSuccess(need: FxNeed): FxOutcome {
+  return {
+    need,
+    ok: true,
+    data: {
+      pair: `${need.currency}/EUR`,
+      rate: need.currency === "USD" ? "0.9" : "1.1",
+      asOf: need.asOf,
+      provenance: {
+        kind: "fetched",
+        source: "ecb",
+        retrievedAt: "2026-03-01T12:00:00.000Z",
+      },
+    },
+  };
+}
+
 class FixtureRateSource implements HistoricalEurRateSource {
   readonly id: ProviderId;
   readonly calls: EurRateNeed[][] = [];
@@ -118,14 +135,14 @@ class FixturePriceSource implements PriceSource {
 describe("market-data coordinator", () => {
   it("persists each result and resumes an interrupted batch from cache", async () => {
     const store = temporaryStore();
-    const instruments = Array.from({ length: 50 }, (_, index) => instrument(`stock-${index}`));
+    const instruments = [instrument("alpha"), instrument("beta"), instrument("gamma")];
     for (const value of instruments) expect(store.appendInstrument(value).ok).toBe(true);
     let firstAttempt = true;
     const source = new FixturePriceSource("yahoo", (needs) => {
       if (!firstAttempt) return needs.map((need) => success(need));
       firstAttempt = false;
-      return needs.map((need, index) =>
-        index < 40
+      return needs.map((need) =>
+        need.instrument.id !== "gamma"
           ? success(need)
           : {
               need,
@@ -149,24 +166,56 @@ describe("market-data coordinator", () => {
       data: { fetched: expect.any(Array), failures: expect.any(Array) },
     });
     if (!first.ok) throw new Error(first.error.message);
-    expect(first.data.fetched).toHaveLength(40);
-    expect(first.data.failures).toHaveLength(10);
-    expect(store.load()).toMatchObject({ ok: true, data: { prices: expect.any(Array) } });
+    expect(first.data.fetched.map((mark) => mark.instrument)).toEqual(["alpha", "beta"]);
+    expect(first.data.failures).toMatchObject([{ need: { instrument: { id: "gamma" } } }]);
     const afterFirst = store.load();
     if (!afterFirst.ok) throw new Error(afterFirst.error.message);
-    expect(afterFirst.data.prices).toHaveLength(40);
+    expect(afterFirst.data.prices.map((mark) => mark.instrument)).toEqual(["alpha", "beta"]);
 
     const second = await coordinator.resolvePrices(needs);
 
     expect(second).toMatchObject({ ok: true });
     if (!second.ok) throw new Error(second.error.message);
-    expect(second.data.cached).toBe(40);
-    expect(second.data.fetched).toHaveLength(10);
+    expect(second.data.cached).toBe(2);
+    expect(second.data.fetched.map((mark) => mark.instrument)).toEqual(["gamma"]);
     expect(second.data.failures).toHaveLength(0);
-    expect(source.calls.map((call) => call.length)).toEqual([50, 10]);
+    expect(source.calls.map((call) => call.map((need) => need.instrument.id))).toEqual([
+      ["alpha", "beta", "gamma"],
+      ["gamma"],
+    ]);
     const afterSecond = store.load();
     if (!afterSecond.ok) throw new Error(afterSecond.error.message);
-    expect(afterSecond.data.prices).toHaveLength(50);
+    expect(afterSecond.data.prices.map((mark) => mark.instrument)).toEqual([
+      "alpha",
+      "beta",
+      "gamma",
+    ]);
+  });
+
+  it("deduplicates identical price needs before fetching and writing", async () => {
+    const store = temporaryStore();
+    const value = instrument("one-stock");
+    expect(store.appendInstrument(value).ok).toBe(true);
+    const source = new FixturePriceSource("yahoo", (needs) => needs.map((need) => success(need)));
+    const coordinator = new MarketDataCoordinator({
+      store,
+      config: MarketDataConfigSchema.parse({}),
+      priceSources: [source],
+      fxSources: [],
+      eurRateSources: [],
+    });
+    const need = priceNeed(value);
+
+    const result = await coordinator.resolvePrices([need, need]);
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: { requested: 1, fetched: [{ instrument: "one-stock" }] },
+    });
+    expect(source.calls).toEqual([[need]]);
+    const snapshot = store.load();
+    if (!snapshot.ok) throw new Error(snapshot.error.message);
+    expect(snapshot.data.prices).toHaveLength(1);
   });
 
   it("persists FX marks and skips cached historical needs", async () => {
@@ -202,6 +251,46 @@ describe("market-data coordinator", () => {
     expect(first).toMatchObject({ ok: true, data: { fetched: [{ pair: "USD/EUR" }] } });
     expect(second).toMatchObject({ ok: true, data: { cached: 1, fetched: [] } });
     expect(source.calls).toHaveLength(1);
+  });
+
+  it("resumes a partial FX batch by fetching only the failed need", async () => {
+    const store = temporaryStore();
+    let firstAttempt = true;
+    const source = new FixtureFxSource("ecb", (needs) => {
+      if (!firstAttempt) return needs.map((need) => fxSuccess(need));
+      firstAttempt = false;
+      return needs.map((need) =>
+        need.currency === "USD"
+          ? fxSuccess(need)
+          : {
+              need,
+              ok: false,
+              error: { kind: "unavailable", message: "GBP was interrupted" },
+            },
+      );
+    });
+    const coordinator = new MarketDataCoordinator({
+      store,
+      config: MarketDataConfigSchema.parse({}),
+      priceSources: [],
+      fxSources: [source],
+      eurRateSources: [],
+    });
+    const usd: FxNeed = { currency: "USD", asOf: "2026-03-01", mode: "historical" };
+    const gbp: FxNeed = { currency: "GBP", asOf: "2026-03-01", mode: "historical" };
+
+    const first = await coordinator.resolveFxRates([usd, gbp]);
+    const second = await coordinator.resolveFxRates([usd, gbp]);
+
+    expect(first).toMatchObject({
+      ok: true,
+      data: { fetched: [{ pair: "USD/EUR" }], failures: [{ need: { currency: "GBP" } }] },
+    });
+    expect(second).toMatchObject({
+      ok: true,
+      data: { cached: 1, fetched: [{ pair: "GBP/EUR" }], failures: [] },
+    });
+    expect(source.calls).toEqual([[usd, gbp], [gbp]]);
   });
 
   it("does not let a historical mark retrieved today satisfy a latest price need", async () => {
@@ -444,7 +533,7 @@ describe("market-data coordinator", () => {
     expect(source.calls).toHaveLength(0);
   });
 
-  it("uses configured fallback providers but honors an explicit provider pin", async () => {
+  it("tries the next configured provider after a fallback-eligible failure", async () => {
     const store = temporaryStore();
     const value = InstrumentSchema.parse({
       id: "crypto-1",
@@ -472,21 +561,93 @@ describe("market-data coordinator", () => {
     });
 
     const fallback = await coordinator.resolvePrices([priceNeed(value)]);
-    const pinned = await coordinator.resolvePrices([priceNeed(value, "2026-02-01")], {
-      provider: "yahoo",
-    });
 
     expect(fallback).toMatchObject({
       ok: true,
       data: { cached: 0, fetched: [success(priceNeed(value)).data] },
     });
-    expect(primary.calls).toHaveLength(2);
+    expect(primary.calls).toHaveLength(1);
     expect(backup.calls).toHaveLength(1);
+  });
+
+  it("never falls back after an explicit provider pin", async () => {
+    const store = temporaryStore();
+    const value = InstrumentSchema.parse({
+      id: "crypto-pinned",
+      name: "Pinned crypto",
+      type: "crypto",
+      quoteCurrency: "USD",
+    });
+    expect(store.appendInstrument(value).ok).toBe(true);
+    const primary = new FixturePriceSource("yahoo", (needs) =>
+      needs.map((need) => ({
+        need,
+        ok: false,
+        error: { kind: "not-found", message: "Yahoo did not find it" },
+      })),
+    );
+    const backup = new FixturePriceSource("coingecko", (needs) =>
+      needs.map((need) => success(need)),
+    );
+    const coordinator = new MarketDataCoordinator({
+      store,
+      config: MarketDataConfigSchema.parse({ routes: { "price:crypto": ["yahoo", "coingecko"] } }),
+      priceSources: [primary, backup],
+      fxSources: [],
+      eurRateSources: [],
+    });
+
+    const pinned = await coordinator.resolvePrices([priceNeed(value)], { provider: "yahoo" });
+
     expect(pinned).toMatchObject({
       ok: true,
       data: { fetched: [], failures: [{ provider: "yahoo" }] },
     });
-    expect(primary.calls).toHaveLength(2);
-    expect(backup.calls).toHaveLength(1);
+    expect(primary.calls).toHaveLength(1);
+    expect(backup.calls).toHaveLength(0);
+  });
+
+  it("reports the final failure after all configured providers are exhausted", async () => {
+    const store = temporaryStore();
+    const value = InstrumentSchema.parse({
+      id: "crypto-unavailable",
+      name: "Unavailable crypto",
+      type: "crypto",
+      quoteCurrency: "USD",
+    });
+    expect(store.appendInstrument(value).ok).toBe(true);
+    const yahoo = new FixturePriceSource("yahoo", (needs) =>
+      needs.map((need) => ({
+        need,
+        ok: false,
+        error: { kind: "not-found", message: "Yahoo did not find it" },
+      })),
+    );
+    const coingecko = new FixturePriceSource("coingecko", (needs) =>
+      needs.map((need) => ({
+        need,
+        ok: false,
+        error: { kind: "unavailable", message: "CoinGecko is offline" },
+      })),
+    );
+    const coordinator = new MarketDataCoordinator({
+      store,
+      config: MarketDataConfigSchema.parse({ routes: { "price:crypto": ["yahoo", "coingecko"] } }),
+      priceSources: [yahoo, coingecko],
+      fxSources: [],
+      eurRateSources: [],
+    });
+
+    const result = await coordinator.resolvePrices([priceNeed(value)]);
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        fetched: [],
+        failures: [{ provider: "coingecko", error: { kind: "unavailable" } }],
+      },
+    });
+    expect(yahoo.calls).toHaveLength(1);
+    expect(coingecko.calls).toHaveLength(1);
   });
 });

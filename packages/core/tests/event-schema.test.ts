@@ -9,6 +9,75 @@ const base = {
 };
 
 describe("event schemas", () => {
+  it.each([
+    [
+      "zero primary amount",
+      {
+        type: "deposit",
+        account: "ib",
+        amount: { amount: "0", currency: "USD" },
+        eurPerUnit: "0.9",
+      },
+    ],
+    [
+      "negative primary amount",
+      {
+        type: "withdrawal",
+        account: "ib",
+        amount: { amount: "-1", currency: "USD" },
+        eurPerUnit: "0.9",
+      },
+    ],
+    [
+      "zero quantity",
+      {
+        type: "buy",
+        account: "ib",
+        instrument: "HROW",
+        qty: "0",
+        price: { amount: "40", currency: "USD" },
+        eurPerUnit: "0.9",
+      },
+    ],
+    [
+      "negative price",
+      {
+        type: "sell",
+        account: "ib",
+        instrument: "HROW",
+        qty: "1",
+        price: { amount: "-40", currency: "USD" },
+        eurPerUnit: "0.9",
+      },
+    ],
+    [
+      "zero EUR rate",
+      { type: "fee", account: "ib", amount: { amount: "1", currency: "USD" }, eurPerUnit: "0" },
+    ],
+    [
+      "negative optional fee",
+      {
+        type: "fx",
+        account: "ib",
+        from: { amount: "10", currency: "EUR" },
+        to: { amount: "12", currency: "USD" },
+        fee: { amount: "-0.5", currency: "USD" },
+      },
+    ],
+    [
+      "negative withholding",
+      {
+        type: "interest",
+        account: "ib",
+        gross: { amount: "5", currency: "EUR" },
+        withholdingDomestic: { amount: "-1", currency: "EUR" },
+        eurPerUnit: "1",
+      },
+    ],
+  ] as const)("rejects a %s", (_case, fields) => {
+    expect(() => EventSchema.parse({ ...base, ...fields })).toThrow();
+  });
+
   it("accepts a transfer without an account field", () => {
     const event = EventSchema.parse({
       ...base,

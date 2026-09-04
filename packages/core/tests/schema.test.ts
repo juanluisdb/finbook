@@ -2,14 +2,34 @@ import { describe, expect, it } from "vitest";
 
 import {
   AccountSchema,
+  DecimalStringSchema,
+  EurRateProvenanceSchema,
   FxStampSchema,
   InstrumentSchema,
+  IsoDateSchema,
   MetaSchema,
   MoneySchema,
   PriceStampSchema,
 } from "../src/index.js";
 
 describe("core schemas", () => {
+  it("canonicalizes non-default positive and signed decimals", () => {
+    expect(DecimalStringSchema.parse("123.4500")).toBe("123.45");
+    expect(DecimalStringSchema.parse("-12.3400")).toBe("-12.34");
+  });
+
+  it("rejects impossible calendar dates and malformed UTC instants", () => {
+    expect(() => IsoDateSchema.parse("2026-02-29")).toThrow(/real calendar date/u);
+    expect(IsoDateSchema.parse("2024-02-29")).toBe("2024-02-29");
+    expect(() =>
+      EurRateProvenanceSchema.parse({
+        source: "ecb",
+        effectiveDate: "2026-03-02",
+        retrievedAt: "2026-03-03 12:00:00Z",
+      }),
+    ).toThrow(/UTC ISO instant/u);
+  });
+
   it("canonicalizes a decimal money amount without changing its type", () => {
     const money = MoneySchema.parse({ amount: "800.00", currency: "EUR" });
 

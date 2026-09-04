@@ -263,6 +263,20 @@ describe("read CLI", () => {
     );
   });
 
+  it.each([
+    ["instrument", ["instrument", "get", "MISSING", "--json"]],
+    ["event", ["event", "get", "missing", "--json"]],
+  ] as const)("returns exit 3 for an unknown %s", (_kind, args) => {
+    const result = runCli(temporaryHome(), args);
+
+    expect(result.status).toBe(3);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: false,
+      error: { type: "not-found" },
+    });
+  });
+
   it("shows a complete glance using current cash valuation", () => {
     const dataHome = temporaryHome();
     const store = new FileBookStore(dataHome);
@@ -574,6 +588,20 @@ describe("read CLI", () => {
       "2026-03-01",
       "--json",
     ]);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: false,
+      error: { type: "validation" },
+    });
+  });
+
+  it.each([
+    ["--from", "2026-02-30"],
+    ["--to", "not-a-date"],
+  ] as const)("rejects an invalid %s date with exit 2", (flag, date) => {
+    const result = runCli(temporaryHome(), ["event", "list", flag, date, "--json"]);
 
     expect(result.status).toBe(2);
     expect(result.stderr).toBe("");

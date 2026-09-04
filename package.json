@@ -9,7 +9,7 @@
     "typecheck": "node tools/assert-node.mjs && tsc -b --pretty false",
     "lint": "oxlint --type-aware --ignore-path .oxlintignore .",
     "format:check": "oxfmt --check --ignore-path .oxfmtignore .",
-    "test": "vitest run",
+    "test": "node tools/assert-node.mjs && tsc -b --force && vitest run",
     "check": "node tools/assert-node.mjs && tsc -b && oxlint --type-aware --ignore-path .oxlintignore . && oxfmt --check --ignore-path .oxfmtignore . && vitest run"
   },
   "devDependencies": {
