@@ -96,6 +96,7 @@ describe("finbook doctor", () => {
       data: {
         status: "ok",
         schemaVersion: null,
+        timeZone: "Europe/Madrid",
         eventCount: 0,
         holeCount: 0,
         dataPath: resolve(dataHome),
@@ -145,7 +146,8 @@ describe("finbook doctor", () => {
       ok: true,
       data: {
         status: "warning",
-        schemaVersion: 1,
+        schemaVersion: 2,
+        timeZone: "Europe/Madrid",
         eventCount: 1,
         holeCount: 1,
       },
@@ -197,6 +199,39 @@ describe("finbook doctor", () => {
     expect(human.stdout).toContain("schema");
     expect(human.stdout).toContain("events.jsonl:1");
     expect(human.stderr).toContain("error: Book health check failed.");
+  });
+
+  it("reports an invalid persisted timezone without rewriting metadata", () => {
+    const dataHome = temporaryHome();
+    initializeBook(dataHome);
+    const metaPath = join(dataHome, "meta.json");
+    writeFileSync(metaPath, '{"schemaVersion":2,"timeZone":"Mars/Olympus"}\n', {
+      mode: 0o600,
+    });
+    const before = snapshotTree(dataHome);
+
+    const result = runDoctor(dataHome);
+    const body = JSON.parse(result.stdout);
+
+    expect(result.status).toBe(1);
+    expect(body).toMatchObject({
+      ok: false,
+      error: {
+        details: {
+          report: { status: "error", timeZone: null },
+        },
+      },
+    });
+    expect(body.error.details.report.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "schema",
+          status: "error",
+          message: expect.stringContaining("IANA time zone"),
+        }),
+      ]),
+    );
+    expect(snapshotTree(dataHome)).toBe(before);
   });
 
   it("reports a parseable ledger that fails replay", () => {

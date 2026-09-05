@@ -17,7 +17,7 @@ After the **Now** work:
 - Current market fetches cannot be satisfied by a stale historical request made today.
 - Historical provider routing, non-trading days, and mixed crypto quote currencies behave predictably.
 - Human output exposes the date and every valuation hole; JSON and exit codes remain stable and scriptable.
-- Help is side-effect free, current views use the machine's local calendar date, and genuine timestamps remain UTC.
+- Help is side-effect free, current views use the book's persisted timezone with a Madrid default, and genuine timestamps remain UTC.
 
 The quality bar is a dense, non-interactive CLI with actionable errors. There will be no prompts, dashboards, telemetry service, database, distributed lock, or speculative abstraction.
 
@@ -52,7 +52,7 @@ This table preserves the original review baseline while making roadmap progress 
 | Event flags             | Done   | `event add <type>` registers every event option; known but irrelevant flags are silently ignored.                                                       | Each type exposes and accepts only its own fields.                                                                                                              |
 | Root JSON               | Done   | `finbook --json` reached Commander's help path and returned a malformed validation message.                                                             | Return one valid JSON error envelope with exit 2.                                                                                                               |
 | Help side effects       | Done   | Startup loaded market configuration before parsing help and could create `market-data.json`.                                                            | Help and version paths do not touch `FINBOOK_HOME`.                                                                                                             |
-| Current date            | Done   | `toISOString().slice(0, 10)` used the UTC day for a local view.                                                                                         | Omitted current-view dates use the machine's local calendar day and always print the resolved `asOf`.                                                           |
+| Current date            | Done   | `toISOString().slice(0, 10)` used the UTC day for a local view.                                                                                         | Omitted current-view dates use the book's persisted timezone, defaulting to `Europe/Madrid`, and always print the resolved `asOf`.                              |
 | Domain writes           | Done   | The CLI replays a candidate, then `FileBookStore.appendEvent` separately loads and appends. Direct consumers bypass replay, and two processes can race. | The core file adapter owns lock → load → candidate replay → persistence.                                                                                        |
 | Event correction        | Done   | The only correction path is manual JSONL editing.                                                                                                       | Validated `event edit <type> <id>` and `event delete <id>` commands.                                                                                            |
 | Event durability        | Done   | A process can leave a partial appended JSONL line.                                                                                                      | Event mutations write a complete temporary JSONL file and atomically rename it.                                                                                 |
@@ -89,15 +89,15 @@ The plan below adds tests with each behavior change and performs only the cleanu
 
 ### Date and time model
 
-| Fact                      | Stored representation       |
-| ------------------------- | --------------------------- |
-| Event trade/value date    | Calendar date, `YYYY-MM-DD` |
-| Price/FX effective date   | Calendar date, `YYYY-MM-DD` |
-| Provider retrieval time   | UTC ISO instant             |
-| Same-day event order      | Stable JSONL line order     |
-| Omitted current-view date | Machine-local calendar date |
+| Fact                      | Stored representation                        |
+| ------------------------- | -------------------------------------------- |
+| Event trade/value date    | Calendar date, `YYYY-MM-DD`                  |
+| Price/FX effective date   | Calendar date, `YYYY-MM-DD`                  |
+| Provider retrieval time   | UTC ISO instant                              |
+| Same-day event order      | Stable JSONL line order                      |
+| Omitted current-view date | Calendar date in the persisted book timezone |
 
-Economic dates are not converted through a timezone. Intraday accounting, execution timestamps, and settlement timestamps stay out of scope. A persisted IANA book timezone is deferred until the book is routinely used across machines or while travelling.
+Economic dates are not converted through a timezone. The persisted IANA timezone defaults to `Europe/Madrid`, affects only omitted current-view dates, and may be changed without rewriting history. Intraday accounting, execution timestamps, and settlement timestamps stay out of scope.
 
 ### Event mutation model
 
@@ -1375,7 +1375,7 @@ Do not assume literal Git wins. It adds repository lifecycle, binary/version ava
 
 ### Persisted book timezone
 
-Add an IANA timezone setting when machine-local “today” produces observed confusion across machines or travel. It changes default view resolution only; stored economic dates remain unchanged.
+Implemented after the original improvement program: metadata stores a canonical IANA timezone with a `Europe/Madrid` default. It changes default view resolution only; stored economic dates remain unchanged.
 
 ### CI
 
@@ -1412,6 +1412,7 @@ Add persisted request intent only if always-refetching latest data causes observ
 - Lock artifacts are ephemeral and are never part of a book backup or source-of-truth data.
 - Power-loss durability beyond atomic rename and ordinary filesystem guarantees is out of scope until there is an observed failure.
 - PR 3's doctor fields and PR 5's filters are additive. PR 5 intentionally tightens new instrument source bindings, but existing stored config remains readable.
+- The post-program timezone change bumps the book schema to v2. This development build intentionally provides no v1 migration or compatibility path.
 
 ## Stop condition
 
@@ -1421,7 +1422,7 @@ The improvement program is complete when:
 2. Direct core writes, CLI writes, edits, and deletes all pass through the locked canonical mutation boundary.
 3. The 20→15 META correction scenario is rejected with the original file intact.
 4. A partial provider fetch persists successes, exposes failures, and exits nonzero in human and JSON modes.
-5. Help is side-effect free, root JSON is valid, and omitted current-view dates use the machine-local day.
+5. Help is side-effect free, root JSON is valid, and omitted current-view dates use the persisted book timezone.
 6. Human event history is understandable at a glance; glance and positions expose `asOf` and every hole with a next action.
 7. Doctor diagnoses fresh, incomplete, busy/stale, unsafe, and corrupt local books without writing or using the network.
 8. The remaining domain/storage/provider guarantees are pinned by focused tests, `pnpm test` builds what it runs, and the suite emits no accidental application output.

@@ -24,6 +24,7 @@ export function renderDoctor(report: DoctorReport): string {
           "schema version",
           report.schemaVersion === null ? "not initialized" : String(report.schemaVersion),
         ],
+        ["time zone", report.timeZone ?? "unavailable"],
         ["events", String(report.eventCount)],
         ["holes", String(report.holeCount)],
         ["data path", report.dataPath],

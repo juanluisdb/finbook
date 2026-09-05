@@ -624,13 +624,14 @@ describe("read CLI", () => {
     expect(readdirSync(dataHome)).toEqual([]);
   });
 
-  it("shows the resolved local date for an omitted view date", () => {
+  it("shows the resolved Madrid date for an omitted view date", () => {
     const dataHome = temporaryHome();
     const result = runCli(dataHome, ["show", "glance", "--json"]);
     const expected = new Intl.DateTimeFormat("en-CA", {
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
+      timeZone: "Europe/Madrid",
     }).format(new Date());
     const body = JSON.parse(result.stdout);
 

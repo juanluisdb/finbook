@@ -81,7 +81,65 @@ describe("provider configuration CLI", () => {
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({
       ok: true,
-      data: { disabledProviders: [], routes: {}, bindings: [] },
+      data: {
+        book: { timeZone: "Europe/Madrid" },
+        marketData: { disabledProviders: [], routes: {}, bindings: [] },
+      },
+    });
+  });
+
+  it("persists a canonical book timezone and rejects invalid updates", () => {
+    const dataHome = temporaryHome();
+    const updated = runCli(dataHome, ["config", "timezone", "set", "atlantic/canary", "--json"]);
+
+    expect(updated.status).toBe(0);
+    expect(JSON.parse(updated.stdout)).toEqual({
+      ok: true,
+      data: { timeZone: "Atlantic/Canary" },
+    });
+    const metaPath = join(dataHome, "meta.json");
+    const beforeInvalid = readFileSync(metaPath, "utf8");
+
+    const invalid = runCli(dataHome, ["config", "timezone", "set", "Mars/Olympus", "--json"]);
+    expect(invalid.status).toBe(2);
+    expect(JSON.parse(invalid.stdout)).toMatchObject({
+      ok: false,
+      error: {
+        type: "validation",
+        message: expect.stringContaining("Invalid time zone"),
+        hint: expect.stringContaining("IANA"),
+      },
+    });
+    expect(readFileSync(metaPath, "utf8")).toBe(beforeInvalid);
+
+    const shown = runCli(dataHome, ["config", "show", "--json"]);
+    expect(JSON.parse(shown.stdout)).toMatchObject({
+      ok: true,
+      data: { book: { timeZone: "Atlantic/Canary" } },
+    });
+  });
+
+  it("uses the book timezone instead of the machine timezone for current views", () => {
+    const dataHome = temporaryHome();
+    expect(
+      runCli(dataHome, ["config", "timezone", "set", "Pacific/Honolulu", "--json"]).status,
+    ).toBe(0);
+    const expected = new Intl.DateTimeFormat("en-CA", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      timeZone: "Pacific/Honolulu",
+    }).format(new Date());
+
+    const implicit = runCli(dataHome, ["show", "glance", "--json"], {
+      TZ: "Europe/Madrid",
+    });
+    expect(JSON.parse(implicit.stdout)).toMatchObject({ ok: true, data: { asOf: expected } });
+
+    const explicit = runCli(dataHome, ["show", "glance", "--as-of", "2026-02-28", "--json"]);
+    expect(JSON.parse(explicit.stdout)).toMatchObject({
+      ok: true,
+      data: { asOf: "2026-02-28" },
     });
   });
 
@@ -110,11 +168,19 @@ describe("provider configuration CLI", () => {
     expect(JSON.parse(shown.stdout)).toMatchObject({
       ok: true,
       data: {
-        disabledProviders: ["yahoo"],
-        routes: { "price:fund": ["yahoo"] },
-        bindings: [
-          { kind: "instrument", instrument: "fund-x", provider: "yahoo", identifier: "FUND.X" },
-        ],
+        book: { timeZone: "Europe/Madrid" },
+        marketData: {
+          disabledProviders: ["yahoo"],
+          routes: { "price:fund": ["yahoo"] },
+          bindings: [
+            {
+              kind: "instrument",
+              instrument: "fund-x",
+              provider: "yahoo",
+              identifier: "FUND.X",
+            },
+          ],
+        },
       },
     });
   });
@@ -231,7 +297,7 @@ describe("provider configuration CLI", () => {
 
     const shown = runCli(dataHome, ["config", "show", "--json"]);
     expect(shown.status).toBe(0);
-    const disabled = JSON.parse(shown.stdout).data.disabledProviders;
+    const disabled = JSON.parse(shown.stdout).data.marketData.disabledProviders;
     if (successful.length === 2) {
       expect([...disabled].sort((left, right) => left.localeCompare(right))).toEqual([
         "coingecko",

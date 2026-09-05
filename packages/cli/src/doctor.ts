@@ -2,6 +2,7 @@ import { existsSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 
 import {
+  DEFAULT_BOOK_TIME_ZONE,
   inspectBookLock,
   getGlance,
   type BookLockInspection,
@@ -9,6 +10,8 @@ import {
   type FileBookStore,
 } from "@finbook/core";
 import type { MarketDataConfigStore } from "@finbook/market-data";
+
+import { currentDate } from "./dates.js";
 
 export type DoctorCheckId =
   | "book"
@@ -31,6 +34,7 @@ export type DoctorCheck = {
 export type DoctorReport = {
   status: DoctorStatus;
   schemaVersion: number | null;
+  timeZone: string | null;
   eventCount: number;
   holeCount: number;
   dataPath: string;
@@ -49,20 +53,25 @@ const BOOK_FILES = [
 export function inspectDoctor(
   store: FileBookStore,
   marketConfig: MarketDataConfigStore,
-  asOf: string,
+  now: Date,
 ): DoctorReport {
   const checks: DoctorCheck[] = [];
   let schemaVersion: number | null = null;
+  let timeZone: string | null = DEFAULT_BOOK_TIME_ZONE;
   let eventCount = 0;
   let holeCount = 0;
+  let asOf = currentDate(now, DEFAULT_BOOK_TIME_ZONE);
 
   const book = store.inspect();
   if (!book.ok) {
+    timeZone = null;
     checks.push(failedCheck("schema", book.error));
   } else if (!book.data.initialized) {
     checks.push(okCheck("book", "Book is not initialized; there is no local data to validate."));
   } else {
-    schemaVersion = book.data.schemaVersion;
+    schemaVersion = book.data.metadata.schemaVersion;
+    timeZone = book.data.metadata.timeZone;
+    asOf = currentDate(now, timeZone);
     eventCount = book.data.snapshot.events.length;
     checks.push(
       okCheck("book", "Book files are present."),
@@ -108,6 +117,7 @@ export function inspectDoctor(
   return {
     status: overallStatus(checks),
     schemaVersion,
+    timeZone,
     eventCount,
     holeCount,
     dataPath: store.dataHome,

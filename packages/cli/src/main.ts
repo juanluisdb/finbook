@@ -10,7 +10,6 @@ import {
   YahooSource,
 } from "@finbook/market-data";
 
-import { currentDate } from "./dates.js";
 import { CliFailure, requireResult, validationFailure } from "./errors.js";
 import { loadRuntimeConfig } from "./environment.js";
 import { writeError } from "./output.js";
@@ -42,7 +41,7 @@ export async function main(
         eurRateSources: [ecb, coingecko],
       });
     };
-    const program = createProgram(dataHome, currentDate(), undefined, marketData);
+    const program = createProgram(dataHome, { marketDataFactory: marketData });
     if (argv.length === 0) {
       program.outputHelp();
       return 0;
