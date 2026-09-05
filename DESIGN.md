@@ -294,7 +294,7 @@ A future IB parser maps “Buy + commission” → one `buy`, “Dividend + Fore
 
 ```
 $FINBOOK_HOME/          # default ~/.finbook
-  meta.json             # { schemaVersion }
+  meta.json             # { schemaVersion, timeZone }
   accounts.json
   instruments.json
   events.jsonl          # ordered ledger; corrections atomically rewrite it
@@ -326,6 +326,7 @@ Agent-friendly. Noun → verb. **No prompts.** Every command accepts `--json`. D
 ```
 finbook doctor
 finbook config show
+finbook config timezone set <iana-name>
 finbook config provider list|enable|disable
 finbook config route set
 finbook config source set|remove
@@ -364,7 +365,7 @@ An event edit reads its target before any rate fetch and supplies that version t
 
 `--fetch` is the explicit visualization network path. It fetches only the marks needed by the requested view and caches each successful mark immediately. A latest request (an omitted or current-date view) always calls its provider; historical requests reuse any valid cached mark with `asOf <= requested asOf`. It never changes events.
 
-Event dates, mark dates, and `asOf` values are timezone-free economic calendar dates. An omitted current-view date uses the machine-local calendar day; fetched `retrievedAt` values remain UTC instants.
+Event dates, mark dates, and `asOf` values are timezone-free economic calendar dates. An omitted current-view date uses the book's persisted IANA timezone, which defaults to `Europe/Madrid`; an explicit `--as-of` wins. Changing the timezone never rewrites stored dates. Fetched `retrievedAt` values remain UTC instants.
 
 Provider capabilities are defined once: Yahoo serves price routes, including explicitly selected or configured-fallback crypto symbols, CoinGecko is the default crypto provider and also serves crypto FX/rates and bound crypto currencies, and ECB serves fiat FX/rates. Configured routes are rejected when their provider is incapable, disabled providers are removed from fallback routes and rejected through bindings or explicit pins, and a crypto currency binding selects the crypto EUR-rate route with its provider identifier.
 
@@ -467,6 +468,7 @@ Dependency strategy:
 | S4 | A transfer with `from`/`to` in different currencies, equal endpoints, or an `account` field | Rejected; a valid transfer has two endpoints and no `account` field. |
 | S5 | A trade or price stamp whose currency differs from `Instrument.quoteCurrency` | Rejected. |
 | S6 | Withholding in a currency different from gross, or a trade fee in a currency different from price | Rejected in v1. |
+| S7 | A valid alias or invalid IANA timezone | Valid input is stored canonically; invalid input is rejected without changing metadata. |
 
 ### Core accounting and query cases
 
@@ -503,6 +505,7 @@ Dependency strategy:
 | P9 | Two concurrent 75 EUR withdrawals from 100 EUR | At most one withdrawal commits; the other reports an expected lock or domain failure, and replay remains valid. |
 | P10 | An existing permissive data directory | A normal operation repairs the directory to `0700` with data files at `0600` where supported. |
 | P11 | Read-only inspection of a missing, corrupt, or replay-invalid book | Reports the state through the production parsers/replay and leaves paths and bytes unchanged. |
+| P12 | Initialize a fresh book, then change its timezone | Metadata starts at schema v2 with `Europe/Madrid`; the canonical replacement is committed atomically without changing ledger data. |
 
 ### CLI cases
 
@@ -525,6 +528,7 @@ Dependency strategy:
 | C15 | Empty, invalid, and unknown event filters | Empty is exit 0; bad type/date is exit 2; unknown account/instrument is exit 3 in human and JSON modes. |
 | C16 | Set an instrument or currency source binding | Unknown instruments return exit 3 without changing config bytes; valid instrument and currency bindings persist. |
 | C17 | Root and representative typed-event help against a fresh home | The workflow and a complete legal example are shown without creating book files. |
+| C18 | Show or change the book timezone, then run a current view | Config JSON combines book and market-data settings; omitted `--as-of` uses the book timezone, explicit dates win, and doctor reports invalid metadata without rewriting it. |
 
 Do **not** test FIFO tax matching, V0282-22, 720/721 obligations, broker parsing, live provider calls, or scheduler behavior in the normal gate.
 

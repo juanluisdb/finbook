@@ -10,6 +10,7 @@ import {
   MetaSchema,
   MoneySchema,
   PriceStampSchema,
+  TimeZoneSchema,
 } from "../src/index.js";
 
 describe("core schemas", () => {
@@ -103,6 +104,11 @@ describe("core schemas", () => {
         custodial: "broker",
       }),
     ).toMatchObject({ id: "ib", country: "IE" });
-    expect(MetaSchema.parse({ schemaVersion: 1 })).toEqual({ schemaVersion: 1 });
+    expect(TimeZoneSchema.parse("europe/madrid")).toBe("Europe/Madrid");
+    expect(() => TimeZoneSchema.parse("Mars/Olympus")).toThrow(/IANA time zone/u);
+    expect(MetaSchema.parse({ schemaVersion: 2, timeZone: "Europe/Madrid" })).toEqual({
+      schemaVersion: 2,
+      timeZone: "Europe/Madrid",
+    });
   });
 });

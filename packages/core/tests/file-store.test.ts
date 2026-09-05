@@ -570,14 +570,35 @@ describe("FileBookStore", () => {
     const store = temporaryStore();
     expect(store.load().ok).toBe(true);
     const metaPath = join(store.dataHome, "meta.json");
-    writeFileSync(metaPath, '{"schemaVersion":2}\n');
+    writeFileSync(metaPath, '{"schemaVersion":3,"timeZone":"Europe/Madrid"}\n');
     const before = readFileSync(metaPath, "utf8");
 
     expect(store.load()).toMatchObject({
       ok: false,
-      error: { type: "storage", message: expect.stringContaining("schema version: 2") },
+      error: { type: "storage", message: expect.stringContaining("schema version: 3") },
     });
     expect(readFileSync(metaPath, "utf8")).toBe(before);
+  });
+
+  it("persists a default timezone and updates it atomically", () => {
+    const store = temporaryStore();
+
+    expect(store.loadMetadata()).toEqual({
+      ok: true,
+      data: { schemaVersion: 2, timeZone: "Europe/Madrid" },
+    });
+    expect(store.setTimeZone("atlantic/canary")).toEqual({
+      ok: true,
+      data: { schemaVersion: 2, timeZone: "Atlantic/Canary" },
+    });
+
+    const metaPath = join(store.dataHome, "meta.json");
+    const beforeInvalid = readFileSync(metaPath, "utf8");
+    expect(store.setTimeZone("Mars/Olympus")).toMatchObject({
+      ok: false,
+      error: { type: "validation" },
+    });
+    expect(readFileSync(metaPath, "utf8")).toBe(beforeInvalid);
   });
 
   it.each([
@@ -672,7 +693,7 @@ describe("FileBookStore", () => {
       ok: true,
       data: {
         initialized: true,
-        schemaVersion: 1,
+        metadata: { schemaVersion: 2, timeZone: "Europe/Madrid" },
         replay: {
           ok: false,
           error: { message: expect.stringContaining("buy-without-cash") },

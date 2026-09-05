@@ -119,9 +119,11 @@ finbook event add buy --date 2026-03-06 --account ib --instrument HROW --qty 1 -
 finbook event add buy --date 2026-03-06 --account ib --instrument HROW --qty 1 --price-amount 42 --price-currency USD --fetch-rate
 ```
 
-Configure non-secret routes and source bindings separately:
+Inspect configuration, set the timezone used for current views, and configure non-secret market-data routes and bindings:
 
 ```sh
+finbook config show
+finbook config timezone set Atlantic/Canary
 finbook config provider list
 finbook config source set --instrument HROW --provider yahoo --identifier HROW
 finbook config source set --currency BTC --provider coingecko --identifier bitcoin
@@ -137,7 +139,7 @@ export FINBOOK_COINGECKO_DEMO_API_KEY="replace-with-your-key"
 
 ## Dates and local data
 
-Event dates, mark dates, and `asOf` values are daily economic dates written as `YYYY-MM-DD`; they do not represent a time of day or timezone. An omitted current-view date uses the machine-local calendar day. Provider retrieval timestamps are stored as UTC instants.
+Event dates, mark dates, and `asOf` values are daily economic dates written as `YYYY-MM-DD`; they do not represent a time of day or timezone. An omitted current-view date uses the book timezone, which defaults to `Europe/Madrid`; an explicit `--as-of` always wins. Changing the timezone does not alter stored dates. Provider retrieval timestamps are stored as UTC instants.
 
 Book data lives in `$FINBOOK_HOME` (default `~/.finbook`), never in this checkout. It contains private financial information. Do not commit or upload it to a remote repository. Provider credentials also do not belong in the checkout, book files, command output, or logs.
 

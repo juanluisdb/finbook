@@ -1,4 +1,9 @@
-import { CurrencySchema, InstrumentIdSchema, type FileBookStore } from "@finbook/core";
+import {
+  CurrencySchema,
+  InstrumentIdSchema,
+  TimeZoneSchema,
+  type FileBookStore,
+} from "@finbook/core";
 import {
   MarketDataConfigStore,
   ProviderIdSchema,
@@ -21,9 +26,28 @@ export type SourceConfigOptions = {
   identifier?: string | undefined;
 };
 
-export function showConfig(store: MarketDataConfigStore, json: boolean): void {
-  const config = requireResult(store.load());
+export function showConfig(
+  bookStore: FileBookStore,
+  marketDataStore: MarketDataConfigStore,
+  json: boolean,
+): void {
+  const metadata = requireResult(bookStore.loadMetadata());
+  const marketData = requireResult(marketDataStore.load());
+  const config = { book: { timeZone: metadata.timeZone }, marketData };
   writeSuccess(config, json, JSON.stringify(config, null, 2));
+}
+
+export function setTimeZone(store: FileBookStore, value: string, json: boolean): void {
+  const timeZone = TimeZoneSchema.safeParse(value);
+  if (!timeZone.success) {
+    throw validationFailure(
+      `Invalid time zone: ${value}.`,
+      "Use a valid IANA name such as Europe/Madrid or Atlantic/Canary.",
+    );
+  }
+  const metadata = requireResult(store.setTimeZone(timeZone.data));
+  const config = { timeZone: metadata.timeZone };
+  writeSuccess(config, json, `time zone set to ${metadata.timeZone}`);
 }
 
 export function listProviders(store: MarketDataConfigStore, json: boolean): void {

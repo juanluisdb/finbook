@@ -28,6 +28,18 @@ export const CurrencySchema = z
   .string()
   .regex(CURRENCY_PATTERN, "Expected an uppercase currency code");
 
+export const TimeZoneSchema = z
+  .string()
+  .min(1)
+  .transform((value, context) => {
+    try {
+      return new Intl.DateTimeFormat("en-US", { timeZone: value }).resolvedOptions().timeZone;
+    } catch {
+      context.addIssue({ code: "custom", message: "Expected a valid IANA time zone" });
+      return z.NEVER;
+    }
+  });
+
 export const AccountIdSchema = z
   .string()
   .min(1)

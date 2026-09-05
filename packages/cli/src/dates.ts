@@ -2,13 +2,13 @@ import { IsoDateSchema } from "@finbook/core";
 
 import { validationFailure } from "./errors.js";
 
-export function currentDate(now: Date = new Date(), timeZone?: string): string {
+export function currentDate(now: Date, timeZone: string): string {
   const formatOptions: Intl.DateTimeFormatOptions = {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
+    timeZone,
   };
-  if (timeZone !== undefined) formatOptions.timeZone = timeZone;
   const formatter = new Intl.DateTimeFormat("en-US", formatOptions);
   const parts = Object.fromEntries(
     formatter.formatToParts(now).map((part) => [part.type, part.value]),
@@ -23,9 +23,12 @@ export function currentDate(now: Date = new Date(), timeZone?: string): string {
 }
 
 export function requireDate(value: string | undefined, flag: string, fallback: string): string {
-  const candidate = value ?? fallback;
-  const parsed = IsoDateSchema.safeParse(candidate);
+  return parseDate(value ?? fallback, flag);
+}
+
+export function parseDate(value: string, flag: string): string {
+  const parsed = IsoDateSchema.safeParse(value);
   if (!parsed.success)
-    throw validationFailure(`Invalid ${flag}: ${candidate}.`, `Use ${flag} YYYY-MM-DD.`);
+    throw validationFailure(`Invalid ${flag}: ${value}.`, `Use ${flag} YYYY-MM-DD.`);
   return parsed.data;
 }

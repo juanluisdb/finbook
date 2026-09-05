@@ -29,12 +29,16 @@ import {
   type Event,
   type FxStamp,
   type Instrument,
+  type Meta,
   type PriceStamp,
 } from "./schemas.js";
+import { TimeZoneSchema } from "./scalars.js";
 import type { BookSnapshot } from "./snapshot.js";
 
 const AccountsFileSchema = z.array(AccountSchema);
 const InstrumentsFileSchema = z.array(InstrumentSchema);
+
+export const DEFAULT_BOOK_TIME_ZONE = "Europe/Madrid";
 
 const FILES = {
   meta: "meta.json",
@@ -49,7 +53,7 @@ export type BookInspection =
   | { initialized: false }
   | {
       initialized: true;
-      schemaVersion: number;
+      metadata: Meta;
       snapshot: BookSnapshot;
       replay: Result<void>;
     };
@@ -65,6 +69,27 @@ export class FileBookStore {
 
   load(): Result<BookSnapshot> {
     return withBookLock(this.dataHome, () => this.loadUnlocked());
+  }
+
+  loadMetadata(): Result<Meta> {
+    return withBookLock(this.dataHome, () => {
+      const initialized = this.ensureInitialized();
+      return initialized.ok ? this.readMetadata() : fail(initialized.error);
+    });
+  }
+
+  setTimeZone(value: string): Result<Meta> {
+    const timeZone = TimeZoneSchema.safeParse(value);
+    if (!timeZone.success) return fail(validationError("time zone", timeZone.error));
+    return withBookLock(this.dataHome, () => {
+      const initialized = this.ensureInitialized();
+      if (!initialized.ok) return fail(initialized.error);
+      const metadata = this.readMetadata();
+      if (!metadata.ok) return fail(metadata.error);
+      const next: Meta = { ...metadata.data, timeZone: timeZone.data };
+      const written = this.writeJson(FILES.meta, next);
+      return written.ok ? succeed(next) : fail(written.error);
+    });
   }
 
   inspect(): Result<BookInspection> {
@@ -87,7 +112,7 @@ export class FileBookStore {
       : fail(bookReplayError(replayed.blockingEvent, replayed.cause));
     return succeed({
       initialized: true,
-      schemaVersion: book.data.schemaVersion,
+      metadata: book.data.metadata,
       snapshot: book.data.snapshot,
       replay,
     });
@@ -262,16 +287,9 @@ export class FileBookStore {
     return book.ok ? succeed(book.data.snapshot) : fail(book.error);
   }
 
-  private readBook(): Result<{ schemaVersion: number; snapshot: BookSnapshot }> {
-    const meta = this.readJson(FILES.meta, MetaSchema);
+  private readBook(): Result<{ metadata: Meta; snapshot: BookSnapshot }> {
+    const meta = this.readMetadata();
     if (!meta.ok) return fail(meta.error);
-    if (meta.data.schemaVersion !== CURRENT_SCHEMA_VERSION) {
-      return fail({
-        type: "storage",
-        message: `Unsupported book schema version: ${meta.data.schemaVersion}.`,
-        hint: `This v1 build reads schema version ${CURRENT_SCHEMA_VERSION}.`,
-      });
-    }
 
     const accounts = this.readJson(FILES.accounts, AccountsFileSchema);
     if (!accounts.ok) return fail(accounts.error);
@@ -297,7 +315,7 @@ export class FileBookStore {
     if (!fx.ok) return fail(fx.error);
 
     return succeed({
-      schemaVersion: meta.data.schemaVersion,
+      metadata: meta.data,
       snapshot: {
         accounts: accounts.data,
         instruments: instruments.data,
@@ -306,6 +324,19 @@ export class FileBookStore {
         fx: fx.data,
       },
     });
+  }
+
+  private readMetadata(): Result<Meta> {
+    const meta = this.readJson(FILES.meta, MetaSchema);
+    if (!meta.ok) return fail(meta.error);
+    if (meta.data.schemaVersion !== CURRENT_SCHEMA_VERSION) {
+      return fail({
+        type: "storage",
+        message: `Unsupported book schema version: ${meta.data.schemaVersion}.`,
+        hint: `This build reads schema version ${CURRENT_SCHEMA_VERSION}.`,
+      });
+    }
+    return succeed(meta.data);
   }
 
   private validateCandidate(
@@ -334,7 +365,10 @@ export class FileBookStore {
     try {
       mkdirSync(this.dataHome, { recursive: true, mode: 0o700 });
       this.setOwnerOnly(this.dataHome, 0o700);
-      const meta = this.ensureJsonFile(FILES.meta, { schemaVersion: CURRENT_SCHEMA_VERSION });
+      const meta = this.ensureJsonFile(FILES.meta, {
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        timeZone: DEFAULT_BOOK_TIME_ZONE,
+      });
       if (!meta.ok) return fail(meta.error);
       const accounts = this.ensureJsonFile(FILES.accounts, []);
       if (!accounts.ok) return fail(accounts.error);

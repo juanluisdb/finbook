@@ -26,9 +26,10 @@ import {
   setProviderEnabled,
   setRoute,
   setSource,
+  setTimeZone,
   showConfig,
 } from "./config.js";
-import { requireDate } from "./dates.js";
+import { currentDate, parseDate, requireDate } from "./dates.js";
 import {
   CliFailure,
   externalFailure,
@@ -52,14 +53,22 @@ import {
 import { writeSuccess } from "./output.js";
 import { addAccount, addInstrument, setFx, setPrice } from "./writes.js";
 
-export function createProgram(
-  dataHome: string,
-  defaultDate: string,
-  generateId: () => string = randomUUID,
-  marketDataFactory?: () => MarketDataCoordinator,
-): Command {
+type ProgramOptions = {
+  now?: () => Date;
+  generateId?: () => string;
+  marketDataFactory?: () => MarketDataCoordinator;
+};
+
+export function createProgram(dataHome: string, options: ProgramOptions = {}): Command {
   const store = new FileBookStore(dataHome);
   const marketDataConfig = new MarketDataConfigStore(dataHome);
+  const now = options.now ?? (() => new Date());
+  const generateId = options.generateId ?? randomUUID;
+  const marketDataFactory = options.marketDataFactory;
+  const resolveDefaultDate = () => {
+    const metadata = requireResult(store.loadMetadata());
+    return currentDate(now(), metadata.timeZone);
+  };
   const program = new Command()
     .name("finbook")
     .description("A local book of economic events")
@@ -75,13 +84,21 @@ export function createProgram(
   const doctor = program.command("doctor").description("report book health");
   addJsonOption(doctor);
   doctor.action((_options, command) =>
-    showDoctor(store, marketDataConfig, jsonMode(command), defaultDate),
+    showDoctor(store, marketDataConfig, jsonMode(command), now()),
   );
 
-  const config = program.command("config").description("configure market-data sources");
+  const config = program
+    .command("config")
+    .description("configure the book and market-data sources");
   const configShow = config.command("show").description("show non-secret configuration");
   addJsonOption(configShow);
-  configShow.action((_options, command) => showConfig(marketDataConfig, jsonMode(command)));
+  configShow.action((_options, command) => showConfig(store, marketDataConfig, jsonMode(command)));
+  const timezone = config.command("timezone").description("manage the book timezone");
+  const timezoneSet = timezone
+    .command("set <iana-name>")
+    .description("set the timezone used to resolve today");
+  addJsonOption(timezoneSet);
+  timezoneSet.action((value, _options, command) => setTimeZone(store, value, jsonMode(command)));
   const configProviders = config.command("provider").description("manage providers");
   const providerList = configProviders.command("list").description("list providers");
   addJsonOption(providerList);
@@ -177,9 +194,7 @@ export function createProgram(
     "after",
     "\nExample:\n  finbook event list --type buy --instrument HROW --from 2026-01-01",
   );
-  eventList.action((_options, command) =>
-    listEvents(store, command.opts(), jsonMode(command), defaultDate),
-  );
+  eventList.action((_options, command) => listEvents(store, command.opts(), jsonMode(command)));
   const eventGet = event.command("get <id>").description("get one event");
   addJsonOption(eventGet);
   eventGet.addHelpText("after", "\nExample:\n  finbook event get buy-1");
@@ -217,7 +232,7 @@ export function createProgram(
     .option("--fetch", "fetch missing valuation marks before showing the view");
   addJsonOption(glance);
   glance.action((_options, command) =>
-    showGlance(store, command.opts(), jsonMode(command), defaultDate, marketDataFactory),
+    showGlance(store, command.opts(), jsonMode(command), resolveDefaultDate(), marketDataFactory),
   );
   const positions = show.command("positions").description("show current positions");
   positions
@@ -225,7 +240,13 @@ export function createProgram(
     .option("--fetch", "fetch missing valuation marks before showing the view");
   addJsonOption(positions);
   positions.action((_options, command) =>
-    showPositions(store, command.opts(), jsonMode(command), defaultDate, marketDataFactory),
+    showPositions(
+      store,
+      command.opts(),
+      jsonMode(command),
+      resolveDefaultDate(),
+      marketDataFactory,
+    ),
   );
 
   program.addHelpText(
@@ -285,9 +306,9 @@ function showDoctor(
   store: FileBookStore,
   marketDataConfig: MarketDataConfigStore,
   json: boolean,
-  defaultDate: string,
+  now: Date,
 ): void {
-  const report = inspectDoctor(store, marketDataConfig, defaultDate);
+  const report = inspectDoctor(store, marketDataConfig, now);
   if (report.status === "error") {
     if (!json) writeSuccess(report, false, renderDoctor(report));
     throw new CliFailure(doctorError(report));
@@ -317,12 +338,7 @@ function getInstrument(store: FileBookStore, id: string, json: boolean): void {
   writeSuccess(instrument, json, renderInstruments([instrument]));
 }
 
-function listEvents(
-  store: FileBookStore,
-  options: EventListOptions,
-  json: boolean,
-  defaultDate: string,
-): void {
+function listEvents(store: FileBookStore, options: EventListOptions, json: boolean): void {
   const snapshot = loadSnapshot(store);
   if (
     options.account !== undefined &&
@@ -341,9 +357,8 @@ function listEvents(
   const typeSet = new Set(types);
   const instrumentSet = new Set(instruments);
   const sourceSet = new Set(sources);
-  const from =
-    options.from === undefined ? undefined : requireDate(options.from, "--from", defaultDate);
-  const to = options.to === undefined ? undefined : requireDate(options.to, "--to", defaultDate);
+  const from = options.from === undefined ? undefined : parseDate(options.from, "--from");
+  const to = options.to === undefined ? undefined : parseDate(options.to, "--to");
   if (from !== undefined && to !== undefined && from > to) {
     throw validationFailure(
       "The `--from` date must not be after `--to`.",

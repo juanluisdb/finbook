@@ -13,6 +13,7 @@ import {
   NonEmptyStringSchema,
   NonNegativeDecimalStringSchema,
   PositiveDecimalStringSchema,
+  TimeZoneSchema,
 } from "./scalars.js";
 
 export const MoneySchema = z
@@ -55,6 +56,7 @@ export const InstrumentSchema = z
 export const MetaSchema = z
   .object({
     schemaVersion: z.number().int().positive(),
+    timeZone: TimeZoneSchema,
   })
   .strict();
 
