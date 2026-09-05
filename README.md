@@ -1,151 +1,103 @@
 # finbook
 
-finbook is a local, single-user book of financial events. It derives cash, positions, contributions, and a EUR portfolio glance from an ordered ledger. It is not a broker, trading tool, tax calculator, or hosted service.
+finbook is a private investment ledger for people whose money is spread across brokers, currencies, and cash accounts.
 
-`DESIGN.md` is the source of truth for the domain and CLI contracts. `IMPROVEMENT_PLAN.md` records the decisions and improvement program that produced the current v1.
+Record what happened once—deposits, transfers, currency exchanges, trades, income, and fees—and finbook derives what you own, where it sits, how much you contributed, and what it is worth in EUR.
 
-## Build and check
+The book lives on your machine in inspectable files. finbook neither connects to a broker nor files taxes; it keeps the dated native-currency facts needed to understand the portfolio and support later Spanish tax work.
 
-finbook requires Node 24.19.0 or newer within major 24 and pnpm 11.24.0.
+## What it helps with
+
+- Keep one history across multiple brokers and accounts.
+- Distinguish new contributions from transfers between accounts you own.
+- Preserve trade fees, withholding, and historical EUR rates with the event they belong to.
+- Inspect positions and portfolio value on any economic date.
+- Add valuation marks yourself or explicitly refresh the price and FX data a view needs.
+- Correct history without allowing an edit or deletion to invalidate later events.
+
+finbook is a local, single-user CLI under active development. It is not a broker, trading tool, tax calculator, hosted service, or official audit trail.
+
+## Build from source
+
+The repository pins its Node and pnpm requirements in `.node-version` and `package.json`.
 
 ```sh
 corepack pnpm install
-corepack pnpm check
 corepack pnpm build
 ```
 
-For development from this checkout, define a shell function and use a temporary book:
+Run the built CLI directly or define a convenience function:
 
 ```sh
-export FINBOOK_HOME="$(mktemp -d)"
 finbook() { node packages/cli/dist/main.js "$@"; }
 finbook --help
 ```
 
-The CLI is non-interactive. Human-readable tables are the default; `--json` returns a stable `{ ok, data }` or `{ ok, error }` envelope. Empty lists are successful. Data goes to stdout, diagnostics go to stderr, and exit codes distinguish external failure (`1`), validation/conflict (`2`), and not found (`3`).
-
-## First book
-
-Create two owned accounts and one instrument:
+Book data defaults to `~/.finbook`. To try finbook without touching that book, point it at another directory outside the checkout:
 
 ```sh
-finbook account add --id myinvestor --name MyInvestor --platform myinvestor --country ES --custodial broker
-finbook account add --id ib --name "Interactive Brokers" --platform interactive-brokers --country IE --custodial broker
+export FINBOOK_HOME="$(mktemp -d)"
+```
+
+## Start a book
+
+Add an account and an instrument:
+
+```sh
+finbook account add --id broker --name "My broker" --platform my-broker --country ES --custodial broker
 finbook instrument add --id HROW --name Harrow --type stock --quote-currency USD
 ```
 
-A `deposit` is money entering your financial life. A movement between two accounts you own is a `transfer`, so it does not inflate contributions:
+Record money entering the portfolio, exchange it, and buy the instrument:
 
 ```sh
-finbook event add deposit --id deposit-1 --date 2026-03-03 --account myinvestor --amount 800 --currency EUR
-finbook event add transfer --id transfer-1 --date 2026-03-03 --from myinvestor --to ib --amount 800 --currency EUR
+finbook event add deposit --date 2026-03-03 --account broker --amount 800 --currency EUR
+finbook event add fx --date 2026-03-03 --account broker --from-amount 798 --from-currency EUR --to-amount 927.04 --to-currency USD --fee-amount 1.71 --fee-currency EUR
+finbook event add buy --date 2026-03-03 --account broker --instrument HROW --qty 20 --price-amount 40.45 --price-currency USD --fee-amount 0.28 --fee-currency USD --eur-per-unit 0.861
 ```
 
-Record an FX conversion and a purchase. `eurPerUnit` is the historical EUR value of one unit of the event currency:
+`eurPerUnit` records the historical EUR value of one unit of the event currency. For a non-EUR event, provide it directly or use `--fetch-rate`. EUR events store a rate of `1` automatically.
 
-```sh
-finbook event add fx --id fx-1 --date 2026-03-03 --account ib --from-amount 798 --from-currency EUR --to-amount 927.04 --to-currency USD --fee-amount 1.71 --fee-currency EUR
-finbook event add buy --id buy-hrow --date 2026-03-03 --account ib --instrument HROW --qty 20 --price-amount 40.45 --price-currency USD --fee-amount 0.28 --fee-currency USD --eur-per-unit 0.861
-```
-
-Add current valuation marks and inspect the result:
+Add valuation marks and inspect the portfolio:
 
 ```sh
 finbook price set --instrument HROW --amount 41 --currency USD --as-of 2026-03-04
 finbook fx set --pair USD/EUR --rate 0.866 --as-of 2026-03-04
 finbook show glance --as-of 2026-03-04
 finbook show positions --as-of 2026-03-04
-finbook doctor
 ```
 
-Event history keeps ledger order and can be narrowed without changing it. Repeated values in one filter are OR; different filter dimensions are AND:
-
-```sh
-finbook event list --type buy --type sell --instrument HROW --source manual --from 2026-01-01
-finbook event get buy-hrow
-```
-
-## Correcting events safely
-
-Edits keep omitted fields unchanged. Before committing an edit or deletion, finbook replays the complete candidate ledger and rejects any change that would make a later event invalid.
-
-This sale consumes all 20 units, so reducing the earlier purchase to 15 is rejected and writes nothing:
-
-```sh
-finbook event add sell --id sell-hrow --date 2026-03-05 --account ib --instrument HROW --qty 20 --price-amount 41 --price-currency USD --eur-per-unit 0.866
-finbook event edit buy buy-hrow --qty 15
-```
-
-After removing the dependent sale, the edit is valid:
-
-```sh
-finbook event delete sell-hrow
-finbook event edit buy buy-hrow --qty 15
-finbook event get buy-hrow
-```
-
-Deletion is immediate and non-interactive. There is no automatic backup, undo log, tombstone, or hidden history. If you want a safety copy before a bulk correction, copy `$FINBOOK_HOME` yourself.
-
-## Missing and fetched market data
-
-Views remain useful when a valuation mark is missing. They show partial totals plus an exact manual remedy and the corresponding fetch command:
-
-```text
-missing data
-- FX USD/EUR as of 2026-03-04
-  add: finbook fx set --pair USD/EUR --rate <decimal> --as-of 2026-03-04
-  or:  finbook show glance --as-of 2026-03-04 --fetch
-```
-
-Resolve that hole manually with a known rate:
-
-```sh
-finbook fx set --pair USD/EUR --rate 0.866 --as-of 2026-03-04
-```
-
-Or fetch only the marks required by a view:
+`price set` records the market value of an instrument on a date; it does not record a trade. `fx set` does the same for a currency-to-EUR valuation rate. `--fetch` asks the configured providers for the valuation data required by the view and saves each successful result locally.
 
 ```sh
 finbook show glance --fetch
-finbook show glance --as-of 2026-03-04 --fetch
-```
-
-A complete fetch exits `0`. A partial fetch preserves every successful mark, returns the usable partial view, reports each failed need, and exits `1`. JSON mode returns one `ok: false` envelope with the partial view under `error.details`, so a script can inspect the saved work and retry safely.
-
-Rate-bearing events require their historical `eurPerUnit`. Supply it directly or explicitly fetch it before writing:
-
-```sh
-finbook event add buy --date 2026-03-06 --account ib --instrument HROW --qty 1 --price-amount 42 --price-currency USD --eur-per-unit 0.87
-finbook event add buy --date 2026-03-06 --account ib --instrument HROW --qty 1 --price-amount 42 --price-currency USD --fetch-rate
-```
-
-Inspect configuration, set the timezone used for current views, and configure non-secret market-data routes and bindings:
-
-```sh
-finbook config show
-finbook config timezone set Atlantic/Canary
-finbook config provider list
-finbook config source set --instrument HROW --provider yahoo --identifier HROW
-finbook config source set --currency BTC --provider coingecko --identifier bitcoin
-```
-
-An instrument binding must reference an instrument already in the book. Currency bindings only require a valid uppercase currency shape because finbook has no currency registry.
-
-CoinGecko credentials come from the environment and are never stored:
-
-```sh
-export FINBOOK_COINGECKO_DEMO_API_KEY="replace-with-your-key"
-```
-
-## Dates and local data
-
-Event dates, mark dates, and `asOf` values are daily economic dates written as `YYYY-MM-DD`; they do not represent a time of day or timezone. An omitted current-view date uses the book timezone, which defaults to `Europe/Madrid`; an explicit `--as-of` always wins. Changing the timezone does not alter stored dates. Provider retrieval timestamps are stored as UTC instants.
-
-Book data lives in `$FINBOOK_HOME` (default `~/.finbook`), never in this checkout. It contains private financial information. Do not commit or upload it to a remote repository. Provider credentials also do not belong in the checkout, book files, command output, or logs.
-
-`finbook doctor` is offline and read-only. It validates stored schemas, replay, configuration, permissions, lock ownership, and valuation completeness without initializing, repairing, unlocking, fetching, or exposing event payloads or credentials:
-
-```sh
 finbook doctor
-finbook doctor --json
 ```
+
+Use `finbook <command> --help` for the complete command-specific flags and examples.
+
+## Behaviour worth knowing
+
+- Dates are `YYYY-MM-DD` economic dates, not instants. An omitted view date uses the book timezone, which defaults to `Europe/Madrid`; configure it with `finbook config timezone set <iana-name>`.
+- Reporting is always in EUR. Missing marks remain visible and make affected totals unknown rather than silently approximated.
+- Transfers move the same currency between owned accounts and do not change contributed capital. Currency conversion within an account is an `fx` event.
+- Event edits retain omitted fields. Edits and deletions replay the complete proposed ledger and write nothing when a later event would become invalid.
+- There is no automatic backup, undo log, or hidden event history.
+- Human-readable output is the default. `--json` returns a stable success or error envelope for scripts.
+- `finbook doctor` is offline and read-only: it reports book, schema, replay, configuration, permission, lock, and valuation health without repairing or initializing anything.
+
+## Local data and credentials
+
+`$FINBOOK_HOME` contains private financial information. Keep it outside the checkout and do not commit or upload it. finbook uses owner-only permissions where the operating system supports them.
+
+Non-secret provider routes and bindings are stored with the book. CoinGecko credentials are read from `FINBOOK_COINGECKO_DEMO_API_KEY` and are not persisted.
+
+## Development
+
+Run the complete local gate before considering a change finished:
+
+```sh
+corepack pnpm check
+```
+
+The design documents separate the [product contract](docs/PRODUCT.md), [engineering design](docs/DESIGN.md), and [market-data subsystem](docs/MARKET_DATA.md).
