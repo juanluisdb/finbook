@@ -123,6 +123,29 @@ describe("Yahoo source", () => {
     expect(result).toMatchObject([{ ok: true, data: { asOf: "2026-03-01" } }]);
   });
 
+  it.each([
+    ["stale", new Date("2026-02-24T21:59:59.999Z")],
+    ["future", new Date("2026-03-03T22:05:00.001Z")],
+  ])("rejects a %s latest quote timestamp", async (reason, regularMarketTime) => {
+    const gateway = new FixtureGateway([
+      {
+        symbol: "HROW",
+        currency: "USD",
+        regularMarketPrice: 40.5,
+        regularMarketTime,
+      },
+    ]);
+
+    const result = await source(gateway).fetchPrices([need("latest")]);
+
+    expect(result).toMatchObject([
+      {
+        ok: false,
+        error: { kind: "invalid-response", message: expect.stringContaining(reason) },
+      },
+    ]);
+  });
+
   it("selects the latest close from a captured Yahoo chart shape", async () => {
     const gateway = new FixtureGateway();
 
