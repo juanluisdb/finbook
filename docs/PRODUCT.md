@@ -100,6 +100,8 @@ EUR cash needs no FX stamp. Every other live currency needs a currency-to-EUR st
 
 Missing valuation evidence stays visible as a hole. Affected values, totals, and weights are unknown rather than guessed; the remaining positions and cash are still returned.
 
+An explicit latest-data refresh saves only provider observations with a trustworthy recent timestamp. Missing, stale, or implausibly future timestamps fail the affected fetch instead of making an old value look current.
+
 The difference between total value and contributed capital is a portfolio glance, not realized gain, tax profit, or performance attribution.
 
 The query contract lives in `packages/core/src/domain/queries.ts::getPositions` and `packages/core/src/domain/queries.ts::getGlance`.

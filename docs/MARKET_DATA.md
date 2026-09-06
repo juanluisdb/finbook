@@ -75,6 +75,8 @@ The CLI uses latest mode only when the requested date is its resolved current da
 
 Provider observations may use an effective date on or before the requested historical date, but never a future date. Adapters own provider-specific windows and selection rules.
 
+Latest observations use the requested book date as their economic date after the provider timestamp proves the value is current. This avoids turning exchange and book timezone boundaries into different portfolio dates. Yahoo accepts quotes observed within seven days, while CoinGecko accepts prices observed within 24 hours; both reject missing, stale, invalid, or implausibly future timestamps without appending a stamp.
+
 Yahoo is the default price source for stocks, ETFs, funds, and ETCs, and validates the returned quote currency against the instrument. CoinGecko provides crypto prices, bound crypto-to-EUR values, and historical crypto EUR rates. ECB provides fiat-to-EUR valuation and historical rates.
 
 Adapter behaviour lives in `packages/market-data/src/yahoo.ts::YahooSource`, `packages/market-data/src/coingecko.ts::CoinGeckoSource`, and `packages/market-data/src/ecb.ts::EcbSource`.

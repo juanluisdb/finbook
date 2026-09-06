@@ -125,9 +125,25 @@ describe("CoinGecko source", () => {
       { id: "bitcoin", price: 60_000, asOf: new Date("2026-03-01T00:30:00.000Z") },
     ]);
 
-    const result = await source(gateway).fetchPrices([priceNeed("latest", "2026-02-28")]);
+    const provider = new CoinGeckoSource({
+      gateway,
+      now: () => new Date("2026-03-01T00:31:00.000Z"),
+    });
+
+    const result = await provider.fetchPrices([priceNeed("latest", "2026-02-28")]);
 
     expect(result).toMatchObject([{ ok: true, data: { asOf: "2026-02-28" } }]);
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["stale", new Date("2026-03-02T12:59:59.999Z")],
+  ])("rejects a %s timestamp for a latest price", async (_reason, asOf) => {
+    const gateway = new FixtureGateway([{ id: "bitcoin", price: 60_000, asOf }]);
+
+    const result = await source(gateway).fetchPrices([priceNeed("latest")]);
+
+    expect(result).toMatchObject([{ ok: false, error: { kind: "invalid-response" } }]);
   });
 
   it("normalizes a captured CoinGecko market-chart response through the SDK gateway", async () => {
@@ -203,9 +219,29 @@ describe("CoinGecko source", () => {
       identifier: "bitcoin",
     };
 
-    const result = await source(gateway).fetchFxRates([need]);
+    const provider = new CoinGeckoSource({
+      gateway,
+      now: () => new Date("2026-03-01T00:31:00.000Z"),
+    });
+    const result = await provider.fetchFxRates([need]);
 
     expect(result).toMatchObject([{ ok: true, data: { asOf: "2026-02-28" } }]);
+  });
+
+  it("rejects a stale timestamp for a latest crypto FX rate", async () => {
+    const gateway = new FixtureGateway([
+      { id: "bitcoin", price: 60_000, asOf: new Date("2026-03-02T12:59:59.999Z") },
+    ]);
+    const need: FxNeed = {
+      currency: "BTC",
+      asOf: "2026-03-03",
+      mode: "latest",
+      identifier: "bitcoin",
+    };
+
+    const result = await source(gateway).fetchFxRates([need]);
+
+    expect(result).toMatchObject([{ ok: false, error: { kind: "invalid-response" } }]);
   });
 
   it("uses historical EUR prices for event rates", async () => {

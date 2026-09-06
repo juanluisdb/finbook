@@ -8,6 +8,9 @@ import {
   type PriceSource,
   type ProviderFailure,
 } from "./contracts.js";
+import { validateLatestObservationTime } from "./latest-observation.js";
+
+const MAX_LATEST_QUOTE_AGE_HOURS = 7 * 24;
 
 export type YahooQuote = {
   symbol: string;
@@ -219,8 +222,7 @@ function normalizeQuote(need: PriceNeed, quote: YahooQuote, now: Date): PriceOut
   if (
     quote.regularMarketPrice === undefined ||
     !Number.isFinite(quote.regularMarketPrice) ||
-    quote.regularMarketPrice <= 0 ||
-    quote.regularMarketTime === undefined
+    quote.regularMarketPrice <= 0
   ) {
     return {
       need,
@@ -231,6 +233,14 @@ function normalizeQuote(need: PriceNeed, quote: YahooQuote, now: Date): PriceOut
       },
     };
   }
+  const timestampFailure = validateLatestObservationTime({
+    provider: "Yahoo",
+    identifier: need.identifier,
+    observedAt: quote.regularMarketTime,
+    retrievedAt: now,
+    maxAgeHours: MAX_LATEST_QUOTE_AGE_HOURS,
+  });
+  if (timestampFailure !== undefined) return { need, ok: false, error: timestampFailure };
   const asOf = need.asOf;
   return {
     need,

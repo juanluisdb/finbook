@@ -16,6 +16,9 @@ import {
   type PriceSource,
   type ProviderFailure,
 } from "./contracts.js";
+import { validateLatestObservationTime } from "./latest-observation.js";
+
+const MAX_LATEST_PRICE_AGE_HOURS = 24;
 
 const CoinGeckoPriceItemSchema = z
   .record(z.string(), z.number().finite().positive().optional())
@@ -190,6 +193,7 @@ export class CoinGeckoSource implements PriceSource, FxSource, HistoricalEurRate
         outcomes.set(fxNeedKey(need), { need, ok: false, error: failure });
       return;
     }
+    const retrievedAt = this.now();
     for (const { need, identifier } of supported) {
       const price = prices.find((candidate) => candidate.id === identifier);
       const asOf = need.asOf;
@@ -199,7 +203,9 @@ export class CoinGeckoSource implements PriceSource, FxSource, HistoricalEurRate
           ok: false,
           error: { kind: "not-found", message: `CoinGecko returned no price for ${identifier}.` },
         });
-      } else if (!Number.isFinite(price.price) || price.price <= 0) {
+        continue;
+      }
+      if (!Number.isFinite(price.price) || price.price <= 0) {
         outcomes.set(fxNeedKey(need), {
           need,
           ok: false,
@@ -208,22 +214,33 @@ export class CoinGeckoSource implements PriceSource, FxSource, HistoricalEurRate
             message: `CoinGecko returned an invalid FX price for ${identifier}.`,
           },
         });
-      } else {
-        outcomes.set(fxNeedKey(need), {
-          need,
-          ok: true,
-          data: {
-            pair: `${need.currency}/EUR`,
-            rate: plainAmount(price.price, "EUR"),
-            asOf,
-            provenance: {
-              kind: "fetched",
-              source: "coingecko",
-              retrievedAt: this.now().toISOString(),
-            },
-          },
-        });
+        continue;
       }
+      const timestampFailure = validateLatestObservationTime({
+        provider: "CoinGecko",
+        identifier,
+        observedAt: price.asOf,
+        retrievedAt,
+        maxAgeHours: MAX_LATEST_PRICE_AGE_HOURS,
+      });
+      if (timestampFailure !== undefined) {
+        outcomes.set(fxNeedKey(need), { need, ok: false, error: timestampFailure });
+        continue;
+      }
+      outcomes.set(fxNeedKey(need), {
+        need,
+        ok: true,
+        data: {
+          pair: `${need.currency}/EUR`,
+          rate: plainAmount(price.price, "EUR"),
+          asOf,
+          provenance: {
+            kind: "fetched",
+            source: "coingecko",
+            retrievedAt: retrievedAt.toISOString(),
+          },
+        },
+      });
     }
   }
 
@@ -315,6 +332,7 @@ export class CoinGeckoSource implements PriceSource, FxSource, HistoricalEurRate
         outcomes.set(priceNeedKey(need), { need, ok: false, error: failure });
       return;
     }
+    const retrievedAt = this.now();
     for (const need of needs) {
       const price = prices.find((candidate) => candidate.id === need.identifier);
       if (price === undefined) {
@@ -340,6 +358,17 @@ export class CoinGeckoSource implements PriceSource, FxSource, HistoricalEurRate
         });
         continue;
       }
+      const timestampFailure = validateLatestObservationTime({
+        provider: "CoinGecko",
+        identifier: need.identifier,
+        observedAt: price.asOf,
+        retrievedAt,
+        maxAgeHours: MAX_LATEST_PRICE_AGE_HOURS,
+      });
+      if (timestampFailure !== undefined) {
+        outcomes.set(priceNeedKey(need), { need, ok: false, error: timestampFailure });
+        continue;
+      }
       outcomes.set(priceNeedKey(need), {
         need,
         ok: true,
@@ -353,7 +382,7 @@ export class CoinGeckoSource implements PriceSource, FxSource, HistoricalEurRate
           provenance: {
             kind: "fetched",
             source: "coingecko",
-            retrievedAt: this.now().toISOString(),
+            retrievedAt: retrievedAt.toISOString(),
           },
         },
       });
