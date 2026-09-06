@@ -1,10 +1,12 @@
 # finbook
 
-finbook is a private investment ledger for people whose money is spread across brokers, currencies, and cash accounts.
+Wealth-management apps can track almost everything. That breadth is useful, but it can make basic questions and awkward cases hard to control.
 
-Record what happened once—deposits, transfers, currency exchanges, trades, income, and fees—and finbook derives what you own, where it sits, how much you contributed, and what it is worth in EUR.
+finbook takes the opposite approach. It is boring on purpose: a small, opinionated, local ledger focused on the needs of a Spanish investor.
 
-The book lives on your machine in inspectable files. finbook neither connects to a broker nor files taxes; it keeps the dated native-currency facts needed to understand the portfolio and support later Spanish tax work.
+Record what happened once—deposits, transfers, currency exchanges, trades, income, and fees—and finbook derives what you own, where it sits, how much you contributed, and what it is worth in EUR. Its rules cover details that generic summaries often blur, such as own-account transfers, trade fees, withholding, and historical exchange rates.
+
+The book lives on your machine in inspectable files. The CLI is non-interactive and provides structured output, so people and coding agents can use the same predictable interface. finbook neither connects to a broker nor files taxes; it preserves the dated native-currency facts needed to understand the portfolio and support later Spanish tax work.
 
 ## What it helps with
 
@@ -14,6 +16,7 @@ The book lives on your machine in inspectable files. finbook neither connects to
 - Inspect positions and portfolio value on any economic date.
 - Add valuation marks yourself or explicitly refresh the price and FX data a view needs.
 - Correct history without allowing an edit or deletion to invalidate later events.
+- Inspect and automate the book through ordinary files, composable commands, and stable JSON output.
 
 finbook is a local, single-user CLI under active development. It is not a broker, trading tool, tax calculator, hosted service, or official audit trail.
 

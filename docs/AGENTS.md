@@ -6,9 +6,11 @@ Code is the exact source of truth. A design document supplies the mental model, 
 
 ## Keep one owner per topic
 
-`PRODUCT.md` owns user-visible meaning and scope. `DESIGN.md` owns engineering structure and local-system guarantees. `MARKET_DATA.md` owns provider, routing, fetching, and caching design.
+Give each durable topic one authoritative document. Choose the document whose boundary would be incomplete without that topic, then cross-link to it from everywhere else.
 
-Cross-link to the owning document instead of repeating its explanation. Update the documentation index in the root `AGENTS.md` whenever a document is added, renamed, or removed.
+Do not maintain a document index here. The root `AGENTS.md` owns the list of documents, their scopes, and the conditions for reading them.
+
+Update that root index whenever a document is added, renamed, removed, or changes scope.
 
 ## Write a current snapshot
 

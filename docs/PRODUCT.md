@@ -1,10 +1,24 @@
 # Product contract
 
-finbook is a local financial event book for one person managing investments across accounts, providers, and currencies.
+finbook is a deliberately small financial event book for one person managing investments across accounts, providers, and currencies from a Spanish wealth-management perspective.
 
 It answers three practical questions from a single history: what do I own, what is it worth in EUR, and how much of that value came from contributions rather than investment results.
 
 The CLI is the product surface. The local data folder is the persisted book. Broker statements and tax documents remain the owner’s external records.
+
+## Prefer boring and explicit
+
+Broad wealth-management products can provide richer dashboards, integrations, and automation. finbook chooses a smaller surface so its basic answers and awkward accounting cases remain understandable.
+
+Opinionated event meanings replace flexible categorization. Explicit dates and exchange rates replace hidden assumptions. Visible missing data replaces estimated totals. Local files replace an opaque hosted account.
+
+The product should stay simple enough that its owner can inspect the book, understand a calculation from its inputs, and correct history without specialist tooling.
+
+The same interface should work well for a person and a coding agent. Commands are non-interactive, help is discoverable, machine output is structured, failures are actionable, and persisted data uses ordinary documented formats.
+
+Agent usability does not justify a parallel API or agent-only behaviour. Agents use the same commands, validation, and book as the owner.
+
+Spanish focus means reporting in EUR and retaining the event-level facts needed by later Spanish tax work. It does not mean that the current product calculates or files taxes.
 
 ## Use the book as the source
 
