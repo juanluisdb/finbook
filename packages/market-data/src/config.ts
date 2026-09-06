@@ -28,6 +28,7 @@ const DEFAULT_ROUTES = {
   "price:stock": ["yahoo"],
   "price:etf": ["yahoo"],
   "price:fund": ["yahoo"],
+  "price:etc": ["yahoo"],
   "price:crypto": ["coingecko"],
   fx: ["ecb"],
   "eur-rate:fiat": ["ecb"],

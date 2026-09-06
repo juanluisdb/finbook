@@ -169,6 +169,50 @@ describe("event input preparation", () => {
     expect(calls).toBe(0);
   });
 
+  it("maps an instrument-denominated fee to an instrument quantity", async () => {
+    const store = temporaryStore();
+    seedAccount(store);
+    seedInstrument(store);
+    const snapshot = store.load();
+    if (!snapshot.ok) throw new Error(snapshot.error.message);
+    const account = snapshot.data.accounts[0];
+    const instrument = snapshot.data.instruments[0];
+    if (account === undefined || instrument === undefined) throw new Error("Missing test catalog");
+    appendEvent(store, {
+      id: "funding",
+      date: "2026-03-01",
+      source: "manual",
+      type: "deposit",
+      account: account.id,
+      amount: { amount: "50", currency: instrument.quoteCurrency },
+      eurPerUnit: "0.9",
+    });
+
+    await addEvent(
+      store,
+      {
+        type: "buy",
+        id: "buy-1",
+        date: "2026-03-02",
+        account: account.id,
+        instrument: instrument.id,
+        qty: "10",
+        priceAmount: "5",
+        priceCurrency: instrument.quoteCurrency,
+        grossAmount: "50",
+        feeIn: "instrument",
+        feeAmount: "0.25",
+        eurPerUnit: "0.9",
+      },
+      true,
+      () => "unused-id",
+    );
+
+    expect(loadEvent(store, "buy-1")).toMatchObject({
+      fee: { kind: "instrument", quantity: "0.25" },
+    });
+  });
+
   it("rejects an edit when the event changes while its rate is being fetched", async () => {
     const store = temporaryStore();
     seedAccount(store);
@@ -255,6 +299,44 @@ describe("event input preparation", () => {
       gross: { amount: "110", currency: "USD" },
       withholdingForeign: { amount: "2", currency: "USD" },
     });
+  });
+
+  it("requires an explicit fee decision when an edit changes its unit", async () => {
+    const store = temporaryStore();
+    seedAccount(store);
+    seedInstrument(store);
+    const snapshot = store.load();
+    if (!snapshot.ok) throw new Error(snapshot.error.message);
+    const account = snapshot.data.accounts[0];
+    const instrument = snapshot.data.instruments[0];
+    if (account === undefined || instrument === undefined) throw new Error("Missing test catalog");
+    appendEvent(store, {
+      id: "funding",
+      date: "2026-03-01",
+      source: "manual",
+      type: "deposit",
+      account: account.id,
+      amount: { amount: "100", currency: instrument.quoteCurrency },
+      eurPerUnit: "0.9",
+    });
+    const trade = appendEvent(store, {
+      id: "buy-1",
+      date: "2026-03-02",
+      source: "manual",
+      type: "buy",
+      account: account.id,
+      instrument: instrument.id,
+      qty: "1",
+      price: { amount: "10", currency: instrument.quoteCurrency },
+      grossAmount: "10",
+      fee: { kind: "quote", amount: "1" },
+      eurPerUnit: "0.9",
+    });
+
+    await expect(
+      editEvent(store, { type: "buy", priceCurrency: "EUR", eurPerUnit: "1" }, trade.id, true),
+    ).rejects.toMatchObject({ domainError: { type: "validation" } });
+    expect(loadEvent(store, trade.id)).toEqual(trade);
   });
 
   it.each([
@@ -396,12 +478,14 @@ describe("event input preparation", () => {
           instrument: "HROW",
           qty: "1",
           price: { amount: "10", currency: "USD" },
-          fee: { amount: "1", currency: "USD" },
+          grossAmount: "10",
+          fee: { kind: "quote", amount: "1" },
           eurPerUnit: "0.9",
         });
       },
       input: { type: "buy", qty: "2" },
-      verify: (event: Event) => expect(event).toMatchObject({ qty: "2", fee: { amount: "1" } }),
+      verify: (event: Event) =>
+        expect(event).toMatchObject({ qty: "2", fee: { kind: "quote", amount: "1" } }),
     },
     {
       name: "sell fee clear",
@@ -424,6 +508,7 @@ describe("event input preparation", () => {
           instrument: "HROW",
           qty: "2",
           price: { amount: "10", currency: "USD" },
+          grossAmount: "20",
           eurPerUnit: "0.9",
         });
         return appendEvent(store, {
@@ -435,7 +520,8 @@ describe("event input preparation", () => {
           instrument: "HROW",
           qty: "1",
           price: { amount: "10", currency: "USD" },
-          fee: { amount: "1", currency: "USD" },
+          grossAmount: "10",
+          fee: { kind: "quote", amount: "1" },
           eurPerUnit: "0.9",
         });
       },

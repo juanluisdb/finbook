@@ -129,14 +129,30 @@ function applyBuy(state: BookState, event: Extract<Event, { type: "buy" }>): Res
   const currencyError = requireTradeCurrency(instrument, event.price.currency);
   if (currencyError !== undefined) return fail(currencyError);
 
-  const cost = tradeValue(event.price, event.qty, event.fee);
+  const grossValue = tradeGrossValue(event);
+  const cost =
+    event.fee?.kind === "quote"
+      ? grossValue.add(quoteTradeFee(event.fee.amount, event.price.currency))
+      : grossValue;
+  const quantity =
+    event.fee?.kind === "instrument"
+      ? new DecimalMath(event.qty).minus(new DecimalMath(event.fee.quantity))
+      : new DecimalMath(event.qty);
+  if (!quantity.greaterThan(new DecimalMath(0))) {
+    return fail(
+      invariantError(
+        "A buy instrument fee must be smaller than the traded quantity.",
+        "Check the fee quantity.",
+      ),
+    );
+  }
   const cashError = adjustCash(state, event.account, cost.toMoney(), "subtract");
   if (cashError !== undefined) return fail(cashError);
 
   const accountLots = state.lots[event.account] ?? {};
   const instrumentLots = accountLots[event.instrument] ?? [];
   const lot: Lot = {
-    quantity: event.qty,
+    quantity: quantity.toFixed(),
     cost: cost.toMoney(),
     eventIds: [event.id],
   };
@@ -159,8 +175,11 @@ function applySell(state: BookState, event: Extract<Event, { type: "sell" }>): R
     (total, lot) => total.plus(new DecimalMath(lot.quantity)),
     new DecimalMath(0),
   );
-  const requestedQuantity = new DecimalMath(event.qty);
-  if (requestedQuantity.greaterThan(totalQuantity)) {
+  const disposedQuantity =
+    event.fee?.kind === "instrument"
+      ? new DecimalMath(event.qty).plus(new DecimalMath(event.fee.quantity))
+      : new DecimalMath(event.qty);
+  if (disposedQuantity.greaterThan(totalQuantity)) {
     return fail(
       invariantError(
         "Cannot sell more than the current holding.",
@@ -169,9 +188,11 @@ function applySell(state: BookState, event: Extract<Event, { type: "sell" }>): R
     );
   }
 
-  const grossProceeds = MoneyValue.from(event.price).multiply(event.qty);
+  const grossProceeds = tradeGrossValue(event);
   const proceeds =
-    event.fee === undefined ? grossProceeds : grossProceeds.subtract(MoneyValue.from(event.fee));
+    event.fee?.kind === "quote"
+      ? grossProceeds.subtract(quoteTradeFee(event.fee.amount, event.price.currency))
+      : grossProceeds;
   if (proceeds.isNegative()) {
     return fail(
       invariantError("A sell fee cannot exceed gross proceeds.", "Check the fee amount."),
@@ -182,7 +203,7 @@ function applySell(state: BookState, event: Extract<Event, { type: "sell" }>): R
   if (cashError !== undefined) return fail(cashError);
 
   const remainingFactor = calculatedDecimal(
-    new DecimalMath(1).minus(requestedQuantity.dividedBy(totalQuantity)),
+    new DecimalMath(1).minus(disposedQuantity.dividedBy(totalQuantity)),
   );
   const remainingLots = instrumentLots
     .map((lot) => ({
@@ -312,9 +333,12 @@ function applyContribution(
   state.contributedEur = next.toMoney();
 }
 
-function tradeValue(price: Money, quantity: string, fee: Money | undefined): MoneyValue {
-  const gross = MoneyValue.from(price).multiply(quantity);
-  return fee === undefined ? gross : gross.add(MoneyValue.from(fee));
+function tradeGrossValue(event: Extract<Event, { type: "buy" | "sell" }>): MoneyValue {
+  return MoneyValue.from({ amount: event.grossAmount, currency: event.price.currency });
+}
+
+function quoteTradeFee(amount: string, currency: string): MoneyValue {
+  return MoneyValue.from({ amount, currency });
 }
 
 function incomeNet(

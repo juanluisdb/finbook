@@ -146,7 +146,7 @@ describe("finbook doctor", () => {
       ok: true,
       data: {
         status: "warning",
-        schemaVersion: 2,
+        schemaVersion: 3,
         timeZone: "Europe/Madrid",
         eventCount: 1,
         holeCount: 1,
@@ -205,7 +205,7 @@ describe("finbook doctor", () => {
     const dataHome = temporaryHome();
     initializeBook(dataHome);
     const metaPath = join(dataHome, "meta.json");
-    writeFileSync(metaPath, '{"schemaVersion":2,"timeZone":"Mars/Olympus"}\n', {
+    writeFileSync(metaPath, '{"schemaVersion":3,"timeZone":"Mars/Olympus"}\n', {
       mode: 0o600,
     });
     const before = snapshotTree(dataHome);
@@ -267,6 +267,7 @@ describe("finbook doctor", () => {
       instrument: "HROW",
       qty: "1",
       price: { amount: "10", currency: "USD" },
+      grossAmount: "10",
       eurPerUnit: "0.9",
     });
     writeFileSync(join(dataHome, "events.jsonl"), `${JSON.stringify(invalidBookEvent)}\n`, {

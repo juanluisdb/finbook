@@ -174,6 +174,7 @@ describe("FileBookStore", () => {
         instrument: "HROW",
         qty: "1",
         price: { amount: "1", currency: "USD" },
+        grossAmount: "1",
         eurPerUnit: "0.9",
       },
     ],
@@ -188,6 +189,7 @@ describe("FileBookStore", () => {
         instrument: "HROW",
         qty: "1",
         price: { amount: "1", currency: "USD" },
+        grossAmount: "1",
         eurPerUnit: "0.9",
       },
     ],
@@ -305,6 +307,7 @@ describe("FileBookStore", () => {
       instrument: "HROW",
       qty: "2",
       price: { amount: "10", currency: "USD" },
+      grossAmount: "20",
       eurPerUnit: "0.9",
     });
 
@@ -338,6 +341,7 @@ describe("FileBookStore", () => {
       instrument: "HROW",
       qty: "20",
       price: { amount: "2", currency: "USD" },
+      grossAmount: "40",
       eurPerUnit: "0.9",
     });
     const sell = EventSchema.parse({
@@ -349,6 +353,7 @@ describe("FileBookStore", () => {
       instrument: "HROW",
       qty: "20",
       price: { amount: "2", currency: "USD" },
+      grossAmount: "40",
       eurPerUnit: "0.9",
     });
     expect(store.appendEvent(deposit).ok).toBe(true);
@@ -388,6 +393,7 @@ describe("FileBookStore", () => {
       instrument: "HROW",
       qty: "2",
       price: { amount: "10", currency: "USD" },
+      grossAmount: "20",
       eurPerUnit: "0.9",
     });
     expect(store.appendEvent(deposit).ok).toBe(true);
@@ -426,6 +432,7 @@ describe("FileBookStore", () => {
       instrument: "HROW",
       qty: "2",
       price: { amount: "10", currency: "USD" },
+      grossAmount: "20",
       eurPerUnit: "0.9",
     });
     const independent = EventSchema.parse({
@@ -476,6 +483,7 @@ describe("FileBookStore", () => {
       instrument: "HROW",
       qty: "1",
       price: { amount: "10", currency: "USD" },
+      grossAmount: "10",
       eurPerUnit: "0.9",
     });
     expect(store.appendEvent(original).ok).toBe(true);
@@ -566,16 +574,19 @@ describe("FileBookStore", () => {
     expect(readFileSync(eventPath, "utf8")).toBe(before);
   });
 
-  it("rejects an unsupported schema version without rewriting metadata", () => {
+  it.each([2, 4])("rejects unsupported schema version %s without rewriting metadata", (version) => {
     const store = temporaryStore();
     expect(store.load().ok).toBe(true);
     const metaPath = join(store.dataHome, "meta.json");
-    writeFileSync(metaPath, '{"schemaVersion":3,"timeZone":"Europe/Madrid"}\n');
+    writeFileSync(
+      metaPath,
+      `${JSON.stringify({ schemaVersion: version, timeZone: "Europe/Madrid" })}\n`,
+    );
     const before = readFileSync(metaPath, "utf8");
 
     expect(store.load()).toMatchObject({
       ok: false,
-      error: { type: "storage", message: expect.stringContaining("schema version: 3") },
+      error: { type: "storage", message: expect.stringContaining(`schema version: ${version}`) },
     });
     expect(readFileSync(metaPath, "utf8")).toBe(before);
   });
@@ -585,11 +596,11 @@ describe("FileBookStore", () => {
 
     expect(store.loadMetadata()).toEqual({
       ok: true,
-      data: { schemaVersion: 2, timeZone: "Europe/Madrid" },
+      data: { schemaVersion: 3, timeZone: "Europe/Madrid" },
     });
     expect(store.setTimeZone("atlantic/canary")).toEqual({
       ok: true,
-      data: { schemaVersion: 2, timeZone: "Atlantic/Canary" },
+      data: { schemaVersion: 3, timeZone: "Atlantic/Canary" },
     });
 
     const metaPath = join(store.dataHome, "meta.json");
@@ -681,6 +692,7 @@ describe("FileBookStore", () => {
       instrument: "HROW",
       qty: "1",
       price: { amount: "10", currency: "USD" },
+      grossAmount: "10",
       eurPerUnit: "0.9",
     });
     const eventPath = join(store.dataHome, "events.jsonl");
@@ -693,7 +705,7 @@ describe("FileBookStore", () => {
       ok: true,
       data: {
         initialized: true,
-        metadata: { schemaVersion: 2, timeZone: "Europe/Madrid" },
+        metadata: { schemaVersion: 3, timeZone: "Europe/Madrid" },
         replay: {
           ok: false,
           error: { message: expect.stringContaining("buy-without-cash") },
@@ -767,6 +779,7 @@ describe("FileBookStore", () => {
             instrument: "HROW",
             qty: "1",
             price: { amount: "40", currency: "USD" },
+            grossAmount: "40",
             eurPerUnit: "0.9",
           }),
         ],
@@ -792,6 +805,7 @@ describe("FileBookStore", () => {
           instrument: "HROW",
           qty: "2",
           price: { amount: "20", currency: "USD" },
+          grossAmount: "40",
           eurPerUnit: "0.9",
         }),
       ).ok,

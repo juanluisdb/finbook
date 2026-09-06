@@ -11,6 +11,7 @@ export const RouteKeySchema = z.enum([
   "price:stock",
   "price:etf",
   "price:fund",
+  "price:etc",
   "price:crypto",
   "fx",
   "eur-rate:fiat",
@@ -19,7 +20,7 @@ export const RouteKeySchema = z.enum([
 export type RouteKey = z.infer<typeof RouteKeySchema>;
 
 export const PROVIDER_CAPABILITIES = {
-  yahoo: ["price:stock", "price:etf", "price:fund", "price:crypto"],
+  yahoo: ["price:stock", "price:etf", "price:fund", "price:etc", "price:crypto"],
   coingecko: ["price:crypto", "fx", "eur-rate:crypto"],
   ecb: ["fx", "eur-rate:fiat"],
 } as const satisfies Record<ProviderId, readonly RouteKey[]>;
@@ -33,8 +34,7 @@ export function providerSupportsBinding(
   kind: "instrument" | "currency",
 ): boolean {
   if (kind === "instrument") {
-    const routes: RouteKey[] = ["price:stock", "price:etf", "price:fund", "price:crypto"];
-    return routes.some((route) => providerSupportsRoute(provider, route));
+    return PROVIDER_CAPABILITIES[provider].some((route) => route.startsWith("price:"));
   }
   return (
     providerSupportsRoute(provider, "fx") ||
@@ -74,6 +74,7 @@ const RouteOverridesSchema = z
     "price:stock": z.array(ProviderIdSchema).optional(),
     "price:etf": z.array(ProviderIdSchema).optional(),
     "price:fund": z.array(ProviderIdSchema).optional(),
+    "price:etc": z.array(ProviderIdSchema).optional(),
     "price:crypto": z.array(ProviderIdSchema).optional(),
     fx: z.array(ProviderIdSchema).optional(),
     "eur-rate:fiat": z.array(ProviderIdSchema).optional(),

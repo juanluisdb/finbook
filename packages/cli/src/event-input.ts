@@ -48,6 +48,7 @@ const RateFields = {
 
 const RateOptionsSchema = z.object(RateFields).strict();
 type RateInput = z.infer<typeof RateOptionsSchema>;
+const TradeFeeKindSchema = z.enum(["quote", "instrument"]);
 
 const EditBaseFields = {
   date: IsoDateSchema.optional(),
@@ -100,8 +101,9 @@ const TradeAddFields = {
   qty: PositiveDecimalStringSchema,
   priceAmount: PositiveDecimalStringSchema,
   priceCurrency: CurrencySchema,
-  feeAmount: NonNegativeDecimalStringSchema.optional(),
-  feeCurrency: CurrencySchema.optional(),
+  grossAmount: PositiveDecimalStringSchema,
+  feeAmount: PositiveDecimalStringSchema.optional(),
+  feeIn: TradeFeeKindSchema.optional(),
 };
 
 const DividendAddSchema = z
@@ -204,8 +206,9 @@ const TradeEditFields = {
   qty: PositiveDecimalStringSchema.optional(),
   priceAmount: PositiveDecimalStringSchema.optional(),
   priceCurrency: CurrencySchema.optional(),
-  feeAmount: NonNegativeDecimalStringSchema.optional(),
-  feeCurrency: CurrencySchema.optional(),
+  grossAmount: PositiveDecimalStringSchema.optional(),
+  feeAmount: PositiveDecimalStringSchema.optional(),
+  feeIn: TradeFeeKindSchema.optional(),
   clearFee: z.boolean().optional(),
 };
 
@@ -235,11 +238,11 @@ const EditInputSchema = z.discriminatedUnion("type", [
   z
     .object({ ...TradeEditFields, type: z.literal("buy") })
     .strict()
-    .superRefine(validateRateOptions),
+    .superRefine(validateTradeEditOptions),
   z
     .object({ ...TradeEditFields, type: z.literal("sell") })
     .strict()
-    .superRefine(validateRateOptions),
+    .superRefine(validateTradeEditOptions),
   z
     .object({
       ...IncomeEditFields,
@@ -409,12 +412,7 @@ async function buildEvent(
         "--price-amount",
         "--price-currency",
       );
-      const fee = optionalMoney(
-        input.feeAmount,
-        input.feeAmount === undefined ? undefined : (input.feeCurrency ?? input.priceCurrency),
-        "--fee-amount",
-        "--fee-currency",
-      );
+      const fee = buildTradeFee(input.feeIn, input.feeAmount);
       const rate = await resolveEurRate(price.currency, base.date, input, rateResolver);
       const event = {
         ...base,
@@ -423,6 +421,7 @@ async function buildEvent(
         instrument,
         qty,
         price,
+        grossAmount: required(input.grossAmount, "--gross-amount"),
       };
       if (fee !== undefined) Object.assign(event, { fee });
       Object.assign(event, rate);
@@ -653,16 +652,48 @@ function validateRateOptions(input: RateInput, context: z.RefinementCtx): void {
 function validateTradeAddOptions(
   input: RateInput & {
     feeAmount?: string | undefined;
-    feeCurrency?: string | undefined;
+    feeIn?: "quote" | "instrument" | undefined;
   },
   context: z.RefinementCtx,
 ): void {
   validateRateOptions(input, context);
-  if (input.feeCurrency !== undefined && input.feeAmount === undefined) {
+  if (input.feeIn === undefined && input.feeAmount !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["feeIn"],
+      message: "--fee-in is required with --fee-amount",
+    });
+  }
+  if (input.feeIn !== undefined && input.feeAmount === undefined) {
     context.addIssue({
       code: "custom",
       path: ["feeAmount"],
-      message: "--fee-amount is required with --fee-currency",
+      message: "--fee-amount is required with --fee-in",
+    });
+  }
+}
+
+function validateTradeEditOptions(
+  input: RateInput & {
+    feeAmount?: string | undefined;
+    feeIn?: "quote" | "instrument" | undefined;
+    clearFee?: boolean | undefined;
+  },
+  context: z.RefinementCtx,
+): void {
+  validateRateOptions(input, context);
+  if (input.feeIn !== undefined && input.feeAmount === undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["feeAmount"],
+      message: "--fee-amount is required when changing --fee-in",
+    });
+  }
+  if (input.clearFee === true && (input.feeAmount !== undefined || input.feeIn !== undefined)) {
+    context.addIssue({
+      code: "custom",
+      path: ["clearFee"],
+      message: "A trade fee cannot be changed and cleared together",
     });
   }
 }
@@ -737,13 +768,17 @@ async function buildTradeReplacement(
   rateResolver: HistoricalRateResolver | undefined,
 ): Promise<Event> {
   const price = mergeMoney(current.price, input.priceAmount, input.priceCurrency);
-  const fee = mergeOptionalMoney(
+  const instrument = input.instrument ?? current.instrument;
+  const feeUnitChanged =
+    current.fee?.kind === "quote"
+      ? price.currency !== current.price.currency
+      : current.fee?.kind === "instrument" && instrument !== current.instrument;
+  const fee = mergeTradeFee(
     current.fee,
     input.feeAmount,
-    input.feeCurrency,
+    input.feeIn,
     input.clearFee,
-    price.currency,
-    "--fee-currency",
+    feeUnitChanged,
   );
   const rate = await resolveEditedRate(
     price.currency,
@@ -757,9 +792,10 @@ async function buildTradeReplacement(
     ...base,
     type: current.type,
     account: input.account ?? current.account,
-    instrument: input.instrument ?? current.instrument,
+    instrument,
     qty: input.qty ?? current.qty,
     price,
+    grossAmount: input.grossAmount ?? current.grossAmount,
     ...rate,
   };
   if (fee !== undefined) Object.assign(replacement, { fee });
@@ -874,6 +910,40 @@ function mergeOptionalMoney(
     return { amount, currency: currency ?? required(defaultCurrency, currencyFlag) };
   }
   return { amount: amount ?? current.amount, currency: currency ?? current.currency };
+}
+
+function buildTradeFee(
+  kind: "quote" | "instrument" | undefined,
+  amount: string | undefined,
+): Extract<Event, { type: "buy" | "sell" }>["fee"] {
+  if (kind === undefined || amount === undefined) return undefined;
+  return kind === "quote" ? { kind, amount } : { kind, quantity: amount };
+}
+
+function mergeTradeFee(
+  current: Extract<Event, { type: "buy" | "sell" }>["fee"],
+  amount: string | undefined,
+  kind: "quote" | "instrument" | undefined,
+  clear: boolean | undefined,
+  unitChanged: boolean,
+): Extract<Event, { type: "buy" | "sell" }>["fee"] {
+  if (clear === true) return undefined;
+  if (kind !== undefined) return buildTradeFee(kind, required(amount, "--fee-amount"));
+  if (amount !== undefined) {
+    if (current === undefined) {
+      throw validationFailure("Missing trade fee source.", "Provide --fee-in.");
+    }
+    return current.kind === "quote"
+      ? { kind: current.kind, amount }
+      : { kind: current.kind, quantity: amount };
+  }
+  if (unitChanged && current !== undefined) {
+    throw validationFailure(
+      "The trade fee unit changed.",
+      "Provide a new --fee-amount or use --clear-fee.",
+    );
+  }
+  return current;
 }
 
 function mergeWithholding(
