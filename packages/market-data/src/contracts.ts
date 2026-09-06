@@ -4,7 +4,7 @@ import { z } from "zod";
 
 import { CurrencySchema, IsoDateSchema, InstrumentIdSchema } from "@finbook/core";
 
-export const ProviderIdSchema = z.enum(["yahoo", "coingecko", "ecb"]);
+export const ProviderIdSchema = z.enum(["yahoo", "coingecko", "ecb", "eodhd"]);
 export type ProviderId = z.infer<typeof ProviderIdSchema>;
 
 export const RouteKeySchema = z.enum([
@@ -23,6 +23,7 @@ export const PROVIDER_CAPABILITIES = {
   yahoo: ["price:stock", "price:etf", "price:fund", "price:etc", "price:crypto"],
   coingecko: ["price:crypto", "fx", "eur-rate:crypto"],
   ecb: ["fx", "eur-rate:fiat"],
+  eodhd: ["price:fund"],
 } as const satisfies Record<ProviderId, readonly RouteKey[]>;
 
 export function providerSupportsRoute(provider: ProviderId, route: RouteKey): boolean {

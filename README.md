@@ -74,6 +74,15 @@ finbook show positions --as-of 2026-03-04
 
 `price set` records the market value of an instrument on a date; it does not record a trade. `fx set` does the same for a currency-to-EUR valuation rate. `--fetch` asks the configured providers for the valuation data required by the view and saves each successful result locally.
 
+Yahoo remains the default fund-price provider. A fund available through EODHD can opt in with its EODHD ticker:
+
+```sh
+export FINBOOK_EODHD_API_KEY="..."
+finbook config source set --instrument my-fund --provider eodhd --identifier PROVIDER-TICKER.EUFUND
+```
+
+Each unresolved EODHD-bound fund costs one API call per `--fetch`. Latest refreshes always contact the provider; eligible historical marks are reused from the local book.
+
 ```sh
 finbook show glance --fetch
 finbook doctor
@@ -95,7 +104,7 @@ Use `finbook <command> --help` for the complete command-specific flags and examp
 
 `$FINBOOK_HOME` contains private financial information. Keep it outside the checkout and do not commit or upload it. finbook uses owner-only permissions where the operating system supports them.
 
-Non-secret provider routes and bindings are stored with the book. CoinGecko credentials are read from `FINBOOK_COINGECKO_DEMO_API_KEY` and are not persisted.
+Non-secret provider routes and bindings are stored with the book. CoinGecko and EODHD credentials are read from `FINBOOK_COINGECKO_DEMO_API_KEY` and `FINBOOK_EODHD_API_KEY`; they are not persisted.
 
 ## Development
 

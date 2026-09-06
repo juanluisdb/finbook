@@ -48,6 +48,7 @@ function runDoctor(dataHome: string, json = true): SpawnSyncReturns<string> {
       ...process.env,
       FINBOOK_HOME: dataHome,
       FINBOOK_COINGECKO_DEMO_API_KEY: "must-not-appear",
+      FINBOOK_EODHD_API_KEY: "eodhd-secret-must-stay-private",
     },
   });
 }
@@ -156,6 +157,7 @@ describe("finbook doctor", () => {
       expect.arrayContaining([expect.objectContaining({ id: "valuation", status: "warning" })]),
     );
     expect(result.stdout).not.toContain("must-not-appear");
+    expect(result.stdout).not.toContain("eodhd-secret-must-stay-private");
     expect(result.stdout).not.toContain("deposit-usd");
     expect(snapshotTree(dataHome)).toBe(before);
   });
