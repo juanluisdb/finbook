@@ -185,6 +185,42 @@ describe("provider configuration CLI", () => {
     });
   });
 
+  it("lists EODHD as an explicitly bound fund provider", () => {
+    const dataHome = temporaryHome();
+    addInstrument(dataHome, "fund-x");
+
+    const listed = runCli(dataHome, ["config", "provider", "list", "--json"]);
+    const binding = runCli(dataHome, [
+      "config",
+      "source",
+      "set",
+      "--instrument",
+      "fund-x",
+      "--provider",
+      "eodhd",
+      "--identifier",
+      "FUND.X.EUFUND",
+      "--json",
+    ]);
+
+    expect(listed.status).toBe(0);
+    expect(JSON.parse(listed.stdout).data).toEqual(
+      expect.arrayContaining([
+        {
+          id: "eodhd",
+          enabled: true,
+          credentialEnv: "FINBOOK_EODHD_API_KEY",
+          routes: [],
+        },
+      ]),
+    );
+    expect(binding.status).toBe(0);
+    expect(JSON.parse(binding.stdout)).toMatchObject({
+      ok: true,
+      data: { provider: "eodhd", identifier: "FUND.X.EUFUND" },
+    });
+  });
+
   it("rejects an unknown instrument binding without changing configuration bytes", () => {
     const dataHome = temporaryHome();
     expect(runCli(dataHome, ["config", "show", "--json"]).status).toBe(0);
@@ -238,12 +274,15 @@ describe("provider configuration CLI", () => {
   it("never writes or prints an environment credential", () => {
     const dataHome = temporaryHome();
     const secret = "coingecko-secret-that-must-not-appear";
+    const eodhdSecret = "eodhd-secret-that-must-not-appear";
     const result = runCli(dataHome, ["config", "show", "--json"], {
       FINBOOK_COINGECKO_DEMO_API_KEY: secret,
+      FINBOOK_EODHD_API_KEY: eodhdSecret,
     });
 
     expect(result.status).toBe(0);
     expect(result.stdout).not.toContain(secret);
+    expect(result.stdout).not.toContain(eodhdSecret);
     expect(result.stdout).not.toContain("apiKey");
   });
 

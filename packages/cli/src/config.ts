@@ -237,7 +237,9 @@ function required(value: string | undefined, flag: string): string {
 }
 
 function credentialEnv(provider: ProviderId): string | null {
-  return provider === "coingecko" ? "FINBOOK_COINGECKO_DEMO_API_KEY" : null;
+  if (provider === "coingecko") return "FINBOOK_COINGECKO_DEMO_API_KEY";
+  if (provider === "eodhd") return "FINBOOK_EODHD_API_KEY";
+  return null;
 }
 
 function configuredRoutes(provider: ProviderId, config: MarketDataConfig): string[] {
