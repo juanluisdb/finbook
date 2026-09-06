@@ -57,6 +57,17 @@ describe("core schemas", () => {
     ).toMatchObject({ id: "VWCE", quoteCurrency: "EUR" });
   });
 
+  it("accepts an exchange-traded commodity as its own instrument type", () => {
+    expect(
+      InstrumentSchema.parse({
+        id: "COMMODITY",
+        name: "Commodity tracker",
+        type: "etc",
+        quoteCurrency: "EUR",
+      }),
+    ).toMatchObject({ id: "COMMODITY", type: "etc" });
+  });
+
   it("requires compact provenance on valuation stamps", () => {
     const manual = PriceStampSchema.parse({
       instrument: "VWCE",

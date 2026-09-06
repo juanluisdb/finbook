@@ -69,6 +69,14 @@ type ProviderSelection =
   | { ok: true; providers: readonly ProviderId[] }
   | { ok: false; provider: ProviderId | "none"; error: ProviderFailure };
 
+const PRICE_ROUTE_BY_INSTRUMENT_TYPE = {
+  stock: "price:stock",
+  etf: "price:etf",
+  fund: "price:fund",
+  etc: "price:etc",
+  crypto: "price:crypto",
+} as const satisfies Record<PriceNeed["instrument"]["type"], RouteKey>;
+
 export class MarketDataCoordinator {
   private readonly store: MarketDataStore;
   private readonly config: MarketDataConfig;
@@ -507,16 +515,7 @@ function selectRouteProviders(route: RouteKey, config: MarketDataConfig): Provid
 }
 
 function priceRoute(type: PriceNeed["instrument"]["type"]): RouteKey {
-  switch (type) {
-    case "stock":
-      return "price:stock";
-    case "etf":
-      return "price:etf";
-    case "fund":
-      return "price:fund";
-    case "crypto":
-      return "price:crypto";
-  }
+  return PRICE_ROUTE_BY_INSTRUMENT_TYPE[type];
 }
 
 function providerFxNeed(need: FxNeed, provider: ProviderId, config: MarketDataConfig): FxNeed {

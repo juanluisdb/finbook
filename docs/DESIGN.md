@@ -48,6 +48,8 @@ The boundary passes parsed values downstream. Core logic does not re-interpret r
 
 Decimal values remain strings on disk and across package boundaries. `packages/core/src/domain/decimal.ts::DecimalMath` and `packages/core/src/domain/money.ts::MoneyValue` own arithmetic and currency-safe operations.
 
+Trade settlement uses the reported gross cash amount rather than multiplying quantity by the displayed unit price. The price remains an independent fact for display and valuation fallback. `packages/core/src/domain/schemas.ts::TradeFeeSchema` distinguishes quote-currency fees from instrument-quantity fees, and `packages/core/src/domain/apply.ts::apply` applies each to cash or holdings at replay time.
+
 Broken user input and persisted data return typed domain failures. Impossible internal states throw rather than being translated into ordinary validation errors.
 
 ## Treat the snapshot as input
@@ -132,6 +134,8 @@ An incomplete explicit fetch is an external failure even when it produced useful
 Typed event commands expose only the legal flags for their event variant. File input accepts one canonical event object and reaches the same core mutation boundary.
 
 `packages/cli/src/event-input.ts::parseAddInput` and `packages/cli/src/event-input.ts::parseEditInput` own event option validation. Input preparation resolves defaults and optional historical rates before asking the store to commit.
+
+Trade input requires the exact gross amount. Fee source and amount are supplied together; an omitted pair means no fee. Edits preserve an existing fee only while its unit remains unchanged, and require an explicit replacement amount or clear when a quote currency or instrument change would reinterpret that value.
 
 Human renderers in `packages/cli/src/human-output.ts` consume the same filtered or derived values as JSON mode. Filtering and query semantics happen before presentation so output mode cannot change results.
 

@@ -146,6 +146,7 @@ describe("read CLI", () => {
         instrument: "HROW",
         qty: "1",
         price: { amount: "20", currency: "USD" },
+        grossAmount: "20",
         eurPerUnit: "0.9",
       },
       {
@@ -157,6 +158,7 @@ describe("read CLI", () => {
         instrument: "ALT",
         qty: "1",
         price: { amount: "30", currency: "USD" },
+        grossAmount: "30",
         eurPerUnit: "0.9",
       },
       {
@@ -342,7 +344,8 @@ describe("read CLI", () => {
         instrument: "HROW",
         qty: "2",
         price: { amount: "10", currency: "USD" },
-        fee: { amount: "1", currency: "USD" },
+        grossAmount: "20",
+        fee: { kind: "quote", amount: "1" },
         eurPerUnit: "0.9",
       },
       {
@@ -354,7 +357,8 @@ describe("read CLI", () => {
         instrument: "HROW",
         qty: "1",
         price: { amount: "12", currency: "USD" },
-        fee: { amount: "1", currency: "USD" },
+        grossAmount: "12",
+        fee: { kind: "quote", amount: "1" },
         eurPerUnit: "0.9",
       },
       {
@@ -399,8 +403,8 @@ describe("read CLI", () => {
       "-10 EUR ← ib",
       "20 EUR ib → other",
       "ib: 100 EUR → 120 USD; fee 1 EUR",
-      "ib: buy 2 HROW @ 10 USD; fee 1 USD",
-      "ib: sell 1 HROW @ 12 USD; fee 1 USD",
+      "gross 20 USD; fee 1 USD from quote cash",
+      "gross 12 USD; fee 1 USD from quote cash",
       "ib: HROW gross 10 USD; net 8 USD",
       "ib: gross 5 EUR; net 4 EUR",
       "ib: -2 EUR",
@@ -537,12 +541,12 @@ describe("read CLI", () => {
     expect(add.status).toBe(0);
     expect(add.stdout).toContain("Example:");
     expect(add.stdout).toContain(
-      "finbook event add deposit --date 2026-03-03 --account ib --amount 800 --currency EUR",
+      "finbook event add deposit --date 2026-03-03 --account broker --amount 800 --currency EUR",
     );
     expect(edit.status).toBe(0);
     expect(edit.stdout).toContain("finbook event edit buy buy-1 --qty 15");
     expect(edit.stdout).toContain("--clear-fee");
-    expect(edit.stdout).not.toContain("--gross-amount");
+    expect(edit.stdout).toContain("--gross-amount");
     expect(readdirSync(dataHome)).toEqual([]);
   });
 
@@ -677,6 +681,7 @@ describe("read CLI", () => {
           instrument: "EUROW",
           qty: "1",
           price: { amount: "40", currency: "EUR" },
+          grossAmount: "40",
           eurPerUnit: "1",
         }),
       ).ok,
@@ -747,6 +752,7 @@ describe("read CLI", () => {
           instrument: "EUROW",
           qty: "1",
           price: { amount: "40", currency: "EUR" },
+          grossAmount: "40",
           eurPerUnit: "1",
         }),
       ).ok,
@@ -825,6 +831,7 @@ describe("read CLI", () => {
           instrument: "HROW",
           qty: "1",
           price: { amount: "40", currency: "USD" },
+          grossAmount: "40",
           eurPerUnit: "0.9",
         }),
       ).ok,

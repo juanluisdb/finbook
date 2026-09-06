@@ -24,7 +24,7 @@ Spanish focus means reporting in EUR and retaining the event-level facts needed 
 
 The book records economic events; balances, holdings, contributions, valuations, and breakdowns are derived views.
 
-Accounts describe where assets are held. Instruments identify the same asset across accounts and carry one quote currency. Cash is a balance per account and currency, not an instrument.
+Accounts describe where assets are held. Instruments identify the same asset across accounts, carry one quote currency, and classify it as a stock, ETF, fund, ETC, or cryptoasset. Cash is a balance per account and currency, not an instrument.
 
 Price and FX stamps describe valuation evidence on a date. They are not transactions and never change event history.
 
@@ -34,21 +34,23 @@ The canonical input shapes live in `packages/core/src/domain/schemas.ts::Account
 
 ## Record the economic meaning
 
-| Event        | Meaning                                                                                 |
-| ------------ | --------------------------------------------------------------------------------------- |
-| `deposit`    | Money entering the owned financial system; increases contributed capital.               |
-| `withdrawal` | Money leaving the owned financial system; decreases contributed capital.                |
-| `transfer`   | Same-currency movement between two owned accounts; does not change contributed capital. |
-| `fx`         | Currency exchange within one account; does not change contributed capital.              |
-| `buy`        | Cash exchanged for an instrument in that instrument’s quote currency.                   |
-| `sell`       | Instrument quantity exchanged for cash in that instrument’s quote currency.             |
-| `dividend`   | Gross instrument income with optional foreign and domestic withholding.                 |
-| `interest`   | Gross account income with optional foreign and domestic withholding.                    |
-| `fee`        | A standalone account fee that is not attached to a trade.                               |
+| Event        | Meaning                                                                                      |
+| ------------ | -------------------------------------------------------------------------------------------- |
+| `deposit`    | Money entering the owned financial system; increases contributed capital.                    |
+| `withdrawal` | Money leaving the owned financial system; decreases contributed capital.                     |
+| `transfer`   | Same-currency movement between two owned accounts; does not change contributed capital.      |
+| `fx`         | Currency exchange within one account; does not change contributed capital.                   |
+| `buy`        | Exact gross cash exchanged for a gross instrument quantity, with any fee applied separately. |
+| `sell`       | A gross instrument quantity exchanged for exact gross cash, with any fee applied separately. |
+| `dividend`   | Gross instrument income with optional foreign and domestic withholding.                      |
+| `interest`   | Gross account income with optional foreign and domestic withholding.                         |
+| `fee`        | A standalone account fee that is not attached to a trade.                                    |
 
 A movement from one owned account to another is a transfer even when a broker statement labels the incoming side as a deposit. Treating it as a deposit would overstate contributed capital.
 
-A trade fee belongs on its buy or sell. A standalone fee event is only for a charge with no associated trade.
+A trade records its reported unit price and exact pre-fee cash amount independently. The cash amount is authoritative for settlement and lot cost because a displayed unit price may be rounded.
+
+A trade fee belongs on its buy or sell and states what pays it. A quote fee changes cash; an instrument fee changes the received or disposed quantity. No fee is represented by omitting the fee. A standalone fee event is only for a charge with no associated trade.
 
 An FX event exchanges two currencies in one account. A transfer moves one currency between accounts; it does not implicitly convert it.
 
@@ -76,7 +78,7 @@ Events have stable identity and ordered position in the ledger. IDs are unique; 
 
 Replay uses economic date first and append order as the same-day tie-breaker. A view for date `D` excludes events after `D`.
 
-The book rejects unknown accounts or instruments, negative cash, sales above the held quantity, mismatched trade currencies, invalid fees, and withholding above gross income.
+The book rejects unknown accounts or instruments, negative cash, sales above the held quantity including an instrument fee, mismatched trade currencies, invalid fees, instrument fees that consume an entire purchase, and withholding above gross income.
 
 An edit preserves the event ID, type, source, external ID, and ledger position. Fields omitted from a typed edit remain unchanged; optional values are removed only through their explicit clear flags.
 
@@ -116,7 +118,7 @@ The CLI behaviour lives in `packages/cli/src/program.ts::createProgram`, `packag
 
 ## Retain inputs for Spanish tax work
 
-finbook keeps native prices, quantities, dates, trade fees, gross income, foreign and domestic withholding, historical EUR rates, account custody country and type, and optional instrument ISINs.
+finbook keeps native prices, exact gross trade amounts, gross trade quantities, instrument-denominated fee quantities, dates, quote fees, gross income, foreign and domestic withholding, historical EUR rates, account custody country and type, and optional instrument ISINs.
 
 Those facts are useful inputs for later Spanish tax readers, but finbook does not determine filing obligations, calculate official FIFO gains, calculate currency-lot gains, select tax boxes, prepare forms, or give tax advice.
 

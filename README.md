@@ -48,7 +48,7 @@ Add an account and an instrument:
 
 ```sh
 finbook account add --id broker --name "My broker" --platform my-broker --country ES --custodial broker
-finbook instrument add --id HROW --name Harrow --type stock --quote-currency USD
+finbook instrument add --id ACME --name "Example Co" --type stock --quote-currency USD
 ```
 
 Record money entering the portfolio, exchange it, and buy the instrument:
@@ -56,15 +56,17 @@ Record money entering the portfolio, exchange it, and buy the instrument:
 ```sh
 finbook event add deposit --date 2026-03-03 --account broker --amount 800 --currency EUR
 finbook event add fx --date 2026-03-03 --account broker --from-amount 798 --from-currency EUR --to-amount 927.04 --to-currency USD --fee-amount 1.71 --fee-currency EUR
-finbook event add buy --date 2026-03-03 --account broker --instrument HROW --qty 20 --price-amount 40.45 --price-currency USD --fee-amount 0.28 --fee-currency USD --eur-per-unit 0.861
+finbook event add buy --date 2026-03-03 --account broker --instrument ACME --qty 20 --price-amount 40.45 --price-currency USD --gross-amount 809 --fee-in quote --fee-amount 0.28 --eur-per-unit 0.861
 ```
+
+`--gross-amount` records the exact pre-fee cash value reported for a trade; finbook does not reconstruct it from a rounded unit price. A trade fee can come from quote-currency cash (`--fee-in quote`) or from the traded instrument (`--fee-in instrument`). Omit both fee flags when there is no fee.
 
 `eurPerUnit` records the historical EUR value of one unit of the event currency. For a non-EUR event, provide it directly or use `--fetch-rate`. EUR events store a rate of `1` automatically.
 
 Add valuation marks and inspect the portfolio:
 
 ```sh
-finbook price set --instrument HROW --amount 41 --currency USD --as-of 2026-03-04
+finbook price set --instrument ACME --amount 41 --currency USD --as-of 2026-03-04
 finbook fx set --pair USD/EUR --rate 0.866 --as-of 2026-03-04
 finbook show glance --as-of 2026-03-04
 finbook show positions --as-of 2026-03-04

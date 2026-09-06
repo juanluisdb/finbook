@@ -75,7 +75,7 @@ The CLI uses latest mode only when the requested date is its resolved current da
 
 Provider observations may use an effective date on or before the requested historical date, but never a future date. Adapters own provider-specific windows and selection rules.
 
-Yahoo provides instrument prices and validates the returned quote currency against the instrument. CoinGecko provides crypto prices, bound crypto-to-EUR values, and historical crypto EUR rates. ECB provides fiat-to-EUR valuation and historical rates.
+Yahoo is the default price source for stocks, ETFs, funds, and ETCs, and validates the returned quote currency against the instrument. CoinGecko provides crypto prices, bound crypto-to-EUR values, and historical crypto EUR rates. ECB provides fiat-to-EUR valuation and historical rates.
 
 Adapter behaviour lives in `packages/market-data/src/yahoo.ts::YahooSource`, `packages/market-data/src/coingecko.ts::CoinGeckoSource`, and `packages/market-data/src/ecb.ts::EcbSource`.
 

@@ -43,11 +43,13 @@ export const AccountSchema = z
   })
   .strict();
 
+export const InstrumentTypeSchema = z.enum(["stock", "etf", "fund", "etc", "crypto"]);
+
 export const InstrumentSchema = z
   .object({
     id: InstrumentIdSchema,
     name: NonEmptyStringSchema,
-    type: z.enum(["stock", "etf", "fund", "crypto"]),
+    type: InstrumentTypeSchema,
     quoteCurrency: CurrencySchema,
     isin: NonEmptyStringSchema.optional(),
   })
@@ -155,11 +157,17 @@ const FxSchema = AccountEventSchema.extend({
   }
 });
 
+const TradeFeeSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("quote"), amount: PositiveDecimalStringSchema }).strict(),
+  z.object({ kind: z.literal("instrument"), quantity: PositiveDecimalStringSchema }).strict(),
+]);
+
 const TradeFields = {
   instrument: InstrumentIdSchema,
   qty: PositiveDecimalStringSchema,
   price: PositiveMoneySchema,
-  fee: NonNegativeMoneySchema.optional(),
+  grossAmount: PositiveDecimalStringSchema,
+  fee: TradeFeeSchema.optional(),
   eurPerUnit: EurRateSchema,
   eurRateProvenance: EurRateProvenanceSchema.optional(),
 };
@@ -168,7 +176,6 @@ const BuySchema = AccountEventSchema.extend({
   type: z.literal("buy"),
   ...TradeFields,
 })
-  .superRefine(validateTradeCurrencies)
   .superRefine((buy, context) => validateEurPerUnit(buy.price.currency, buy.eurPerUnit, context))
   .superRefine(validateEurRateProvenance);
 
@@ -176,7 +183,6 @@ const SellSchema = AccountEventSchema.extend({
   type: z.literal("sell"),
   ...TradeFields,
 })
-  .superRefine(validateTradeCurrencies)
   .superRefine((sell, context) => validateEurPerUnit(sell.price.currency, sell.eurPerUnit, context))
   .superRefine(validateEurRateProvenance);
 
@@ -278,19 +284,6 @@ function validateEurRateProvenance(
       code: "custom",
       path: ["eurRateProvenance", "effectiveDate"],
       message: "The effective EUR rate date cannot be after the event date",
-    });
-  }
-}
-
-function validateTradeCurrencies(
-  trade: { price: { currency: string }; fee?: { currency: string } | undefined },
-  context: z.RefinementCtx,
-): void {
-  if (trade.fee !== undefined && trade.fee.currency !== trade.price.currency) {
-    context.addIssue({
-      code: "custom",
-      path: ["fee", "currency"],
-      message: "A v1 trade fee must use the price currency",
     });
   }
 }

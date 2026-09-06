@@ -36,6 +36,7 @@ describe("event schemas", () => {
         instrument: "HROW",
         qty: "0",
         price: { amount: "40", currency: "USD" },
+        grossAmount: "800",
         eurPerUnit: "0.9",
       },
     ],
@@ -47,6 +48,7 @@ describe("event schemas", () => {
         instrument: "HROW",
         qty: "1",
         price: { amount: "-40", currency: "USD" },
+        grossAmount: "40",
         eurPerUnit: "0.9",
       },
     ],
@@ -207,28 +209,47 @@ describe("event schemas", () => {
     ).toThrow();
   });
 
-  it("keeps a trade fee attached to the trade and in its price currency", () => {
+  it.each([
+    ["quote cash", { kind: "quote", amount: "0.28" }],
+    ["the traded instrument", { kind: "instrument", quantity: "0.007" }],
+  ] as const)("keeps a trade fee attached to %s", (_case, fee) => {
     const buy = EventSchema.parse({
       ...base,
       type: "buy",
-      account: "ib",
-      instrument: "HROW",
+      account: "broker",
+      instrument: "ACME",
       qty: "20.000",
       price: { amount: "40.45", currency: "USD" },
-      fee: { amount: "0.28", currency: "USD" },
+      grossAmount: "808.97",
+      fee,
       eurPerUnit: "0.861",
     });
 
     expect(buy).toMatchObject({
       type: "buy",
       qty: "20",
-      fee: { amount: "0.28", currency: "USD" },
+      grossAmount: "808.97",
+      fee,
     });
+  });
+
+  it("rejects ambiguous and non-positive trade settlement fields", () => {
+    const buy = {
+      ...base,
+      type: "buy",
+      account: "broker",
+      instrument: "ACME",
+      qty: "20",
+      price: { amount: "40.45", currency: "USD" },
+      grossAmount: "808.97",
+      eurPerUnit: "0.861",
+    };
+
+    expect(() => EventSchema.parse({ ...buy, grossAmount: "0" })).toThrow();
+    expect(() => EventSchema.parse({ ...buy, fee: { amount: "0.28", currency: "USD" } })).toThrow();
+    expect(() => EventSchema.parse({ ...buy, fee: { kind: "quote", amount: "0" } })).toThrow();
     expect(() =>
-      EventSchema.parse({
-        ...buy,
-        fee: { amount: "0.28", currency: "EUR" },
-      }),
+      EventSchema.parse({ ...buy, fee: { kind: "instrument", amount: "0.007" } }),
     ).toThrow();
   });
 

@@ -133,6 +133,33 @@ class FixturePriceSource implements PriceSource {
 }
 
 describe("market-data coordinator", () => {
+  it("routes exchange-traded commodities through Yahoo by default", async () => {
+    const store = temporaryStore();
+    const value = InstrumentSchema.parse({
+      id: "commodity-tracker",
+      name: "Commodity tracker",
+      type: "etc",
+      quoteCurrency: "EUR",
+    });
+    expect(store.appendInstrument(value).ok).toBe(true);
+    const source = new FixturePriceSource("yahoo", (needs) => needs.map((need) => success(need)));
+    const coordinator = new MarketDataCoordinator({
+      store,
+      config: MarketDataConfigSchema.parse({}),
+      priceSources: [source],
+      fxSources: [],
+      eurRateSources: [],
+    });
+
+    const result = await coordinator.resolvePrices([priceNeed(value)]);
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: { failures: [], fetched: [{ instrument: value.id }] },
+    });
+    expect(source.calls).toEqual([[expect.objectContaining({ instrument: value })]]);
+  });
+
   it("persists each result and resumes an interrupted batch from cache", async () => {
     const store = temporaryStore();
     const instruments = [instrument("alpha"), instrument("beta"), instrument("gamma")];

@@ -241,16 +241,7 @@ function credentialEnv(provider: ProviderId): string | null {
 }
 
 function configuredRoutes(provider: ProviderId, config: MarketDataConfig): string[] {
-  const routes: RouteKey[] = [
-    "price:stock",
-    "price:etf",
-    "price:fund",
-    "price:crypto",
-    "fx",
-    "eur-rate:fiat",
-    "eur-rate:crypto",
-  ];
-  return routes
+  return RouteKeySchema.options
     .filter((route) => effectiveRoute(route, config).includes(provider))
     .map(
       (route) => `${route} (${defaultRoute(route).includes(provider) ? "default" : "override"})`,

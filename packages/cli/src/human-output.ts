@@ -181,10 +181,10 @@ function eventSummary(event: Event): string {
     case "transfer":
       return `${formatMoney(event.amount)} ${event.from} → ${event.to}`;
     case "fx":
-      return `${event.account}: ${formatMoney(event.from)} → ${formatMoney(event.to)}${feeSummary(event.fee)}`;
+      return `${event.account}: ${formatMoney(event.from)} → ${formatMoney(event.to)}${moneyFeeSummary(event.fee)}`;
     case "buy":
     case "sell":
-      return `${event.account}: ${event.type} ${event.qty} ${event.instrument} @ ${formatMoney(event.price)}${feeSummary(event.fee)}`;
+      return `${event.account}: ${event.type} ${event.qty} ${event.instrument} @ ${formatMoney(event.price)}; gross ${event.grossAmount} ${event.price.currency}${tradeFeeSummary(event)}`;
     case "dividend":
       return `${event.account}: ${event.instrument} gross ${formatMoney(event.gross)}; net ${formatMoney(netIncome(event))}`;
     case "interest":
@@ -194,8 +194,15 @@ function eventSummary(event: Event): string {
   }
 }
 
-function feeSummary(fee: Extract<Event, { type: "fx" | "buy" | "sell" }>["fee"]): string {
+function moneyFeeSummary(fee: Extract<Event, { type: "fx" }>["fee"]): string {
   return fee === undefined ? "" : `; fee ${formatMoney(fee)}`;
+}
+
+function tradeFeeSummary(event: Extract<Event, { type: "buy" | "sell" }>): string {
+  if (event.fee === undefined) return "";
+  return event.fee.kind === "quote"
+    ? `; fee ${event.fee.amount} ${event.price.currency} from quote cash`
+    : `; fee ${event.fee.quantity} ${event.instrument} from instrument`;
 }
 
 function netIncome(event: Extract<Event, { type: "dividend" | "interest" }>) {

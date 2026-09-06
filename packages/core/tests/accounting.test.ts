@@ -58,6 +58,18 @@ function cashAmount(state: BookState, accountId: string, currency: string): stri
   return state.cash[accountId]?.[currency]?.amount ?? "0";
 }
 
+function primaryAccount(): Account {
+  const account = accounts[0];
+  if (account === undefined) throw new Error("Missing primary test account");
+  return account;
+}
+
+function primaryInstrument(): Instrument {
+  const instrument = instruments[0];
+  if (instrument === undefined) throw new Error("Missing primary test instrument");
+  return instrument;
+}
+
 function deposit(state: BookState, amount: string, currency = "EUR"): BookState {
   const event =
     currency === "EUR"
@@ -95,7 +107,8 @@ function buyHrow(state: BookState): BookState {
       instrument: "HROW",
       qty: "20",
       price: { amount: "40.45", currency: "USD" },
-      fee: { amount: "0.28", currency: "USD" },
+      grossAmount: "809",
+      fee: { kind: "quote", amount: "0.28" },
       eurPerUnit: "0.861",
     }),
   );
@@ -190,6 +203,91 @@ describe("accounting engine", () => {
     expect(state.contributedEur).toEqual({ amount: "800", currency: "EUR" });
   });
 
+  it("uses the reported gross amount instead of recomputing rounded trade values", () => {
+    const account = primaryAccount();
+    const instrument = primaryInstrument();
+    const state = applyOrThrow(
+      deposit(initialState(), "200", "USD"),
+      EventSchema.parse({
+        id: "rounded-buy",
+        date: "2026-03-03",
+        source: "manual",
+        type: "buy",
+        account: account.id,
+        instrument: instrument.id,
+        qty: "3",
+        price: { amount: "33.3333", currency: "USD" },
+        grossAmount: "100.01",
+        eurPerUnit: "0.9",
+      }),
+    );
+
+    expect(cashAmount(state, account.id, "USD")).toBe("99.99");
+    expect(state.lots[account.id]?.[instrument.id]).toEqual([
+      {
+        quantity: "3",
+        cost: { amount: "100.01", currency: "USD" },
+        eventIds: ["rounded-buy"],
+      },
+    ]);
+  });
+
+  it("deducts an instrument fee from a bought holding without consuming more cash", () => {
+    const account = primaryAccount();
+    const instrument = primaryInstrument();
+    const state = applyOrThrow(
+      deposit(initialState(), "50", "USD"),
+      EventSchema.parse({
+        id: "instrument-fee-buy",
+        date: "2026-03-03",
+        source: "manual",
+        type: "buy",
+        account: account.id,
+        instrument: instrument.id,
+        qty: "10",
+        price: { amount: "5", currency: "USD" },
+        grossAmount: "50",
+        fee: { kind: "instrument", quantity: "0.25" },
+        eurPerUnit: "0.9",
+      }),
+    );
+
+    expect(cashAmount(state, account.id, "USD")).toBe("0");
+    expect(state.lots[account.id]?.[instrument.id]).toEqual([
+      {
+        quantity: "9.75",
+        cost: { amount: "50", currency: "USD" },
+        eventIds: ["instrument-fee-buy"],
+      },
+    ]);
+  });
+
+  it("rejects an instrument buy fee that consumes the entire execution", () => {
+    const account = primaryAccount();
+    const instrument = primaryInstrument();
+    const state = deposit(initialState(), "100", "USD");
+    const before = structuredClone(state);
+    const result = apply(
+      state,
+      EventSchema.parse({
+        id: "invalid-instrument-fee-buy",
+        date: "2026-03-03",
+        source: "manual",
+        type: "buy",
+        account: account.id,
+        instrument: instrument.id,
+        qty: "1",
+        price: { amount: "100", currency: "USD" },
+        grossAmount: "100",
+        fee: { kind: "instrument", quantity: "1" },
+        eurPerUnit: "0.9",
+      }),
+    );
+
+    expect(result).toMatchObject({ ok: false, error: { type: "invariant" } });
+    expect(state).toEqual(before);
+  });
+
   it("reduces holdings proportionally on a sell and adds net proceeds", () => {
     const bought = buyHrow(
       applyOrThrow(
@@ -217,7 +315,8 @@ describe("accounting engine", () => {
         instrument: "HROW",
         qty: "12",
         price: { amount: "39.83", currency: "USD" },
-        fee: { amount: "0.37", currency: "USD" },
+        grossAmount: "477.96",
+        fee: { kind: "quote", amount: "0.37" },
         eurPerUnit: "0.866",
       }),
     );
@@ -225,6 +324,36 @@ describe("accounting engine", () => {
     expect(cashAmount(state, "ib", "USD")).toBe("595.35");
     expect(state.lots.ib?.HROW).toEqual([
       { quantity: "8", cost: { amount: "323.712", currency: "USD" }, eventIds: ["buy-hrow"] },
+    ]);
+  });
+
+  it("deducts an instrument sell fee from holdings instead of proceeds", () => {
+    const account = primaryAccount();
+    const instrument = primaryInstrument();
+    const state = applyOrThrow(
+      buyHrow(deposit(initialState(), "1000", "USD")),
+      EventSchema.parse({
+        id: "instrument-fee-sell",
+        date: "2026-08-05",
+        source: "manual",
+        type: "sell",
+        account: account.id,
+        instrument: instrument.id,
+        qty: "5",
+        price: { amount: "50", currency: "USD" },
+        grossAmount: "250",
+        fee: { kind: "instrument", quantity: "0.1" },
+        eurPerUnit: "0.9",
+      }),
+    );
+
+    expect(cashAmount(state, account.id, "USD")).toBe("440.72");
+    expect(state.lots[account.id]?.[instrument.id]).toEqual([
+      {
+        quantity: "14.9",
+        cost: { amount: "602.9136", currency: "USD" },
+        eventIds: ["buy-hrow"],
+      },
     ]);
   });
 
@@ -320,7 +449,8 @@ describe("accounting engine", () => {
         instrument: "HROW",
         qty: "21",
         price: { amount: "42", currency: "USD" },
-        fee: { amount: "0.5", currency: "USD" },
+        grossAmount: "882",
+        fee: { kind: "quote", amount: "0.5" },
         eurPerUnit: "0.9",
       }),
     );
@@ -386,7 +516,8 @@ describe("accounting engine", () => {
         instrument: "HROW",
         qty: "1",
         price: { amount: "2", currency: "USD" },
-        fee: { amount: "3", currency: "USD" },
+        grossAmount: "2",
+        fee: { kind: "quote", amount: "3" },
         eurPerUnit: "0.9",
       }),
     );
@@ -448,6 +579,7 @@ describe("accounting engine", () => {
         instrument: "HROW",
         qty: "2",
         price: { amount: "10", currency: "USD" },
+        grossAmount: "20",
         eurPerUnit: "0.9",
       }),
     );
@@ -462,6 +594,7 @@ describe("accounting engine", () => {
         instrument: "HROW",
         qty: "3",
         price: { amount: "20", currency: "USD" },
+        grossAmount: "60",
         eurPerUnit: "0.9",
       }),
     );
@@ -476,6 +609,7 @@ describe("accounting engine", () => {
         instrument: "HROW",
         qty: "2.5",
         price: { amount: "30", currency: "USD" },
+        grossAmount: "75",
         eurPerUnit: "0.9",
       }),
     );
@@ -499,6 +633,7 @@ describe("accounting engine", () => {
         instrument: "HROW",
         qty: "1",
         price: { amount: "1", currency: "EUR" },
+        grossAmount: "1",
         eurPerUnit: "1",
       }),
     );
@@ -532,6 +667,7 @@ describe("accounting engine", () => {
         instrument: "HROW",
         qty: "2",
         price: { amount: "20", currency: "USD" },
+        grossAmount: "40",
         eurPerUnit: "0.9",
       }),
     );

@@ -150,10 +150,11 @@ describe("typed event CLI", () => {
     expect(depositHelp.status).toBe(0);
     expect(depositHelp.stdout).not.toContain("--fee-amount");
     expect(buyHelp.stdout).toContain("--qty");
+    expect(buyHelp.stdout).toContain("--gross-amount");
     expect(buyHelp.stdout).toContain("--fee-amount");
   });
 
-  it("rejects a trade fee currency without a fee amount", () => {
+  it("rejects a trade fee source without a fee amount", () => {
     const dataHome = temporaryHome();
     seedBook(dataHome);
     addDeposit(dataHome, "deposit-usd");
@@ -174,8 +175,10 @@ describe("typed event CLI", () => {
       "10",
       "--price-currency",
       "USD",
-      "--fee-currency",
-      "USD",
+      "--gross-amount",
+      "10",
+      "--fee-in",
+      "quote",
       "--eur-per-unit",
       "0.9",
       "--json",
@@ -234,6 +237,8 @@ describe("typed event CLI", () => {
         "10",
         "--price-currency",
         "USD",
+        "--gross-amount",
+        "10",
         "--eur-per-unit",
         "0.9",
       ],
@@ -249,6 +254,8 @@ describe("typed event CLI", () => {
         "10",
         "--price-currency",
         "USD",
+        "--gross-amount",
+        "5",
         "--eur-per-unit",
         "0.9",
       ],
@@ -463,6 +470,10 @@ describe("typed event CLI", () => {
       "10",
       "--price-currency",
       "USD",
+      "--gross-amount",
+      "20",
+      "--fee-in",
+      "quote",
       "--fee-amount",
       "1",
       "--eur-per-unit",
@@ -513,6 +524,8 @@ describe("typed event CLI", () => {
       "10",
       "--price-currency",
       "USD",
+      "--gross-amount",
+      "20",
       "--eur-per-unit",
       "0.9",
     ]);
@@ -591,6 +604,8 @@ describe("typed event CLI", () => {
       "2",
       "--price-currency",
       "USD",
+      "--gross-amount",
+      "40",
       "--eur-per-unit",
       "0.9",
     ]);
@@ -612,6 +627,8 @@ describe("typed event CLI", () => {
       "2",
       "--price-currency",
       "USD",
+      "--gross-amount",
+      "40",
       "--eur-per-unit",
       "0.9",
     ]);

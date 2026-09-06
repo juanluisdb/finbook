@@ -165,7 +165,7 @@ export function createProgram(dataHome: string, options: ProgramOptions = {}): C
   instrumentAdd
     .requiredOption("--id <id>", "instrument ID")
     .requiredOption("--name <name>", "instrument name")
-    .requiredOption("--type <type>", "instrument type: stock, etf, fund, or crypto")
+    .requiredOption("--type <type>", "instrument type: stock, etf, fund, etc, or crypto")
     .requiredOption("--quote-currency <code>", "instrument quote currency")
     .option("--isin <isin>", "ISIN");
   addJsonOption(instrumentAdd);

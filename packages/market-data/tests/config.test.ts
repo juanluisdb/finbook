@@ -62,6 +62,7 @@ describe("market-data configuration", () => {
     expect(defaultRoute("price:stock")).toEqual(["yahoo"]);
     expect(defaultRoute("price:etf")).toEqual(["yahoo"]);
     expect(defaultRoute("price:fund")).toEqual(["yahoo"]);
+    expect(defaultRoute("price:etc")).toEqual(["yahoo"]);
     expect(defaultRoute("price:crypto")).toEqual(["coingecko"]);
     expect(defaultRoute("fx")).toEqual(["ecb"]);
     expect(defaultRoute("eur-rate:fiat")).toEqual(["ecb"]);
@@ -140,6 +141,9 @@ describe("market-data configuration", () => {
   it("rejects a route whose provider cannot serve that operation", () => {
     expect(() => MarketDataConfigSchema.parse({ routes: { "price:stock": ["ecb"] } })).toThrow(
       /price:stock/u,
+    );
+    expect(() => MarketDataConfigSchema.parse({ routes: { "price:etc": ["coingecko"] } })).toThrow(
+      /price:etc/u,
     );
   });
 
