@@ -560,6 +560,41 @@ describe("market-data coordinator", () => {
     expect(source.calls).toHaveLength(0);
   });
 
+  it("uses an EODHD instrument binding without changing the fund default", async () => {
+    const store = temporaryStore();
+    const value = InstrumentSchema.parse({
+      id: "fund-bound",
+      name: "Bound fund",
+      type: "fund",
+      quoteCurrency: "EUR",
+    });
+    expect(store.appendInstrument(value).ok).toBe(true);
+    const yahoo = new FixturePriceSource("yahoo", (needs) => needs.map((need) => success(need)));
+    const eodhd = new FixturePriceSource("eodhd", (needs) => needs.map((need) => success(need)));
+    const coordinator = new MarketDataCoordinator({
+      store,
+      config: MarketDataConfigSchema.parse({
+        bindings: [
+          {
+            kind: "instrument",
+            instrument: value.id,
+            provider: "eodhd",
+            identifier: "BOUND.EUFUND",
+          },
+        ],
+      }),
+      priceSources: [yahoo, eodhd],
+      fxSources: [],
+      eurRateSources: [],
+    });
+
+    const result = await coordinator.resolvePrices([priceNeed(value)]);
+
+    expect(result).toMatchObject({ ok: true, data: { fetched: [{ instrument: value.id }] } });
+    expect(yahoo.calls).toHaveLength(0);
+    expect(eodhd.calls).toMatchObject([[{ identifier: "BOUND.EUFUND" }]]);
+  });
+
   it("tries the next configured provider after a fallback-eligible failure", async () => {
     const store = temporaryStore();
     const value = InstrumentSchema.parse({

@@ -5,6 +5,7 @@ import { FileBookStore } from "@finbook/core";
 import {
   CoinGeckoSource,
   EcbSource,
+  EodhdSource,
   MarketDataConfigStore,
   MarketDataCoordinator,
   YahooSource,
@@ -33,10 +34,11 @@ export async function main(
       const coingecko = new CoinGeckoSource({
         demoApiKey: env.FINBOOK_COINGECKO_DEMO_API_KEY,
       });
+      const eodhd = new EodhdSource({ apiKey: env.FINBOOK_EODHD_API_KEY });
       return new MarketDataCoordinator({
         store: new FileBookStore(dataHome),
         config,
-        priceSources: [yahoo, coingecko],
+        priceSources: [yahoo, coingecko, eodhd],
         fxSources: [ecb, coingecko],
         eurRateSources: [ecb, coingecko],
       });

@@ -19,6 +19,7 @@ import {
   defaultRoute,
   effectiveRoute,
   findBinding,
+  providerSupportsRoute,
   type MarketDataConfig,
 } from "../src/index.js";
 
@@ -67,6 +68,12 @@ describe("market-data configuration", () => {
     expect(defaultRoute("fx")).toEqual(["ecb"]);
     expect(defaultRoute("eur-rate:fiat")).toEqual(["ecb"]);
     expect(defaultRoute("eur-rate:crypto")).toEqual(["coingecko"]);
+  });
+
+  it("offers EODHD for explicit fund bindings without changing the default route", () => {
+    expect(providerSupportsRoute("eodhd", "price:fund")).toBe(true);
+    expect(providerSupportsRoute("eodhd", "price:stock")).toBe(false);
+    expect(defaultRoute("price:fund")).toEqual(["yahoo"]);
   });
 
   it("round-trips only non-secret overrides and bindings", () => {

@@ -63,7 +63,7 @@ The store validates on read and writes replacements atomically under the same bo
 
 Credentials come from the process environment when `packages/cli/src/main.ts::main` constructs providers. They do not enter market-data configuration, book records, command output, or logs.
 
-CoinGecko reads its demo API credential from `FINBOOK_COINGECKO_DEMO_API_KEY`. Yahoo and ECB need no configured credential.
+CoinGecko reads its demo API credential from `FINBOOK_COINGECKO_DEMO_API_KEY`. EODHD reads `FINBOOK_EODHD_API_KEY`. Yahoo and ECB need no configured credential.
 
 ## Fetch current and historical data deliberately
 
@@ -75,11 +75,13 @@ The CLI uses latest mode only when the requested date is its resolved current da
 
 Provider observations may use an effective date on or before the requested historical date, but never a future date. Adapters own provider-specific windows and selection rules.
 
-Latest observations use the requested book date as their economic date after the provider timestamp proves the value is current. This avoids turning exchange and book timezone boundaries into different portfolio dates. Yahoo accepts quotes observed within seven days, while CoinGecko accepts prices observed within 24 hours; both reject missing, stale, invalid, or implausibly future timestamps without appending a stamp.
+Latest observations use the requested book date as their economic date after the provider timestamp proves the value is current. This avoids turning exchange and book timezone boundaries into different portfolio dates. Yahoo and EODHD accept observations within seven days, while CoinGecko accepts prices observed within 24 hours; all reject missing, stale, invalid, or implausibly future timestamps without appending a stamp.
 
-Yahoo is the default price source for stocks, ETFs, funds, and ETCs, and validates the returned quote currency against the instrument. CoinGecko provides crypto prices, bound crypto-to-EUR values, and historical crypto EUR rates. ECB provides fiat-to-EUR valuation and historical rates.
+Yahoo is the default price source for stocks, ETFs, funds, and ETCs, and validates the returned quote currency against the instrument. EODHD provides fund prices from its daily EOD feed but is not part of the default route; it uses the raw close because adjusted closes belong to return analysis rather than unit valuation. CoinGecko provides crypto prices, bound crypto-to-EUR values, and historical crypto EUR rates. ECB provides fiat-to-EUR valuation and historical rates.
 
-Adapter behaviour lives in `packages/market-data/src/yahoo.ts::YahooSource`, `packages/market-data/src/coingecko.ts::CoinGeckoSource`, and `packages/market-data/src/ecb.ts::EcbSource`.
+Adapter behaviour lives in `packages/market-data/src/yahoo.ts::YahooSource`, `packages/market-data/src/eodhd.ts::EodhdSource`, `packages/market-data/src/coingecko.ts::CoinGeckoSource`, and `packages/market-data/src/ecb.ts::EcbSource`.
+
+`packages/market-data/src/eodhd.ts::EodhdSource` requests a narrow daily range so one call returns both the close and its provider date. It makes one request per unresolved fund need, performs no symbol discovery, and does not use the bulk feed. Repeating a latest refresh therefore spends another call for each EODHD-bound fund. Historical resolution still reuses eligible local marks before reaching the adapter.
 
 ## Preserve partial progress
 
@@ -99,7 +101,7 @@ Provider failures use the stable categories defined by `packages/market-data/src
 
 Adapters validate response structure and semantic fields before constructing an observation. A provider returning the wrong subject, currency, pair, date direction, or provenance is an invalid response.
 
-`packages/market-data/src/http.ts::createRetryingFetch` centralizes bounded retries for transient transport and HTTP failures and respects acceptable `Retry-After` values. Exact retry and timeout values remain in that source.
+`packages/market-data/src/http.ts::createRetryingFetch` centralizes bounded retries for providers where an automatic retry is appropriate and respects acceptable `Retry-After` values. EODHD deliberately performs one bounded request without retrying so a fetch has predictable cost against a small daily quota.
 
 Provider SDKs and response shapes stay inside their adapters. No raw provider response is written to the book.
 
