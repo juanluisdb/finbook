@@ -1,284 +1,153 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-
 import { InstrumentSchema } from "@finbook/core";
-
 import {
   CoinGeckoSource,
   type CoinGeckoGateway,
   type CoinGeckoHistoryPoint,
-  type CoinGeckoPrice,
-  type EurRateNeed,
-  type FxNeed,
   type PriceNeed,
 } from "../src/index.js";
 
-const bitcoin = InstrumentSchema.parse({
-  id: "BTC",
-  name: "Bitcoin",
+const instrument = InstrumentSchema.parse({
+  id: "COIN",
+  name: "Example coin",
   type: "crypto",
   quoteCurrency: "EUR",
 });
-const ethereum = InstrumentSchema.parse({
-  id: "ETH",
-  name: "Ethereum",
-  type: "crypto",
-  quoteCurrency: "USD",
-});
-
-const fixtureDirectory = resolve(import.meta.dirname, "fixtures");
-const capturedSimplePrice = readFileSync(
-  resolve(fixtureDirectory, "coingecko-simple-price.json"),
-  "utf8",
-);
-const capturedMarketChart = readFileSync(
-  resolve(fixtureDirectory, "coingecko-market-chart.json"),
-  "utf8",
-);
-
-function capturedResponse(body: string): typeof fetch {
-  return () =>
-    Promise.resolve(
-      new Response(body, {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-    );
+const need: PriceNeed = { instrument, identifier: "bitcoin", asOf: "2026-03-03" };
+const point = { timestamp: Date.parse("2026-03-03T00:00:00Z"), price: 60000 };
+function source(snapshot: CoinGeckoHistoryPoint | undefined = point) {
+  const calls: string[][] = [];
+  const gateway: CoinGeckoGateway = {
+    snapshotFor(id, currency, asOf) {
+      calls.push([id, currency, asOf]);
+      return Promise.resolve(snapshot);
+    },
+    historyFor() {
+      return Promise.resolve([{ timestamp: Date.parse("2026-03-02T12:00:00Z"), price: 59000 }]);
+    },
+  };
+  return {
+    provider: new CoinGeckoSource({ gateway, now: () => new Date("2026-03-03T06:00:00Z") }),
+    calls,
+  };
 }
 
-function priceNeed(
-  mode: PriceNeed["mode"],
-  asOf = "2026-03-03",
-  instrument = bitcoin,
-  identifier = "bitcoin",
-): PriceNeed {
-  return { instrument, asOf, mode, identifier };
-}
-
-class FixtureGateway implements CoinGeckoGateway {
-  readonly priceCalls: Array<{ ids: readonly string[]; currency: string }> = [];
-  readonly historyCalls: Array<{ id: string; currency: string; asOf: string }> = [];
-  readonly prices: readonly CoinGeckoPrice[];
-  readonly history: readonly CoinGeckoHistoryPoint[];
-
-  constructor(
-    prices: readonly CoinGeckoPrice[] = [
-      { id: "bitcoin", price: 60_000, asOf: new Date("2026-03-03T12:00:00.000Z") },
-    ],
-    history: readonly CoinGeckoHistoryPoint[] = [
-      { timestamp: Date.parse("2026-03-01T12:00:00.000Z"), price: 58_000 },
-      { timestamp: Date.parse("2026-03-02T12:00:00.000Z"), price: 59_000 },
-    ],
-  ) {
-    this.prices = prices;
-    this.history = history;
-  }
-
-  pricesFor(ids: readonly string[], currency: string): Promise<readonly CoinGeckoPrice[]> {
-    this.priceCalls.push({ ids: [...ids], currency });
-    return Promise.resolve(this.prices);
-  }
-
-  historyFor(
-    id: string,
-    currency: string,
-    asOf: string,
-  ): Promise<readonly CoinGeckoHistoryPoint[]> {
-    this.historyCalls.push({ id, currency, asOf });
-    return Promise.resolve(this.history);
-  }
-}
-
-function source(gateway: CoinGeckoGateway): CoinGeckoSource {
-  return new CoinGeckoSource({
-    gateway,
-    now: () => new Date("2026-03-03T13:00:00.000Z"),
-  });
-}
-
-describe("CoinGecko source", () => {
-  it("normalizes a captured CoinGecko simple-price response through the SDK gateway", async () => {
+describe("CoinGecko daily prices", () => {
+  it("uses the dated snapshot endpoint through the official SDK", async () => {
+    const requests: string[] = [];
     const provider = new CoinGeckoSource({
       demoApiKey: "fixture-key",
-      fetchImplementation: capturedResponse(capturedSimplePrice),
-      now: () => new Date("2026-03-03T13:00:00.000Z"),
+      fetchImplementation: async (input) => {
+        requests.push(input instanceof Request ? input.url : String(input));
+        return Response.json({
+          id: "bitcoin",
+          market_data: { current_price: { eur: 60000.1234 } },
+        });
+      },
+      now: () => new Date("2026-03-03T06:00:00Z"),
     });
-
-    const result = await provider.fetchPrices([priceNeed("latest")]);
-
-    expect(result).toMatchObject([
+    expect(await provider.fetchPrices([need])).toMatchObject([
       {
         ok: true,
         data: {
-          instrument: "BTC",
           price: { amount: "60000.1234", currency: "EUR" },
           asOf: "2026-03-03",
-          provenance: { kind: "fetched", source: "coingecko" },
         },
       },
     ]);
+    const url = new URL(requests[0] ?? "");
+    expect(url.pathname).toBe("/api/v3/coins/bitcoin/history");
+    expect(url.searchParams.get("date")).toBe("2026-03-03");
+    expect(url.searchParams.get("localization")).toBe("false");
   });
 
-  it("uses the latest need date when the provider timestamp crosses the local boundary", async () => {
-    const gateway = new FixtureGateway([
-      { id: "bitcoin", price: 60_000, asOf: new Date("2026-03-01T00:30:00.000Z") },
+  it("requests exact midnight snapshots in the instrument quote currency", async () => {
+    const { provider, calls } = source();
+    expect(
+      await provider.fetchPrices([
+        { ...need, instrument: { ...instrument, quoteCurrency: "USD" } },
+      ]),
+    ).toMatchObject([
+      { ok: true, data: { asOf: "2026-03-03", price: { amount: "60000", currency: "USD" } } },
     ]);
+    expect(calls).toEqual([["bitcoin", "usd", "2026-03-03"]]);
+  });
 
+  it.each(["2026-03-02T00:00:00Z", "2026-03-03T00:01:00Z", "2026-03-04T00:00:00Z"])(
+    "rejects a snapshot at %s instead of the requested midnight",
+    async (timestamp) => {
+      expect(
+        await source({ timestamp: Date.parse(timestamp), price: 60000 }).provider.fetchPrices([
+          need,
+        ]),
+      ).toMatchObject([{ ok: false, error: { kind: "invalid-response" } }]);
+    },
+  );
+
+  it("uses the same daily snapshot contract for bound crypto cash", async () => {
+    const { provider, calls } = source();
+    expect(
+      await provider.fetchFxRates([{ currency: "BTC", identifier: "bitcoin", asOf: "2026-03-03" }]),
+    ).toMatchObject([{ ok: true, data: { pair: "BTC/EUR", rate: "60000", asOf: "2026-03-03" } }]);
+    expect(calls).toEqual([["bitcoin", "eur", "2026-03-03"]]);
+    expect(await provider.fetchFxRates([{ currency: "BTC", asOf: "2026-03-03" }])).toMatchObject([
+      { ok: false, error: { kind: "unsupported" } },
+    ]);
+  });
+
+  it("keeps event historical rates separate from daily valuation snapshots", async () => {
+    const { provider, calls } = source();
+    expect(
+      await provider.fetchHistoricalEurRates([
+        { currency: "BTC", date: "2026-03-02", identifier: "bitcoin" },
+      ]),
+    ).toMatchObject([{ ok: true, data: { rate: "59000", effectiveDate: "2026-03-02" } }]);
+    expect(calls).toEqual([]);
+    expect(
+      await provider.fetchHistoricalEurRates([{ currency: "BTC", date: "2026-03-02" }]),
+    ).toMatchObject([{ ok: false, error: { kind: "unsupported" } }]);
+  });
+
+  it("retains the captured market-chart boundary for event rates", async () => {
+    const body = readFileSync(
+      resolve(import.meta.dirname, "fixtures/coingecko-market-chart.json"),
+      "utf8",
+    );
     const provider = new CoinGeckoSource({
-      gateway,
-      now: () => new Date("2026-03-01T00:31:00.000Z"),
+      demoApiKey: "fixture-key",
+      fetchImplementation: async () =>
+        new Response(body, { headers: { "content-type": "application/json" } }),
     });
+    expect(
+      await provider.fetchHistoricalEurRates([
+        { currency: "BTC", date: "2026-03-02", identifier: "bitcoin" },
+      ]),
+    ).toMatchObject([{ ok: true, data: { rate: "59000.5", effectiveDate: "2026-03-02" } }]);
+  });
 
-    const result = await provider.fetchPrices([priceNeed("latest", "2026-02-28")]);
-
-    expect(result).toMatchObject([{ ok: true, data: { asOf: "2026-02-28" } }]);
+  it("rejects malformed and wrong-coin snapshots", async () => {
+    const provider = new CoinGeckoSource({
+      demoApiKey: "fixture-key",
+      fetchImplementation: async () =>
+        Response.json({ id: "wrong-coin", market_data: { current_price: { eur: 1 } } }),
+    });
+    expect(await provider.fetchPrices([need])).toMatchObject([
+      { ok: false, error: { kind: "invalid-response" } },
+    ]);
   });
 
   it.each([
-    ["missing", undefined],
-    ["stale", new Date("2026-03-02T12:59:59.999Z")],
-  ])("rejects a %s timestamp for a latest price", async (_reason, asOf) => {
-    const gateway = new FixtureGateway([{ id: "bitcoin", price: 60_000, asOf }]);
-
-    const result = await source(gateway).fetchPrices([priceNeed("latest")]);
-
-    expect(result).toMatchObject([{ ok: false, error: { kind: "invalid-response" } }]);
-  });
-
-  it("normalizes a captured CoinGecko market-chart response through the SDK gateway", async () => {
+    [401, "unauthorized"],
+    [404, "not-found"],
+    [429, "rate-limited"],
+    [503, "unavailable"],
+  ] as const)("normalizes HTTP %s", async (status, kind) => {
     const provider = new CoinGeckoSource({
       demoApiKey: "fixture-key",
-      fetchImplementation: capturedResponse(capturedMarketChart),
-      now: () => new Date("2026-03-03T13:00:00.000Z"),
+      fetchImplementation: async () => new Response("fixture failure", { status }),
     });
-
-    const result = await provider.fetchPrices([priceNeed("historical", "2026-03-02")]);
-
-    expect(result).toMatchObject([
-      {
-        ok: true,
-        data: { price: { amount: "59000.5", currency: "EUR" }, asOf: "2026-03-02" },
-      },
-    ]);
-  });
-
-  it("partitions current prices by quote currency", async () => {
-    const gateway = new FixtureGateway([
-      { id: "bitcoin", price: 60_000, asOf: new Date("2026-03-03T12:00:00.000Z") },
-      { id: "ethereum", price: 3_000, asOf: new Date("2026-03-03T12:00:00.000Z") },
-    ]);
-
-    const result = await source(gateway).fetchPrices([
-      priceNeed("latest"),
-      priceNeed("latest", "2026-03-03", ethereum, "ethereum"),
-    ]);
-
-    expect(result).toMatchObject([
-      { ok: true, data: { instrument: "BTC", price: { amount: "60000", currency: "EUR" } } },
-      { ok: true, data: { instrument: "ETH", price: { amount: "3000", currency: "USD" } } },
-    ]);
-    expect(gateway.priceCalls).toEqual([
-      { ids: ["bitcoin"], currency: "eur" },
-      { ids: ["ethereum"], currency: "usd" },
-    ]);
-  });
-
-  it("returns crypto FX marks for configured coin identifiers", async () => {
-    const gateway = new FixtureGateway();
-    const need: FxNeed = {
-      currency: "BTC",
-      asOf: "2026-03-03",
-      mode: "latest",
-      identifier: "bitcoin",
-    };
-
-    const result = await source(gateway).fetchFxRates([need]);
-
-    expect(result).toMatchObject([
-      {
-        ok: true,
-        data: {
-          pair: "BTC/EUR",
-          rate: "60000",
-          asOf: "2026-03-03",
-          provenance: { kind: "fetched", source: "coingecko" },
-        },
-      },
-    ]);
-  });
-
-  it("uses the latest FX need date when the provider timestamp crosses the local boundary", async () => {
-    const gateway = new FixtureGateway([
-      { id: "bitcoin", price: 60_000, asOf: new Date("2026-03-01T00:30:00.000Z") },
-    ]);
-    const need: FxNeed = {
-      currency: "BTC",
-      asOf: "2026-02-28",
-      mode: "latest",
-      identifier: "bitcoin",
-    };
-
-    const provider = new CoinGeckoSource({
-      gateway,
-      now: () => new Date("2026-03-01T00:31:00.000Z"),
-    });
-    const result = await provider.fetchFxRates([need]);
-
-    expect(result).toMatchObject([{ ok: true, data: { asOf: "2026-02-28" } }]);
-  });
-
-  it("rejects a stale timestamp for a latest crypto FX rate", async () => {
-    const gateway = new FixtureGateway([
-      { id: "bitcoin", price: 60_000, asOf: new Date("2026-03-02T12:59:59.999Z") },
-    ]);
-    const need: FxNeed = {
-      currency: "BTC",
-      asOf: "2026-03-03",
-      mode: "latest",
-      identifier: "bitcoin",
-    };
-
-    const result = await source(gateway).fetchFxRates([need]);
-
-    expect(result).toMatchObject([{ ok: false, error: { kind: "invalid-response" } }]);
-  });
-
-  it("uses historical EUR prices for event rates", async () => {
-    const gateway = new FixtureGateway();
-
-    const result = await source(gateway).fetchHistoricalEurRates([
-      { currency: "BTC", date: "2026-03-02", identifier: "bitcoin" },
-    ]);
-
-    expect(result).toMatchObject([
-      {
-        ok: true,
-        data: {
-          rate: "59000",
-          effectiveDate: "2026-03-02",
-          provenance: { kind: "fetched", source: "coingecko" },
-        },
-      },
-    ]);
-  });
-
-  it("rejects a historical observation that is genuinely in the future", async () => {
-    const gateway = new FixtureGateway(
-      [],
-      [{ timestamp: Date.parse("2026-03-01T00:30:00.000Z"), price: 60_000 }],
-    );
-
-    const result = await source(gateway).fetchPrices([priceNeed("historical", "2026-02-28")]);
-
-    expect(result).toMatchObject([{ ok: false, error: { kind: "not-found" } }]);
-  });
-
-  it("requires a provider identifier for historical crypto rates", async () => {
-    const result = await source(new FixtureGateway()).fetchHistoricalEurRates([
-      { currency: "BTC", date: "2026-03-02" } satisfies EurRateNeed,
-    ]);
-
-    expect(result).toMatchObject([{ ok: false, error: { kind: "unsupported" } }]);
+    expect(await provider.fetchPrices([need])).toMatchObject([{ ok: false, error: { kind } }]);
   });
 });

@@ -11,7 +11,6 @@ import {
 
 const EODHD_BASE_URL = "https://eodhd.com/api/eod/";
 const LOOKBACK_DAYS = 9;
-const MAX_LATEST_AGE_DAYS = 7;
 const REQUEST_TIMEOUT_MS = 10_000;
 
 const EodhdRowSchema = z
@@ -88,13 +87,6 @@ export class EodhdSource implements PriceSource {
       (latest, row) => (row.date > latest.date ? row : latest),
       first,
     );
-    if (need.mode === "latest" && daysBetween(selected.date, need.asOf) > MAX_LATEST_AGE_DAYS) {
-      return failure(
-        need,
-        "invalid-response",
-        `EODHD returned a stale date for ${need.identifier}: ${selected.date}.`,
-      );
-    }
 
     return {
       need,
@@ -108,7 +100,7 @@ export class EodhdSource implements PriceSource {
           }).toMoney().amount,
           currency: need.instrument.quoteCurrency,
         },
-        asOf: need.mode === "latest" ? need.asOf : selected.date,
+        asOf: selected.date,
         provenance: {
           kind: "fetched",
           source: "eodhd",
@@ -162,10 +154,6 @@ function retryAfterMs(value: string | null): number | undefined {
   if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) ? Math.max(timestamp - Date.now(), 0) : undefined;
-}
-
-function daysBetween(from: string, to: string): number {
-  return (Date.parse(`${to}T00:00:00.000Z`) - Date.parse(`${from}T00:00:00.000Z`)) / 86_400_000;
 }
 
 function nonEmpty(value: string | undefined): string | undefined {

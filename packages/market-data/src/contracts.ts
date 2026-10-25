@@ -129,14 +129,12 @@ export type MarketDataConfig = z.infer<typeof MarketDataConfigSchema>;
 export type PriceNeed = {
   instrument: Instrument;
   asOf: string;
-  mode: "latest" | "historical";
   identifier: string;
 };
 
 export type FxNeed = {
   currency: string;
   asOf: string;
-  mode: "latest" | "historical";
   identifier?: string;
 };
 
@@ -216,6 +214,7 @@ export type PriceFetchReport = {
   requested: number;
   cached: number;
   fetched: readonly PriceObservation[];
+  resolved: readonly PriceObservation[];
   failures: readonly PriceFetchFailure[];
 };
 
@@ -229,6 +228,7 @@ export type FxFetchReport = {
   requested: number;
   cached: number;
   fetched: readonly FxObservation[];
+  resolved: readonly FxObservation[];
   failures: readonly FxFetchFailure[];
 };
 

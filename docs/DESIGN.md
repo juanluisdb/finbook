@@ -22,7 +22,7 @@ packages/cli  --------->  packages/market-data
 
 `packages/core` owns schemas, decimal arithmetic, event application, replay, queries, the local file adapter, and the shared result model.
 
-`packages/market-data` owns normalized provider contracts, non-secret source configuration, provider adapters, routing, retries, and incremental cache writes. It depends on core types and storage, while core has no knowledge of providers.
+`packages/market-data` owns daily refresh planning, normalized provider contracts, non-secret source configuration, provider adapters, routing, retries, and incremental cache writes. It derives valuation needs from core queries and depends on core types and storage, while core has no knowledge of provider protocols or refresh cycles.
 
 `packages/cli` owns process boot, environment parsing, Commander registration, input preparation, human and JSON rendering, and exit codes. It composes core and market data without moving their rules into command handlers.
 
@@ -48,7 +48,7 @@ The boundary passes parsed values downstream. Core logic does not re-interpret r
 
 Decimal values remain strings on disk and across package boundaries. `packages/core/src/domain/decimal.ts::DecimalMath` and `packages/core/src/domain/money.ts::MoneyValue` own arithmetic and currency-safe operations.
 
-Trade settlement uses the reported gross cash amount rather than multiplying quantity by the displayed unit price. The price remains an independent fact for display and valuation fallback. `packages/core/src/domain/schemas.ts::TradeFeeSchema` distinguishes quote-currency fees from instrument-quantity fees, and `packages/core/src/domain/apply.ts::apply` applies each to cash or holdings at replay time.
+Trade settlement uses the reported gross cash amount rather than multiplying quantity by the displayed unit price. The price remains an independent transaction fact for display; it is not a valuation fallback. `packages/core/src/domain/schemas.ts::TradeFeeSchema` distinguishes quote-currency fees from instrument-quantity fees, and `packages/core/src/domain/apply.ts::apply` applies each to cash or holdings at replay time.
 
 Broken user input and persisted data return typed domain failures. Impossible internal states throw rather than being translated into ordinary validation errors.
 
@@ -60,7 +60,7 @@ The snapshot contains facts, not cached balances or positions. Derived state is 
 
 Event ordering is centralized in `packages/core/src/domain/replay.ts::orderEvents`: economic date is primary and original ledger position is the stable tie-breaker.
 
-Query valuation selects the latest eligible stamp by economic date. When several eligible stamps share a date, later append order wins because the scan replaces the earlier selection.
+Query valuation selects the latest eligible stamp by economic date. On the same date, manual provenance takes priority over fetched provenance; append order breaks ties within that priority. `packages/core/src/domain/queries.ts::priceStampAt` and `packages/core/src/domain/queries.ts::fxStampAt` own selection, and query results carry the selected evidence so renderers do not reimplement it.
 
 ## Make the file store the mutation boundary
 
@@ -75,6 +75,7 @@ $FINBOOK_HOME/
   prices.jsonl
   fx.jsonl
   market-data.json
+  market-refresh.jsonl
 ```
 
 `meta.json` carries the schema version and book timezone. Accounts and instruments are JSON arrays. Events, prices, and FX rates are JSONL so ledger order and append order remain explicit. Market-data configuration is described in [Market data](MARKET_DATA.md).
@@ -85,7 +86,9 @@ The adapter initializes missing book files only on ordinary load or mutation pat
 
 Account and instrument writes replace their JSON file atomically. Event add, replacement, and deletion construct the complete candidate sequence, replay it, and atomically replace `events.jsonl` only after validation succeeds.
 
-Price and FX stamps append one normalized record at a time. Their ordering is useful cache state, and retaining each successful fetch makes interrupted work resumable.
+Price and FX stamps append one normalized record at a time. Their ordering is useful cache state, and retaining each successful fetch makes interrupted work resumable. Market data writes a resolution receipt only after its observation is persisted; the receipt never substitutes for the observation itself.
+
+`packages/core/src/domain/store.ts::FileBookStore.acceptFetchedPrice` and `packages/core/src/domain/store.ts::FileBookStore.acceptFetchedFx` compare the expected manual records while holding the book lock, then atomically rewrite the affected mark file. They remove only same-date manual records and make the accepted candidate the last fetched record for that date. Event history is untouched.
 
 Temporary files are written in the same directory as their target before rename. A failure after the rename is reported as a mutation that may have committed so callers do not retry blindly.
 
@@ -104,6 +107,8 @@ Release verifies the acquisition token before removing the lock. A release failu
 `packages/core/src/domain/lock.ts::inspectBookLock` classifies a lock without acquiring or reclaiming it so doctor remains read-only.
 
 This lock protects one local book from concurrent CLI processes. It is not a distributed lock or a synchronization protocol for replicated folders.
+
+`packages/core/src/domain/lock.ts::withRefreshLock` uses a separate per-book refresh lock over the asynchronous provider operation. A competing refresh fails fast and can retry after completion. Ordinary book locks cover only local reads and commits, not network waits. Both locks use the same ownership and dead-process recovery rules.
 
 ## Prevent stale event edits
 

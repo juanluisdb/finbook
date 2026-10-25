@@ -19,8 +19,8 @@ type JsonValue =
   | readonly JsonValue[]
   | { readonly [key: string]: JsonValue };
 
-function need(mode: PriceNeed["mode"], asOf = "2026-03-03"): PriceNeed {
-  return { instrument: fund, asOf, mode, identifier: "FUND.X.EUFUND" };
+function need(asOf = "2026-03-03"): PriceNeed {
+  return { instrument: fund, asOf, identifier: "FUND.X.EUFUND" };
 }
 
 function jsonResponse(value: JsonValue, status = 200, headers?: HeadersInit): Response {
@@ -41,7 +41,7 @@ function source(fetchImplementation: typeof fetch, apiKey = "test-secret"): Eodh
 }
 
 describe("EODHD source", () => {
-  it("fetches a dated latest close once and stamps the requested book date", async () => {
+  it("fetches a raw daily close once and preserves its actual date", async () => {
     const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse([
         {
@@ -56,7 +56,7 @@ describe("EODHD source", () => {
       ]),
     );
 
-    const result = await source(fetchImplementation).fetchPrices([need("latest")]);
+    const result = await source(fetchImplementation).fetchPrices([need()]);
 
     expect(result).toMatchObject([
       {
@@ -64,7 +64,7 @@ describe("EODHD source", () => {
         data: {
           instrument: "fund-x",
           price: { amount: "101.25", currency: "EUR" },
-          asOf: "2026-03-03",
+          asOf: "2026-03-02",
           provenance: {
             kind: "fetched",
             source: "eodhd",
@@ -96,9 +96,7 @@ describe("EODHD source", () => {
       ]),
     );
 
-    const result = await source(fetchImplementation).fetchPrices([
-      need("historical", "2026-03-01"),
-    ]);
+    const result = await source(fetchImplementation).fetchPrices([need("2026-03-01")]);
 
     expect(result).toMatchObject([
       {
@@ -108,20 +106,17 @@ describe("EODHD source", () => {
     ]);
   });
 
-  it.each([
-    ["future", "2026-03-04"],
-    ["stale", "2026-02-23"],
-  ])("rejects a %s latest observation date", async (reason, date) => {
+  it("rejects a future daily observation date", async () => {
     const fetchImplementation = vi
       .fn<typeof fetch>()
-      .mockResolvedValue(jsonResponse([{ date, close: 100 }]));
+      .mockResolvedValue(jsonResponse([{ date: "2026-03-04", close: 100 }]));
 
-    const result = await source(fetchImplementation).fetchPrices([need("latest")]);
+    const result = await source(fetchImplementation).fetchPrices([need()]);
 
     expect(result).toMatchObject([
       {
         ok: false,
-        error: { kind: "invalid-response", message: expect.stringContaining(reason) },
+        error: { kind: "invalid-response", message: expect.stringContaining("future") },
       },
     ]);
   });
@@ -129,7 +124,7 @@ describe("EODHD source", () => {
   it("rejects absent credentials and unsupported instruments without requesting data", async () => {
     const fetchImplementation = vi.fn<typeof fetch>();
     const stockNeed: PriceNeed = {
-      ...need("latest"),
+      ...need(),
       instrument: InstrumentSchema.parse({
         id: "stock-x",
         name: "Stock X",
@@ -138,7 +133,7 @@ describe("EODHD source", () => {
       }),
     };
 
-    const missingKey = await source(fetchImplementation, "").fetchPrices([need("latest")]);
+    const missingKey = await source(fetchImplementation, "").fetchPrices([need()]);
     const unsupported = await source(fetchImplementation).fetchPrices([stockNeed]);
 
     expect(missingKey).toMatchObject([{ ok: false, error: { kind: "unauthorized" } }]);
@@ -159,7 +154,7 @@ describe("EODHD source", () => {
       .fn<typeof fetch>()
       .mockResolvedValue(jsonResponse({ message: "provider detail" }, status));
 
-    const result = await source(fetchImplementation).fetchPrices([need("latest")]);
+    const result = await source(fetchImplementation).fetchPrices([need()]);
 
     expect(result).toMatchObject([{ ok: false, error: { kind, status } }]);
     expect(fetchImplementation).toHaveBeenCalledOnce();
@@ -170,7 +165,7 @@ describe("EODHD source", () => {
       .fn<typeof fetch>()
       .mockResolvedValue(jsonResponse({}, 429, { "retry-after": "30" }));
 
-    const result = await source(fetchImplementation).fetchPrices([need("latest")]);
+    const result = await source(fetchImplementation).fetchPrices([need()]);
 
     expect(result).toMatchObject([
       { ok: false, error: { kind: "rate-limited", retryAfterMs: 30_000 } },
@@ -185,7 +180,7 @@ describe("EODHD source", () => {
         Promise.resolve(jsonResponse([{ date: "2026-03-02", close: 100 }])),
       );
     const otherNeed: PriceNeed = {
-      ...need("latest"),
+      ...need(),
       instrument: InstrumentSchema.parse({
         id: "fund-y",
         name: "Fund Y",
@@ -195,7 +190,7 @@ describe("EODHD source", () => {
       identifier: "FUND.Y.EUFUND",
     };
 
-    const result = await source(fetchImplementation).fetchPrices([need("latest"), otherNeed]);
+    const result = await source(fetchImplementation).fetchPrices([need(), otherNeed]);
 
     expect(result).toMatchObject([{ ok: true }, { ok: true }]);
     expect(fetchImplementation).toHaveBeenCalledTimes(2);
@@ -208,9 +203,9 @@ describe("EODHD source", () => {
       .mockResolvedValue(jsonResponse([{ date: "not-a-date", close: -1 }]));
     const nonJsonFetch = vi.fn<typeof fetch>().mockResolvedValue(new Response("not JSON"));
 
-    const empty = await source(emptyFetch).fetchPrices([need("historical")]);
-    const malformed = await source(malformedFetch).fetchPrices([need("historical")]);
-    const nonJson = await source(nonJsonFetch).fetchPrices([need("historical")]);
+    const empty = await source(emptyFetch).fetchPrices([need()]);
+    const malformed = await source(malformedFetch).fetchPrices([need()]);
+    const nonJson = await source(nonJsonFetch).fetchPrices([need()]);
 
     expect(empty).toMatchObject([{ ok: false, error: { kind: "not-found" } }]);
     expect(malformed).toMatchObject([{ ok: false, error: { kind: "invalid-response" } }]);
@@ -223,7 +218,7 @@ describe("EODHD source", () => {
       .fn<typeof fetch>()
       .mockRejectedValue(new Error(`failed URL contains ${secret}`));
 
-    const result = await source(fetchImplementation, secret).fetchPrices([need("latest")]);
+    const result = await source(fetchImplementation, secret).fetchPrices([need()]);
     const rendered = JSON.stringify(result);
 
     expect(result).toMatchObject([{ ok: false, error: { kind: "unavailable" } }]);

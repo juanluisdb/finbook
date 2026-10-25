@@ -1,8 +1,6 @@
 import Coingecko from "@coingecko/coingecko-typescript";
 import { IsoDateSchema, MoneyValue } from "@finbook/core";
-
 import { z } from "zod";
-
 import { createRetryingFetch } from "./http.js";
 import {
   type EurRateNeed,
@@ -16,35 +14,30 @@ import {
   type PriceSource,
   type ProviderFailure,
 } from "./contracts.js";
-import { validateLatestObservationTime } from "./latest-observation.js";
 
-const MAX_LATEST_PRICE_AGE_HOURS = 24;
-
-const CoinGeckoPriceItemSchema = z
-  .record(z.string(), z.number().finite().positive().optional())
-  .default({});
 const CoinGeckoHistorySchema = z
   .object({
     prices: z.array(z.tuple([z.number().finite(), z.number().finite().positive()])),
   })
   .passthrough();
+const SnapshotSchema = z
+  .object({
+    id: z.string(),
+    market_data: z
+      .object({ current_price: z.record(z.string(), z.number().finite().positive()) })
+      .passthrough(),
+  })
+  .passthrough();
 
-export type CoinGeckoPrice = {
-  id: string;
-  price: number;
-  asOf?: Date;
-};
-
-export type CoinGeckoHistoryPoint = {
-  timestamp: number;
-  price: number;
-};
-
+export type CoinGeckoHistoryPoint = { timestamp: number; price: number };
 export type CoinGeckoGateway = {
-  pricesFor(ids: readonly string[], currency: string): Promise<readonly CoinGeckoPrice[]>;
+  snapshotFor(
+    id: string,
+    currency: string,
+    asOf: string,
+  ): Promise<CoinGeckoHistoryPoint | undefined>;
   historyFor(id: string, currency: string, asOf: string): Promise<readonly CoinGeckoHistoryPoint[]>;
 };
-
 export type CoinGeckoSourceOptions = {
   gateway?: CoinGeckoGateway;
   demoApiKey?: string | undefined;
@@ -63,35 +56,108 @@ export class CoinGeckoSource implements PriceSource, FxSource, HistoricalEurRate
   }
 
   async fetchPrices(needs: readonly PriceNeed[]): Promise<readonly PriceOutcome[]> {
-    const outcomes = new Map<string, PriceOutcome>();
-    const current = needs.filter((need) => need.mode === "latest");
-    const historical = needs.filter((need) => need.mode === "historical");
-    if (current.length > 0) await this.fetchCurrent(current, outcomes);
-    await Promise.all(historical.map(async (need) => this.fetchHistorical(need, outcomes)));
-    return needs.map(
-      (need) =>
-        outcomes.get(priceNeedKey(need)) ?? {
+    return Promise.all(
+      needs.map(async (need) => {
+        const snapshot = await this.snapshot(
+          need.identifier,
+          need.instrument.quoteCurrency,
+          need.asOf,
+        );
+        if (!snapshot.ok) return { need, ok: false, error: snapshot.error };
+        return {
           need,
-          ok: false,
-          error: { kind: "invalid-response", message: "CoinGecko omitted a requested price." },
-        },
+          ok: true,
+          data: {
+            instrument: need.instrument.id,
+            price: {
+              amount: plainAmount(snapshot.price, need.instrument.quoteCurrency),
+              currency: need.instrument.quoteCurrency,
+            },
+            asOf: need.asOf,
+            provenance: {
+              kind: "fetched",
+              source: "coingecko",
+              retrievedAt: this.now().toISOString(),
+            },
+          },
+        };
+      }),
     );
   }
 
   async fetchFxRates(needs: readonly FxNeed[]): Promise<readonly FxOutcome[]> {
-    const outcomes = new Map<string, FxOutcome>();
-    const current = needs.filter((need) => need.mode === "latest");
-    const historical = needs.filter((need) => need.mode === "historical");
-    if (current.length > 0) await this.fetchCurrentFx(current, outcomes);
-    await Promise.all(historical.map(async (need) => this.fetchHistoricalFx(need, outcomes)));
-    return needs.map(
-      (need) =>
-        outcomes.get(fxNeedKey(need)) ?? {
+    return Promise.all(
+      needs.map(async (need) => {
+        if (need.identifier === undefined)
+          return {
+            need,
+            ok: false,
+            error: {
+              kind: "unsupported",
+              message: "CoinGecko requires a currency binding.",
+            },
+          };
+        const snapshot = await this.snapshot(need.identifier, "EUR", need.asOf);
+        if (!snapshot.ok) return { need, ok: false, error: snapshot.error };
+        return {
           need,
-          ok: false,
-          error: { kind: "invalid-response", message: "CoinGecko omitted a requested FX rate." },
-        },
+          ok: true,
+          data: {
+            pair: `${need.currency}/EUR`,
+            rate: plainAmount(snapshot.price, "EUR"),
+            asOf: need.asOf,
+            provenance: {
+              kind: "fetched",
+              source: "coingecko",
+              retrievedAt: this.now().toISOString(),
+            },
+          },
+        };
+      }),
     );
+  }
+
+  private async snapshot(
+    id: string,
+    currency: string,
+    asOf: string,
+  ): Promise<{ ok: true; price: number } | { ok: false; error: ProviderFailure }> {
+    let point: CoinGeckoHistoryPoint | undefined;
+    try {
+      point = await this.gateway.snapshotFor(id, currency.toLowerCase(), asOf);
+    } catch (error) {
+      return {
+        ok: false,
+        error:
+          error instanceof z.ZodError
+            ? { kind: "invalid-response", message: "CoinGecko returned an invalid daily snapshot." }
+            : error instanceof Error
+              ? coingeckoFailure(error, "CoinGecko snapshot request failed.")
+              : { kind: "unavailable", message: "CoinGecko snapshot request failed." },
+      };
+    }
+    if (point === undefined)
+      return {
+        ok: false,
+        error: {
+          kind: "not-found",
+          message: `CoinGecko has no ${currency} snapshot for ${id} on ${asOf}.`,
+        },
+      };
+    if (
+      point.timestamp !== Date.parse(`${asOf}T00:00:00Z`) ||
+      !Number.isFinite(point.price) ||
+      point.price <= 0
+    ) {
+      return {
+        ok: false,
+        error: {
+          kind: "invalid-response",
+          message: "CoinGecko did not return the requested midnight UTC snapshot.",
+        },
+      };
+    }
+    return { ok: true, price: point.price };
   }
 
   async fetchHistoricalEurRates(needs: readonly EurRateNeed[]): Promise<readonly EurRateOutcome[]> {
@@ -159,290 +225,6 @@ export class CoinGeckoSource implements PriceSource, FxSource, HistoricalEurRate
       }),
     );
   }
-
-  private async fetchCurrentFx(
-    needs: readonly FxNeed[],
-    outcomes: Map<string, FxOutcome>,
-  ): Promise<void> {
-    const supported: Array<{ need: FxNeed; identifier: string }> = [];
-    for (const need of needs) {
-      if (need.identifier === undefined) {
-        outcomes.set(fxNeedKey(need), {
-          need,
-          ok: false,
-          error: { kind: "unsupported", message: "CoinGecko requires a currency binding." },
-        });
-      } else {
-        supported.push({ need, identifier: need.identifier });
-      }
-    }
-    if (supported.length === 0) return;
-    const currency = "eur";
-    let prices: readonly CoinGeckoPrice[];
-    try {
-      prices = await this.gateway.pricesFor(
-        supported.map(({ identifier }) => identifier),
-        currency,
-      );
-    } catch (error) {
-      const failure: ProviderFailure =
-        error instanceof Error
-          ? coingeckoFailure(error, "CoinGecko FX request failed.")
-          : { kind: "unavailable", message: "CoinGecko FX request failed." };
-      for (const { need } of supported)
-        outcomes.set(fxNeedKey(need), { need, ok: false, error: failure });
-      return;
-    }
-    const retrievedAt = this.now();
-    for (const { need, identifier } of supported) {
-      const price = prices.find((candidate) => candidate.id === identifier);
-      const asOf = need.asOf;
-      if (price === undefined) {
-        outcomes.set(fxNeedKey(need), {
-          need,
-          ok: false,
-          error: { kind: "not-found", message: `CoinGecko returned no price for ${identifier}.` },
-        });
-        continue;
-      }
-      if (!Number.isFinite(price.price) || price.price <= 0) {
-        outcomes.set(fxNeedKey(need), {
-          need,
-          ok: false,
-          error: {
-            kind: "invalid-response",
-            message: `CoinGecko returned an invalid FX price for ${identifier}.`,
-          },
-        });
-        continue;
-      }
-      const timestampFailure = validateLatestObservationTime({
-        provider: "CoinGecko",
-        identifier,
-        observedAt: price.asOf,
-        retrievedAt,
-        maxAgeHours: MAX_LATEST_PRICE_AGE_HOURS,
-      });
-      if (timestampFailure !== undefined) {
-        outcomes.set(fxNeedKey(need), { need, ok: false, error: timestampFailure });
-        continue;
-      }
-      outcomes.set(fxNeedKey(need), {
-        need,
-        ok: true,
-        data: {
-          pair: `${need.currency}/EUR`,
-          rate: plainAmount(price.price, "EUR"),
-          asOf,
-          provenance: {
-            kind: "fetched",
-            source: "coingecko",
-            retrievedAt: retrievedAt.toISOString(),
-          },
-        },
-      });
-    }
-  }
-
-  private async fetchHistoricalFx(need: FxNeed, outcomes: Map<string, FxOutcome>): Promise<void> {
-    if (need.identifier === undefined) {
-      outcomes.set(fxNeedKey(need), {
-        need,
-        ok: false,
-        error: { kind: "unsupported", message: "CoinGecko requires a currency binding." },
-      });
-      return;
-    }
-    let points: readonly CoinGeckoHistoryPoint[];
-    try {
-      points = await this.gateway.historyFor(need.identifier, "eur", need.asOf);
-    } catch (error) {
-      outcomes.set(fxNeedKey(need), {
-        need,
-        ok: false,
-        error:
-          error instanceof Error
-            ? coingeckoFailure(error, "CoinGecko historical FX request failed.")
-            : { kind: "unavailable", message: "CoinGecko historical FX request failed." },
-      });
-      return;
-    }
-    const selected = latestPoint(points, need.asOf);
-    const asOf = selected === undefined ? undefined : dateOnly(new Date(selected.timestamp));
-    if (
-      selected === undefined ||
-      asOf === undefined ||
-      !Number.isFinite(selected.price) ||
-      selected.price <= 0
-    ) {
-      outcomes.set(fxNeedKey(need), {
-        need,
-        ok: false,
-        error: {
-          kind: "not-found",
-          message: `CoinGecko returned no FX history for ${need.identifier}.`,
-        },
-      });
-      return;
-    }
-    outcomes.set(fxNeedKey(need), {
-      need,
-      ok: true,
-      data: {
-        pair: `${need.currency}/EUR`,
-        rate: plainAmount(selected.price, "EUR"),
-        asOf,
-        provenance: { kind: "fetched", source: "coingecko", retrievedAt: this.now().toISOString() },
-      },
-    });
-  }
-
-  private async fetchCurrent(
-    needs: readonly PriceNeed[],
-    outcomes: Map<string, PriceOutcome>,
-  ): Promise<void> {
-    const groups = new Map<string, PriceNeed[]>();
-    for (const need of needs) {
-      const currency = need.instrument.quoteCurrency;
-      const group = groups.get(currency) ?? [];
-      group.push(need);
-      groups.set(currency, group);
-    }
-    await Promise.all([...groups.values()].map((group) => this.fetchCurrentBatch(group, outcomes)));
-  }
-
-  private async fetchCurrentBatch(
-    needs: readonly PriceNeed[],
-    outcomes: Map<string, PriceOutcome>,
-  ): Promise<void> {
-    const currency = needs[0]?.instrument.quoteCurrency;
-    if (currency === undefined) return;
-    let prices: readonly CoinGeckoPrice[];
-    try {
-      prices = await this.gateway.pricesFor(
-        needs.map((need) => need.identifier),
-        currency.toLowerCase(),
-      );
-    } catch (error) {
-      const failure: ProviderFailure =
-        error instanceof Error
-          ? coingeckoFailure(error, "CoinGecko price request failed.")
-          : { kind: "unavailable", message: "CoinGecko price request failed." };
-      for (const need of needs)
-        outcomes.set(priceNeedKey(need), { need, ok: false, error: failure });
-      return;
-    }
-    const retrievedAt = this.now();
-    for (const need of needs) {
-      const price = prices.find((candidate) => candidate.id === need.identifier);
-      if (price === undefined) {
-        outcomes.set(priceNeedKey(need), {
-          need,
-          ok: false,
-          error: {
-            kind: "not-found",
-            message: `CoinGecko returned no price for ${need.identifier}.`,
-          },
-        });
-        continue;
-      }
-      const asOf = need.asOf;
-      if (!Number.isFinite(price.price) || price.price <= 0) {
-        outcomes.set(priceNeedKey(need), {
-          need,
-          ok: false,
-          error: {
-            kind: "invalid-response",
-            message: `CoinGecko returned an invalid price for ${need.identifier}.`,
-          },
-        });
-        continue;
-      }
-      const timestampFailure = validateLatestObservationTime({
-        provider: "CoinGecko",
-        identifier: need.identifier,
-        observedAt: price.asOf,
-        retrievedAt,
-        maxAgeHours: MAX_LATEST_PRICE_AGE_HOURS,
-      });
-      if (timestampFailure !== undefined) {
-        outcomes.set(priceNeedKey(need), { need, ok: false, error: timestampFailure });
-        continue;
-      }
-      outcomes.set(priceNeedKey(need), {
-        need,
-        ok: true,
-        data: {
-          instrument: need.instrument.id,
-          price: {
-            amount: plainAmount(price.price, need.instrument.quoteCurrency),
-            currency: need.instrument.quoteCurrency,
-          },
-          asOf,
-          provenance: {
-            kind: "fetched",
-            source: "coingecko",
-            retrievedAt: retrievedAt.toISOString(),
-          },
-        },
-      });
-    }
-  }
-
-  private async fetchHistorical(
-    need: PriceNeed,
-    outcomes: Map<string, PriceOutcome>,
-  ): Promise<void> {
-    let points: readonly CoinGeckoHistoryPoint[];
-    try {
-      points = await this.gateway.historyFor(
-        need.identifier,
-        need.instrument.quoteCurrency.toLowerCase(),
-        need.asOf,
-      );
-    } catch (error) {
-      outcomes.set(priceNeedKey(need), {
-        need,
-        ok: false,
-        error:
-          error instanceof Error
-            ? coingeckoFailure(error, "CoinGecko historical request failed.")
-            : { kind: "unavailable", message: "CoinGecko historical request failed." },
-      });
-      return;
-    }
-    const selected = latestPoint(points, need.asOf);
-    const asOf = selected === undefined ? undefined : dateOnly(new Date(selected.timestamp));
-    if (
-      selected === undefined ||
-      asOf === undefined ||
-      !Number.isFinite(selected.price) ||
-      selected.price <= 0
-    ) {
-      outcomes.set(priceNeedKey(need), {
-        need,
-        ok: false,
-        error: {
-          kind: "not-found",
-          message: `CoinGecko returned no history for ${need.identifier}.`,
-        },
-      });
-      return;
-    }
-    outcomes.set(priceNeedKey(need), {
-      need,
-      ok: true,
-      data: {
-        instrument: need.instrument.id,
-        price: {
-          amount: plainAmount(selected.price, need.instrument.quoteCurrency),
-          currency: need.instrument.quoteCurrency,
-        },
-        asOf,
-        provenance: { kind: "fetched", source: "coingecko", retrievedAt: this.now().toISOString() },
-      },
-    });
-  }
 }
 
 function createCoinGeckoGateway(options: CoinGeckoSourceOptions): CoinGeckoGateway {
@@ -455,24 +237,13 @@ function createCoinGeckoGateway(options: CoinGeckoSourceOptions): CoinGeckoGatew
     logLevel: "off",
   });
   return {
-    async pricesFor(ids, currency) {
-      const response = await client.simple.price.get({
-        ids: ids.join(","),
-        vs_currencies: currency,
-        include_last_updated_at: true,
-        precision: "full",
-      });
-      return ids.flatMap((id) => {
-        const item = response[id];
-        if (item === undefined) return [];
-        const parsed = CoinGeckoPriceItemSchema.safeParse(item);
-        if (!parsed.success) return [];
-        const price = parsed.data[currency];
-        if (price === undefined) return [];
-        const retrievedAt = parsed.data.last_updated_at;
-        if (retrievedAt === undefined) return [{ id, price }];
-        return [{ id, price, asOf: new Date(retrievedAt * 1000) }];
-      });
+    async snapshotFor(id, currency, asOf) {
+      const response = await client.coins.history.get(id, { date: asOf, localization: false });
+      const parsed = SnapshotSchema.extend({ id: z.literal(id) }).parse(response);
+      const price = parsed.market_data.current_price[currency];
+      return price === undefined
+        ? undefined
+        : { timestamp: Date.parse(`${asOf}T00:00:00Z`), price };
     },
     async historyFor(id, currency, asOf) {
       const end = new Date(`${asOf}T00:00:00.000Z`);
@@ -510,8 +281,8 @@ function plainAmount(value: number, currency: string): string {
 
 function dateOnly(value: Date): string | undefined {
   if (!Number.isFinite(value.getTime())) return undefined;
-  const date = value.toISOString().slice(0, 10);
-  return IsoDateSchema.safeParse(date).success ? date : undefined;
+  const result = IsoDateSchema.safeParse(value.toISOString().slice(0, 10));
+  return result.success ? result.data : undefined;
 }
 
 function coingeckoFailure(error: Error, fallback: string): ProviderFailure {
@@ -538,12 +309,4 @@ function coingeckoFailure(error: Error, fallback: string): ProviderFailure {
     };
   }
   return { kind: "unavailable", message: error.message || fallback };
-}
-
-function fxNeedKey(need: FxNeed): string {
-  return `${need.currency}:${need.asOf}:${need.mode}`;
-}
-
-function priceNeedKey(need: PriceNeed): string {
-  return `${need.instrument.id}:${need.asOf}:${need.mode}`;
 }

@@ -44,7 +44,7 @@ function instrument(id: string): Instrument {
 }
 
 function priceNeed(value: Instrument, asOf = "2026-03-01"): PriceNeed {
-  return { instrument: value, asOf, mode: "historical", identifier: value.id };
+  return { instrument: value, asOf, identifier: value.id };
 }
 
 function success(need: PriceNeed): PriceOutcome {
@@ -245,7 +245,7 @@ describe("market-data coordinator", () => {
     expect(snapshot.data.prices).toHaveLength(1);
   });
 
-  it("persists FX marks and skips cached historical needs", async () => {
+  it("persists FX marks and reuses daily resolutions", async () => {
     const store = temporaryStore();
     const source = new FixtureFxSource("ecb", (needs) =>
       needs.map((need) => ({
@@ -270,7 +270,7 @@ describe("market-data coordinator", () => {
       fxSources: [source],
       eurRateSources: [],
     });
-    const needs: FxNeed[] = [{ currency: "USD", asOf: "2026-03-01", mode: "historical" }];
+    const needs: FxNeed[] = [{ currency: "USD", asOf: "2026-03-01" }];
 
     const first = await coordinator.resolveFxRates(needs);
     const second = await coordinator.resolveFxRates(needs);
@@ -303,8 +303,8 @@ describe("market-data coordinator", () => {
       fxSources: [source],
       eurRateSources: [],
     });
-    const usd: FxNeed = { currency: "USD", asOf: "2026-03-01", mode: "historical" };
-    const gbp: FxNeed = { currency: "GBP", asOf: "2026-03-01", mode: "historical" };
+    const usd: FxNeed = { currency: "USD", asOf: "2026-03-01" };
+    const gbp: FxNeed = { currency: "GBP", asOf: "2026-03-01" };
 
     const first = await coordinator.resolveFxRates([usd, gbp]);
     const second = await coordinator.resolveFxRates([usd, gbp]);
@@ -320,7 +320,7 @@ describe("market-data coordinator", () => {
     expect(source.calls).toEqual([[usd, gbp], [gbp]]);
   });
 
-  it("does not let a historical mark retrieved today satisfy a latest price need", async () => {
+  it("does not treat an older price mark as proof of a resolved daily request", async () => {
     const store = temporaryStore();
     const value = instrument("stock-latest");
     expect(store.appendInstrument(value).ok).toBe(true);
@@ -347,7 +347,6 @@ describe("market-data coordinator", () => {
     const need: PriceNeed = {
       instrument: value,
       asOf: "2026-03-03",
-      mode: "latest",
       identifier: value.id,
     };
 
@@ -357,7 +356,7 @@ describe("market-data coordinator", () => {
     expect(source.calls).toEqual([[need]]);
   });
 
-  it("does not let a historical mark retrieved today satisfy a latest FX need", async () => {
+  it("does not treat an older FX mark as proof of a resolved daily request", async () => {
     const store = temporaryStore();
     expect(
       store.appendFx({
@@ -394,7 +393,7 @@ describe("market-data coordinator", () => {
       fxSources: [source],
       eurRateSources: [],
     });
-    const need: FxNeed = { currency: "USD", asOf: "2026-03-03", mode: "latest" };
+    const need: FxNeed = { currency: "USD", asOf: "2026-03-03" };
 
     const result = await coordinator.resolveFxRates([need]);
 

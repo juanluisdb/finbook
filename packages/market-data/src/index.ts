@@ -4,5 +4,6 @@ export * from "./ecb.js";
 export * from "./eodhd.js";
 export * from "./coordinator.js";
 export * from "./contracts.js";
+export { dailyCycle, dailyTarget } from "./daily.js";
 export * from "./http.js";
 export * from "./yahoo.js";

@@ -13,11 +13,8 @@ import {
 import { Command } from "commander";
 import {
   MarketDataConfigStore,
-  type FxFetchReport,
-  type FxNeed,
   type MarketDataCoordinator,
-  type PriceFetchReport,
-  type PriceNeed,
+  type ValuationRefreshReport,
 } from "@finbook/market-data";
 
 import {
@@ -49,6 +46,7 @@ import {
   renderInstruments,
   renderPositions,
   renderPrices,
+  renderRefresh,
 } from "./human-output.js";
 import { writeSuccess } from "./output.js";
 import { addAccount, addInstrument, setFx, setPrice } from "./writes.js";
@@ -229,7 +227,11 @@ export function createProgram(dataHome: string, options: ProgramOptions = {}): C
   const glance = show.command("glance").description("show the portfolio glance");
   glance
     .option("--as-of <date>", "valuation date")
-    .option("--fetch", "fetch missing valuation marks before showing the view");
+    .option("--fetch", "resolve daily valuation data for the active 06:00 UTC cycle")
+    .option(
+      "--replace-manual",
+      "accept fetched same-date prices and FX instead of manual marks; requires --fetch",
+    );
   addJsonOption(glance);
   glance.action((_options, command) =>
     showGlance(store, command.opts(), jsonMode(command), resolveDefaultDate(), marketDataFactory),
@@ -237,7 +239,11 @@ export function createProgram(dataHome: string, options: ProgramOptions = {}): C
   const positions = show.command("positions").description("show current positions");
   positions
     .option("--as-of <date>", "valuation date")
-    .option("--fetch", "fetch missing valuation marks before showing the view");
+    .option("--fetch", "resolve daily valuation data for the active 06:00 UTC cycle")
+    .option(
+      "--replace-manual",
+      "accept fetched same-date prices and FX instead of manual marks; requires --fetch",
+    );
   addJsonOption(positions);
   positions.action((_options, command) =>
     showPositions(
@@ -284,6 +290,7 @@ type EventListOptions = JsonOptions & {
 type AsOfOptions = JsonOptions & {
   asOf?: string | undefined;
   fetch?: boolean | undefined;
+  replaceManual?: boolean | undefined;
 };
 
 function addJsonOption(command: Command): void {
@@ -429,13 +436,14 @@ async function showGlance(
   marketDataFactory?: () => MarketDataCoordinator,
 ): Promise<void> {
   const asOf = requireDate(options.asOf, "--as-of", defaultDate);
-  const fetched = await awaitSnapshot(store, options, asOf, defaultDate, marketDataFactory);
+  const fetched = await awaitSnapshot(store, options, asOf, marketDataFactory);
   const glance = requireResult(getGlance(fetched.snapshot, asOf));
-  if (hasFetchFailures(fetched.reports)) {
+  showRefresh(fetched.refresh, json);
+  if (fetched.refresh !== null && hasFetchFailures(fetched.refresh)) {
     if (!json) writeSuccess(glance, false, renderGlance(glance));
-    throw partialFetchFailure(fetched.reports, glance);
+    throw partialFetchFailure(fetched.refresh, glance);
   }
-  writeSuccess(glance, json, renderGlance(glance));
+  writeSuccess({ ...glance, refresh: fetched.refresh }, json, renderGlance(glance));
 }
 
 async function showPositions(
@@ -446,77 +454,67 @@ async function showPositions(
   marketDataFactory?: () => MarketDataCoordinator,
 ): Promise<void> {
   const asOf = requireDate(options.asOf, "--as-of", defaultDate);
-  const fetched = await awaitSnapshot(store, options, asOf, defaultDate, marketDataFactory);
+  const fetched = await awaitSnapshot(store, options, asOf, marketDataFactory);
   const positions = requireResult(getPositions(fetched.snapshot, asOf));
-  if (hasFetchFailures(fetched.reports)) {
+  showRefresh(fetched.refresh, json);
+  if (fetched.refresh !== null && hasFetchFailures(fetched.refresh)) {
     if (!json) writeSuccess(positions, false, renderPositions(positions));
-    throw partialFetchFailure(fetched.reports, positions);
+    throw partialFetchFailure(fetched.refresh, positions);
   }
-  writeSuccess(positions, json, renderPositions(positions));
+  writeSuccess({ ...positions, refresh: fetched.refresh }, json, renderPositions(positions));
 }
-
-type FetchReports = {
-  prices: PriceFetchReport;
-  fx: FxFetchReport;
-};
 
 type FetchedSnapshot = {
   snapshot: BookSnapshot;
-  reports: FetchReports;
+  refresh: ValuationRefreshReport | null;
 };
 
 async function awaitSnapshot(
   store: FileBookStore,
   options: AsOfOptions,
   asOf: string,
-  defaultDate: string,
   marketDataFactory: (() => MarketDataCoordinator) | undefined,
 ): Promise<FetchedSnapshot> {
-  const snapshot = loadSnapshot(store);
-  if (options.fetch !== true) return { snapshot, reports: emptyFetchReports() };
+  if (options.replaceManual === true && options.fetch !== true) {
+    throw validationFailure(
+      "--replace-manual requires --fetch.",
+      "Use --fetch to resolve provider candidates before replacing manual marks.",
+    );
+  }
+  if (options.fetch !== true) return { snapshot: loadSnapshot(store), refresh: null };
   if (marketDataFactory === undefined) {
     throw validationFailure(
       "Valuation fetching is not configured.",
       "Configure a market-data provider before using --fetch.",
     );
   }
-  const marketData = marketDataFactory();
-  const positions = requireResult(getPositions(snapshot, asOf));
-  const mode = asOf === defaultDate ? "latest" : "historical";
-  const priceNeeds: PriceNeed[] = [];
-  const currencies = new Set<string>();
-  for (const position of positions.positions) {
-    const instrument = snapshot.instruments.find(
-      (candidate) => candidate.id === position.instrument,
+  const result = requireResult(
+    await marketDataFactory().refreshValuation(asOf, {
+      replaceManual: options.replaceManual === true,
+    }),
+  );
+  return { snapshot: result.snapshot, refresh: result.report };
+}
+
+function showRefresh(report: ValuationRefreshReport | null, json: boolean): void {
+  if (report === null || json) return;
+  process.stdout.write(`${renderRefresh(report)}\n`);
+  for (const conflict of report.conflicts) {
+    if (conflict.action === "replaced") continue;
+    process.stderr.write(
+      `warning: ${conflict.subject} ${conflict.asOf}: kept manual ${conflict.manual} ${conflict.currency}; fetched ${conflict.fetched} ${conflict.currency}. Use --fetch --replace-manual to accept the fetched value.\n`,
     );
-    if (instrument === undefined) continue;
-    priceNeeds.push({ instrument, asOf, mode, identifier: instrument.id });
-    if (instrument.quoteCurrency !== "EUR") currencies.add(instrument.quoteCurrency);
   }
-  for (const entry of positions.cash) {
-    if (entry.currency !== "EUR") currencies.add(entry.currency);
-  }
-  const priceReport = requireResult(await marketData.resolvePrices(priceNeeds));
-  const fxNeeds: FxNeed[] = [...currencies].map((currency) => ({ currency, asOf, mode }));
-  const fxReport = requireResult(await marketData.resolveFxRates(fxNeeds));
-  return {
-    snapshot: loadSnapshot(store),
-    reports: { prices: priceReport, fx: fxReport },
-  };
 }
 
-function emptyFetchReports(): FetchReports {
-  return {
-    prices: { requested: 0, cached: 0, fetched: [], failures: [] },
-    fx: { requested: 0, cached: 0, fetched: [], failures: [] },
-  };
-}
-
-function hasFetchFailures(reports: FetchReports): boolean {
+function hasFetchFailures(reports: ValuationRefreshReport): boolean {
   return reports.prices.failures.length > 0 || reports.fx.failures.length > 0;
 }
 
-function partialFetchFailure(reports: FetchReports, partial: ExternalFailureDetails["partial"]) {
+function partialFetchFailure(
+  reports: ValuationRefreshReport,
+  partial: ExternalFailureDetails["partial"],
+) {
   const failures = [
     ...reports.prices.failures.map(({ need, provider, error }) => ({
       kind: "price" as const,
@@ -541,6 +539,7 @@ function partialFetchFailure(reports: FetchReports, partial: ExternalFailureDeta
       saved: { prices: reports.prices.fetched.length, fx: reports.fx.fetched.length },
       failures,
       partial,
+      refresh: reports,
     },
   );
 }

@@ -72,7 +72,11 @@ finbook show glance --as-of 2026-03-04
 finbook show positions --as-of 2026-03-04
 ```
 
-`price set` records the market value of an instrument on a date; it does not record a trade. `fx set` does the same for a currency-to-EUR valuation rate. `--fetch` asks the configured providers for the valuation data required by the view and saves each successful result locally.
+`price set` records the market value of an instrument on a date; it does not record a trade. `fx set` does the same for a currency-to-EUR valuation rate. A trade price is never used as a valuation fallback.
+
+Ordinary views are offline. `--fetch` resolves the daily observations required by the view and saves successful results locally. A new refresh cycle starts at 06:00 UTC: prices and fiat FX target the previous UTC date, while crypto uses the cycle date's midnight UTC snapshot. Historical views cap those targets at their requested date. Every observation keeps its actual date and source, so older NAVs and weekend closes remain visibly dated.
+
+Successful resolutions are reused across commands and restarts within a cycle; exact-date resolutions can also serve later cycles. Failed subjects can retry without repeating successful work. A late-published NAV may wait until the next cycle. finbook does not run a background scheduler.
 
 Yahoo remains the default fund-price provider. A fund available through EODHD can opt in with its EODHD ticker:
 
@@ -81,12 +85,20 @@ export FINBOOK_EODHD_API_KEY="..."
 finbook config source set --instrument my-fund --provider eodhd --identifier PROVIDER-TICKER.EUFUND
 ```
 
-Each unresolved EODHD-bound fund costs one API call per `--fetch`. Latest refreshes always contact the provider; eligible historical marks are reused from the local book.
+Each unresolved EODHD-bound fund costs one API call. Repeated views reuse a completed daily resolution rather than spending another call.
 
 ```sh
 finbook show glance --fetch
 finbook doctor
 ```
+
+Manual marks take priority over fetched observations for the same date. Fetching reports differing values and retains the provider candidate. To accept it persistently without another provider request:
+
+```sh
+finbook show glance --fetch --replace-manual
+```
+
+This replaces conflicting same-date manual price and FX marks in the requested view; it does not affect transactions or manual marks on other dates. `--json` includes refresh counts, conflicts, and selected valuation evidence.
 
 Use `finbook <command> --help` for the complete command-specific flags and examples.
 

@@ -9,13 +9,7 @@ import {
 import { z } from "zod";
 
 import { createRetryingFetch } from "./http.js";
-import {
-  type EurRateNeed,
-  type EurRateOutcome,
-  type FxNeed,
-  type FxObservation,
-  type FxOutcome,
-} from "./contracts.js";
+import { type EurRateNeed, type EurRateOutcome, type FxNeed, type FxOutcome } from "./contracts.js";
 
 const DEFAULT_BASE_URL = "https://www.ecb.europa.eu/stats/eurofxref";
 const EcbRateSchema = z
@@ -85,30 +79,40 @@ export class EcbSource {
   }
 
   async fetchFxRates(needs: readonly FxNeed[]): Promise<readonly FxOutcome[]> {
-    const outcomes: Array<FxOutcome | undefined> = Array.from(
-      { length: needs.length },
-      () => undefined,
-    );
-    await this.resolveFxGroup(
-      needs.map((need, index) => ({ need, index })),
-      "eurofxref-daily.xml",
-      outcomes,
-    );
-    await this.resolveFxGroup(
-      needs
-        .map((need, index) => ({ need, index }))
-        .filter(({ need }) => need.mode === "historical"),
-      "eurofxref-hist.xml",
-      outcomes,
-    );
-    return needs.map(
-      (need, index) =>
-        outcomes[index] ?? {
+    if (needs.length === 0) return [];
+    const loaded = await this.loadDays("eurofxref-hist.xml");
+    if (!loaded.ok) return needs.map((need) => ({ need, ok: false, error: loaded.error }));
+    return needs.map((need) => {
+      if (need.currency === "EUR")
+        return {
           need,
           ok: false,
-          error: { kind: "invalid-response", message: "ECB source omitted a requested rate." },
+          error: {
+            kind: "invalid-response",
+            message: "ECB does not publish an EUR/EUR rate.",
+          },
+        };
+      const rate = rateAt(loaded.data, need.currency, need.asOf);
+      if (rate === undefined)
+        return {
+          need,
+          ok: false,
+          error: {
+            kind: "not-found",
+            message: `ECB has no ${need.currency} rate on or before ${need.asOf}.`,
+          },
+        };
+      return {
+        need,
+        ok: true,
+        data: {
+          pair: `${need.currency}/EUR`,
+          rate: invert(rate.rate),
+          asOf: rate.date,
+          provenance: this.provenance(),
         },
-    );
+      };
+    });
   }
 
   async fetchHistoricalEurRates(needs: readonly EurRateNeed[]): Promise<readonly EurRateOutcome[]> {
@@ -137,53 +141,6 @@ export class EcbSource {
         },
       };
     });
-  }
-
-  private async resolveFxGroup(
-    entries: readonly { need: FxNeed; index: number }[],
-    file: "eurofxref-daily.xml" | "eurofxref-hist.xml",
-    outcomes: Array<FxOutcome | undefined>,
-  ): Promise<void> {
-    const historical = file === "eurofxref-hist.xml";
-    const selected = entries.filter(
-      ({ need }) => need.mode === (historical ? "historical" : "latest"),
-    );
-    if (selected.length === 0) return;
-    const loaded = await this.loadDays(file);
-    if (!loaded.ok) {
-      for (const { need, index } of selected)
-        outcomes[index] = { need, ok: false, error: loaded.error };
-      return;
-    }
-    for (const { need, index } of selected) {
-      if (need.currency === "EUR") {
-        outcomes[index] = {
-          need,
-          ok: false,
-          error: { kind: "invalid-response", message: "ECB does not publish an EUR/EUR rate." },
-        };
-        continue;
-      }
-      const rate = rateAt(loaded.data, need.currency, need.asOf);
-      if (rate === undefined) {
-        outcomes[index] = {
-          need,
-          ok: false,
-          error: {
-            kind: "not-found",
-            message: `ECB has no ${need.currency} rate on or before ${need.asOf}.`,
-          },
-        };
-        continue;
-      }
-      const observation: FxObservation = {
-        pair: `${need.currency}/EUR`,
-        rate: invert(rate.rate),
-        asOf: rate.date,
-        provenance: this.provenance(),
-      };
-      outcomes[index] = { need, ok: true, data: observation };
-    }
   }
 
   private async loadDays(file: "eurofxref-daily.xml" | "eurofxref-hist.xml"): Promise<ParseResult> {
