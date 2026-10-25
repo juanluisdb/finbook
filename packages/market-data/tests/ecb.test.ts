@@ -20,8 +20,8 @@ function source(responseBody = fixture, status = 200): EcbSource {
 describe("ECB source", () => {
   it("returns EUR-per-currency FX marks using the latest available date", async () => {
     const result = await source().fetchFxRates([
-      { currency: "USD", asOf: "2026-03-03", mode: "latest" },
-      { currency: "GBP", asOf: "2026-03-01", mode: "historical" },
+      { currency: "USD", asOf: "2026-03-03" },
+      { currency: "GBP", asOf: "2026-03-01" },
     ]);
 
     expect(result).toMatchObject([
@@ -67,11 +67,9 @@ describe("ECB source", () => {
   });
 
   it("reports unsupported currencies and provider HTTP failures per need", async () => {
-    const unsupported = await source().fetchFxRates([
-      { currency: "BTC", asOf: "2026-03-03", mode: "latest" },
-    ]);
+    const unsupported = await source().fetchFxRates([{ currency: "BTC", asOf: "2026-03-03" }]);
     const unavailable = await source("unauthorized", 401).fetchFxRates([
-      { currency: "USD", asOf: "2026-03-03", mode: "latest" },
+      { currency: "USD", asOf: "2026-03-03" },
     ]);
 
     expect(unsupported).toMatchObject([{ ok: false, error: { kind: "not-found" } }]);

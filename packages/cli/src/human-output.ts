@@ -12,6 +12,7 @@ import {
 } from "@finbook/core";
 
 import type { DoctorReport } from "./doctor.js";
+import type { ValuationRefreshReport } from "@finbook/market-data";
 import { formatMoney, formatRows } from "./output.js";
 
 export function renderDoctor(report: DoctorReport): string {
@@ -106,6 +107,9 @@ export function renderGlance(glance: Glance): string {
     "",
     "by currency",
     renderBreakdowns(glance.byCurrency),
+    "",
+    "valuation evidence",
+    renderValuationEvidence(glance.positions, glance.cash),
   ];
   return appendHoles(lines, glance.holes, glance.asOf, "glance");
 }
@@ -115,28 +119,63 @@ export function renderPositions(result: PositionsResult): string {
     `as of: ${result.asOf}`,
     "positions",
     formatRows(
-      ["ACCOUNT", "INSTRUMENT", "QUANTITY", "COST", "VALUE EUR"],
+      ["ACCOUNT", "INSTRUMENT", "QUANTITY", "COST", "VALUE EUR", "PRICE MARK", "FX MARK"],
       result.positions.map((position) => [
         position.account,
         position.instrument,
         position.quantity,
         formatMoney(position.cost),
         formatMoney(position.valueEur),
+        formatEvidence(position.priceMark),
+        formatEvidence(position.fxMark),
       ]),
     ),
     "",
     "cash",
     formatRows(
-      ["ACCOUNT", "CURRENCY", "BALANCE", "VALUE EUR"],
+      ["ACCOUNT", "CURRENCY", "BALANCE", "VALUE EUR", "FX MARK"],
       result.cash.map((entry) => [
         entry.account,
         entry.currency,
         formatMoney(entry.balance),
         formatMoney(entry.valueEur),
+        formatEvidence(entry.fxMark),
       ]),
     ),
   ];
   return appendHoles(lines, result.holes, result.asOf, "positions");
+}
+
+export function renderRefresh(report: ValuationRefreshReport): string {
+  return `daily cycle: ${report.cycle} / 06:00 UTC; fetched: ${report.prices.fetched.length + report.fx.fetched.length}; reused: ${report.prices.cached + report.fx.cached}`;
+}
+
+function formatEvidence(mark: PositionsResult["positions"][number]["priceMark"]): string {
+  return mark === null ? "—" : `${mark.asOf} / ${mark.source}`;
+}
+
+function renderValuationEvidence(
+  positions: PositionsResult["positions"],
+  cash: PositionsResult["cash"],
+): string {
+  const rows = new Map<string, readonly string[]>();
+  for (const position of positions) {
+    rows.set(`price:${position.instrument}`, [
+      position.instrument,
+      formatEvidence(position.priceMark),
+    ]);
+    if (position.cost.currency !== "EUR") {
+      rows.set(`fx:${position.cost.currency}`, [
+        `${position.cost.currency}/EUR`,
+        formatEvidence(position.fxMark),
+      ]);
+    }
+  }
+  for (const entry of cash) {
+    if (entry.currency !== "EUR")
+      rows.set(`fx:${entry.currency}`, [`${entry.currency}/EUR`, formatEvidence(entry.fxMark)]);
+  }
+  return formatRows(["SUBJECT", "OBSERVATION / SOURCE"], [...rows.values()]);
 }
 
 export function renderHoles(

@@ -34,7 +34,11 @@ export type BookLockInspection =
   | { kind: "uncertain"; reason: string; owner?: Omit<LockOwner, "token"> };
 
 export function inspectBookLock(dataHome: string): BookLockInspection {
-  const lockPath = join(dataHome, LOCK_DIRECTORY);
+  return inspectLock(dataHome, LOCK_DIRECTORY);
+}
+
+function inspectLock(dataHome: string, directory: string): BookLockInspection {
+  const lockPath = join(dataHome, directory);
   if (!existsSync(lockPath)) return { kind: "absent" };
 
   const ownerResult = readLockOwner(lockPath);
@@ -54,6 +58,24 @@ export function inspectBookLock(dataHome: string): BookLockInspection {
   if (alive === true) return { kind: "active", owner };
   if (alive === false) return { kind: "stale", owner };
   return { kind: "uncertain", reason: "the owner process could not be verified", owner };
+}
+
+export async function withRefreshLock<T>(
+  dataHome: string,
+  operation: () => Promise<Result<T>>,
+): Promise<Result<T>> {
+  const directory = ".finbook.refresh.lock";
+  const acquired = acquireBookLock(dataHome, directory);
+  if (!acquired.ok) return fail(acquired.error);
+  let result: Result<T>;
+  try {
+    result = await operation();
+  } catch (error) {
+    releaseBookLock(dataHome, acquired.data, directory);
+    throw error;
+  }
+  const released = releaseBookLock(dataHome, acquired.data, directory);
+  return released.ok ? result : fail(released.error);
 }
 
 export function withBookLock<T>(dataHome: string, operation: () => Result<T>): Result<T> {
@@ -79,8 +101,8 @@ export function withBookLock<T>(dataHome: string, operation: () => Result<T>): R
   return result;
 }
 
-function acquireBookLock(dataHome: string): Result<string> {
-  const lockPath = join(dataHome, LOCK_DIRECTORY);
+function acquireBookLock(dataHome: string, directory = LOCK_DIRECTORY): Result<string> {
+  const lockPath = join(dataHome, directory);
   try {
     ensureDataDirectory(dataHome);
   } catch (error) {
@@ -137,7 +159,7 @@ function acquireBookLock(dataHome: string): Result<string> {
       }
     }
 
-    const inspection = inspectBookLock(dataHome);
+    const inspection = inspectLock(dataHome, directory);
     if (inspection.kind === "absent") continue;
     if (inspection.kind === "uncertain") {
       return fail(
@@ -156,7 +178,7 @@ function acquireBookLock(dataHome: string): Result<string> {
       );
     }
     try {
-      const quarantine = join(dataHome, `.${LOCK_DIRECTORY}.stale-${randomUUID()}`);
+      const quarantine = join(dataHome, `.${directory}.stale-${randomUUID()}`);
       renameSync(lockPath, quarantine);
       rmSync(quarantine, { recursive: true, force: true });
     } catch (error) {
@@ -178,8 +200,12 @@ function acquireBookLock(dataHome: string): Result<string> {
   );
 }
 
-function releaseBookLock(dataHome: string, token: string): Result<void> {
-  const lockPath = join(dataHome, LOCK_DIRECTORY);
+function releaseBookLock(
+  dataHome: string,
+  token: string,
+  directory = LOCK_DIRECTORY,
+): Result<void> {
+  const lockPath = join(dataHome, directory);
   const owner = readLockOwner(lockPath);
   if (!owner.ok) {
     return fail(

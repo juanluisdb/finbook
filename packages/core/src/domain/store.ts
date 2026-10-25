@@ -177,7 +177,7 @@ export class FileBookStore {
       const events = [...snapshot.data.events, parsed.data];
       const replayed = this.validateCandidate(snapshot.data, events, "append", parsed.data.id);
       if (!replayed.ok) return fail(replayed.error);
-      const written = this.writeEvents(events);
+      const written = this.writeJsonLines(FILES.events, events);
       if (!written.ok) return fail(written.error);
       return succeed(parsed.data);
     });
@@ -219,7 +219,7 @@ export class FileBookStore {
       events[index] = parsed.data;
       const replayed = this.validateCandidate(snapshot.data, events, "replace", id);
       if (!replayed.ok) return fail(replayed.error);
-      const written = this.writeEvents(events);
+      const written = this.writeJsonLines(FILES.events, events);
       if (!written.ok) return fail(written.error);
       return succeed(parsed.data);
     });
@@ -236,7 +236,7 @@ export class FileBookStore {
       const events = snapshot.data.events.filter((_event, eventIndex) => eventIndex !== index);
       const replayed = this.validateCandidate(snapshot.data, events, "delete", id);
       if (!replayed.ok) return fail(replayed.error);
-      const written = this.writeEvents(events);
+      const written = this.writeJsonLines(FILES.events, events);
       if (!written.ok) return fail(written.error);
       return succeed(removed);
     });
@@ -276,6 +276,75 @@ export class FileBookStore {
       const written = this.appendJsonLine(FILES.fx, parsed.data);
       if (!written.ok) return fail(written.error);
       return succeed(undefined);
+    });
+  }
+
+  acceptFetchedPrice(candidate: PriceStamp, expectedManual: readonly PriceStamp[]): Result<void> {
+    const parsed = PriceStampSchema.safeParse(candidate);
+    if (!parsed.success || parsed.data.provenance.kind !== "fetched") {
+      return fail(
+        invariantError(
+          "Expected a fetched price candidate.",
+          "Fetch a provider observation first.",
+        ),
+      );
+    }
+    return withBookLock(this.dataHome, () => {
+      const loaded = this.loadUnlocked();
+      if (!loaded.ok) return fail(loaded.error);
+      const matches = (mark: PriceStamp) =>
+        mark.instrument === parsed.data.instrument &&
+        mark.asOf === parsed.data.asOf &&
+        mark.provenance.kind === "manual";
+      const current = loaded.data.prices.filter(matches);
+      if (
+        !isDeepStrictEqual(current, expectedManual) ||
+        !loaded.data.prices.some((mark) => isDeepStrictEqual(mark, parsed.data))
+      ) {
+        return fail({
+          type: "conflict",
+          message: "The price marks changed before replacement.",
+          hint: "Inspect the current marks and retry the replacement.",
+        });
+      }
+      return this.writeJsonLines(FILES.prices, [
+        ...loaded.data.prices.filter(
+          (mark) => !matches(mark) && !isDeepStrictEqual(mark, parsed.data),
+        ),
+        parsed.data,
+      ]);
+    });
+  }
+
+  acceptFetchedFx(candidate: FxStamp, expectedManual: readonly FxStamp[]): Result<void> {
+    const parsed = FxStampSchema.safeParse(candidate);
+    if (!parsed.success || parsed.data.provenance.kind !== "fetched") {
+      return fail(
+        invariantError("Expected a fetched FX candidate.", "Fetch a provider observation first."),
+      );
+    }
+    return withBookLock(this.dataHome, () => {
+      const loaded = this.loadUnlocked();
+      if (!loaded.ok) return fail(loaded.error);
+      const matches = (mark: FxStamp) =>
+        mark.pair === parsed.data.pair &&
+        mark.asOf === parsed.data.asOf &&
+        mark.provenance.kind === "manual";
+      const current = loaded.data.fx.filter(matches);
+      if (
+        !isDeepStrictEqual(current, expectedManual) ||
+        !loaded.data.fx.some((mark) => isDeepStrictEqual(mark, parsed.data))
+      ) {
+        return fail({
+          type: "conflict",
+          message: "The FX marks changed before replacement.",
+          hint: "Inspect the current marks and retry the replacement.",
+        });
+      }
+      return this.writeJsonLines(FILES.fx, [
+        ...loaded.data.fx.filter((mark) => !matches(mark) && !isDeepStrictEqual(mark, parsed.data)),
+        parsed.data,
+      ]);
     });
   }
 
@@ -485,19 +554,21 @@ export class FileBookStore {
     return failure === undefined ? succeed(undefined) : fail(failure);
   }
 
-  private writeEvents(events: readonly Event[]): Result<void> {
-    const target = join(this.dataHome, FILES.events);
-    const temporary = join(
-      this.dataHome,
-      `.${basename(FILES.events)}.${process.pid}.${randomUUID()}.tmp`,
-    );
+  private writeJsonLines(
+    name: string,
+    records: readonly (Event | PriceStamp | FxStamp)[],
+  ): Result<void> {
+    const target = join(this.dataHome, name);
+    const temporary = join(this.dataHome, `.${basename(name)}.${process.pid}.${randomUUID()}.tmp`);
     let renamed = false;
     let failure: DomainError | undefined;
     let thrown = false;
     let thrownError: unknown;
     try {
       const content =
-        events.length === 0 ? "" : `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
+        records.length === 0
+          ? ""
+          : `${records.map((record) => JSON.stringify(record)).join("\n")}\n`;
       writeFileSync(temporary, content, { encoding: "utf8", mode: 0o600 });
       this.setOwnerOnly(temporary, 0o600);
       renameSync(temporary, target);
@@ -508,7 +579,7 @@ export class FileBookStore {
         thrown = true;
         thrownError = error;
       } else {
-        failure = storageWriteError(FILES.events, error.message, renamed);
+        failure = storageWriteError(name, error.message, renamed);
       }
     }
     try {
@@ -520,7 +591,7 @@ export class FileBookStore {
           thrownError = error;
         }
       } else if (failure === undefined) {
-        failure = storageWriteError(FILES.events, error.message, renamed);
+        failure = storageWriteError(name, error.message, renamed);
       }
     }
     if (thrown) throw thrownError;

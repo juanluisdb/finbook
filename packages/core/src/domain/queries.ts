@@ -1,7 +1,7 @@
 import { calculatedDecimal, DecimalMath } from "./decimal.js";
 import { fail, type DomainError, type Result } from "./result.js";
 import { replayEvents } from "./replay.js";
-import type { Event, FxStamp, Instrument, Money, PriceStamp } from "./schemas.js";
+import type { FxStamp, Money, PriceStamp, Provenance } from "./schemas.js";
 import { createInitialState, type BookState, type Hole } from "./state.js";
 import type { BookSnapshot } from "./snapshot.js";
 import { IsoDateSchema } from "./scalars.js";
@@ -12,7 +12,10 @@ export type CashPosition = {
   currency: string;
   balance: Money;
   valueEur: Money | null;
+  fxMark: MarkEvidence | null;
 };
+
+export type MarkEvidence = { asOf: string; source: string };
 
 export type Position = {
   account: string;
@@ -20,6 +23,8 @@ export type Position = {
   quantity: string;
   cost: Money;
   valueEur: Money | null;
+  priceMark: MarkEvidence | null;
+  fxMark: MarkEvidence | null;
 };
 
 export type PositionsResult = {
@@ -47,6 +52,7 @@ export type Glance = {
   byAssetType: readonly Breakdown[];
   byCurrency: readonly Breakdown[];
   cash: readonly CashPosition[];
+  positions: readonly Position[];
   weights: {
     byPlatform: WeightMap;
     byAssetType: WeightMap;
@@ -110,6 +116,7 @@ export function getGlance(snapshot: BookSnapshot, asOf: string): Result<Glance> 
       byAssetType: valuation.data.byAssetType,
       byCurrency: valuation.data.byCurrency,
       cash: valuation.data.cash,
+      positions: valuation.data.positions,
       weights: {
         byPlatform: weightMap(valuation.data.byPlatform),
         byAssetType: weightMap(valuation.data.byAssetType),
@@ -134,19 +141,12 @@ function deriveValuation(snapshot: BookSnapshot, asOf: string): Result<DerivedVa
   );
   if (!replayed.ok) return fail(replayed.error);
 
-  const valuation = valueState(
-    replayed.data,
-    snapshot.events,
-    snapshot.prices,
-    snapshot.fx,
-    parsedDate.data,
-  );
+  const valuation = valueState(replayed.data, snapshot.prices, snapshot.fx, parsedDate.data);
   return { ok: true, data: { ...valuation, dataState: replayed.data } };
 }
 
 function valueState(
   state: BookState,
-  events: readonly Event[],
   prices: readonly PriceStamp[],
   fxStamps: readonly FxStamp[],
   asOf: string,
@@ -165,7 +165,13 @@ function valueState(
     for (const [currency, balance] of Object.entries(accountCash)) {
       if (new DecimalMath(balance.amount).isZero()) continue;
       const marked = markCash(balance, currency, asOf, fxStamps);
-      cash.push({ account: account.id, currency, balance: { ...balance }, valueEur: marked });
+      cash.push({
+        account: account.id,
+        currency,
+        balance: { ...balance },
+        valueEur: marked,
+        fxMark: evidence(fxStampAt(currency, asOf, fxStamps)),
+      });
       if (marked === null) {
         totalKnown = false;
         addHole(
@@ -192,15 +198,19 @@ function valueState(
         (sum, lot) => sum.add(MoneyValue.from(lot.cost)),
         MoneyValue.zero(instrument.quoteCurrency),
       );
-      const price = priceAt(instrument, events, prices, asOf);
+      const selectedPrice = priceStampAt(instrument.id, asOf, prices);
+      const price =
+        selectedPrice?.price.currency === instrument.quoteCurrency ? selectedPrice : undefined;
       const marked =
-        price === undefined ? null : markPosition(price, quantity.toFixed(), asOf, fxStamps);
+        price === undefined ? null : markPosition(price.price, quantity.toFixed(), asOf, fxStamps);
       positions.push({
         account: account.id,
         instrument: instrument.id,
         quantity: quantity.toFixed(),
         cost: cost.toMoney(),
         valueEur: marked,
+        priceMark: evidence(price),
+        fxMark: evidence(fxStampAt(instrument.quoteCurrency, asOf, fxStamps)),
       });
       if (marked === null) {
         totalKnown = false;
@@ -269,40 +279,18 @@ function convertToEur(money: Money, rate: string): Money {
   };
 }
 
-function priceAt(
-  instrument: Instrument,
-  events: readonly Event[],
-  prices: readonly PriceStamp[],
+export function priceStampAt(
+  instrument: string,
   asOf: string,
-): Money | undefined {
+  prices: readonly PriceStamp[],
+): PriceStamp | undefined {
   let selectedStamp: PriceStamp | undefined;
   for (const stamp of prices) {
-    if (
-      stamp.instrument === instrument.id &&
-      stamp.asOf <= asOf &&
-      (selectedStamp === undefined || stamp.asOf >= selectedStamp.asOf)
-    ) {
+    if (stamp.instrument === instrument && stamp.asOf <= asOf && supersedes(stamp, selectedStamp)) {
       selectedStamp = stamp;
     }
   }
-  if (selectedStamp !== undefined && selectedStamp.price.currency === instrument.quoteCurrency) {
-    return selectedStamp.price;
-  }
-
-  let selectedTrade: Extract<Event, { type: "buy" | "sell" }> | undefined;
-  for (const event of events) {
-    if (
-      (event.type === "buy" || event.type === "sell") &&
-      event.instrument === instrument.id &&
-      event.date <= asOf &&
-      (selectedTrade === undefined || event.date >= selectedTrade.date)
-    ) {
-      selectedTrade = event;
-    }
-  }
-  return selectedTrade?.price.currency === instrument.quoteCurrency
-    ? selectedTrade.price
-    : undefined;
+  return selectedStamp;
 }
 
 function fxRateAt(
@@ -311,18 +299,39 @@ function fxRateAt(
   fxStamps: readonly FxStamp[],
 ): string | undefined {
   if (currency === "EUR") return "1";
+  return fxStampAt(currency, asOf, fxStamps)?.rate;
+}
+
+export function fxStampAt(
+  currency: string,
+  asOf: string,
+  fxStamps: readonly FxStamp[],
+): FxStamp | undefined {
   const pair = `${currency}/EUR`;
   let selected: FxStamp | undefined;
   for (const stamp of fxStamps) {
-    if (
-      stamp.pair === pair &&
-      stamp.asOf <= asOf &&
-      (selected === undefined || stamp.asOf >= selected.asOf)
-    ) {
+    if (stamp.pair === pair && stamp.asOf <= asOf && supersedes(stamp, selected)) {
       selected = stamp;
     }
   }
-  return selected?.rate;
+  return selected;
+}
+
+function supersedes(
+  candidate: { asOf: string; provenance: Provenance },
+  selected: { asOf: string; provenance: Provenance } | undefined,
+): boolean {
+  if (selected === undefined || candidate.asOf > selected.asOf) return true;
+  if (candidate.asOf < selected.asOf) return false;
+  return candidate.provenance.kind === "manual" || selected.provenance.kind !== "manual";
+}
+
+function evidence(stamp: PriceStamp | FxStamp | undefined): MarkEvidence | null {
+  if (stamp === undefined) return null;
+  return {
+    asOf: stamp.asOf,
+    source: stamp.provenance.kind === "manual" ? "manual" : stamp.provenance.source,
+  };
 }
 
 function addBucket(map: BucketMap, key: string, value: Money | null): void {

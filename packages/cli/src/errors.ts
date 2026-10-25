@@ -1,5 +1,5 @@
 import type { DomainError, Glance, PositionsResult, Result } from "@finbook/core";
-import type { ProviderFailureKind, ProviderId } from "@finbook/market-data";
+import type { ProviderFailureKind, ProviderId, ValuationRefreshReport } from "@finbook/market-data";
 
 export type PartialFetchFailure = {
   kind: "price" | "fx";
@@ -14,6 +14,7 @@ export type ExternalFailureDetails = {
   saved: { prices: number; fx: number };
   failures: readonly PartialFetchFailure[];
   partial: Glance | PositionsResult;
+  refresh: ValuationRefreshReport;
 };
 
 export class CliFailure extends Error {

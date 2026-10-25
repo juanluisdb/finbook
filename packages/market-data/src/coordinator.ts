@@ -4,15 +4,20 @@ import {
   IsoDateSchema,
   PositiveDecimalStringSchema,
   PriceStampSchema,
+  MoneyValue,
+  getPositions,
+  priceStampAt,
+  fxStampAt,
+  withRefreshLock,
   fail,
   succeed,
   type DomainError,
-  type FxStamp,
-  type PriceStamp,
   type Result,
+  type BookSnapshot,
 } from "@finbook/core";
 
 import { effectiveRoute, findBinding } from "./config.js";
+import { DailyResolutions, dailyCycle, dailyTarget, cachedResolution } from "./daily.js";
 import type { MarketDataConfig } from "./contracts.js";
 import {
   type EurRateNeed,
@@ -37,7 +42,10 @@ import {
   providerSupportsRoute,
 } from "./contracts.js";
 
-export type MarketDataStore = Pick<FileBookStore, "load" | "appendPrice" | "appendFx">;
+export type MarketDataStore = Pick<
+  FileBookStore,
+  "dataHome" | "load" | "appendPrice" | "appendFx" | "acceptFetchedPrice" | "acceptFetchedFx"
+>;
 
 export type MarketDataCoordinatorOptions = {
   store: MarketDataStore;
@@ -45,10 +53,12 @@ export type MarketDataCoordinatorOptions = {
   priceSources: readonly PriceSource[];
   fxSources: readonly FxSource[];
   eurRateSources: readonly HistoricalEurRateSource[];
+  now?: () => Date;
 };
 
 export type ResolvePriceOptions = {
   provider?: ProviderId;
+  now?: Date;
 };
 
 type PendingPrice = {
@@ -56,6 +66,8 @@ type PendingPrice = {
   providers: readonly ProviderId[];
   providerIndex: number;
   lastFailure: ProviderFailure | undefined;
+  resolutionKey: string;
+  cycle: string;
 };
 
 type PendingFx = {
@@ -63,11 +75,30 @@ type PendingFx = {
   providers: readonly ProviderId[];
   providerIndex: number;
   lastFailure: ProviderFailure | undefined;
+  resolutionKey: string;
+  cycle: string;
 };
 
 type ProviderSelection =
   | { ok: true; providers: readonly ProviderId[] }
   | { ok: false; provider: ProviderId | "none"; error: ProviderFailure };
+
+export type ManualMarkConflict = {
+  kind: "price" | "fx";
+  subject: string;
+  asOf: string;
+  manual: string;
+  fetched: string;
+  currency: string;
+  action: "kept" | "replaced";
+};
+
+export type ValuationRefreshReport = {
+  cycle: string;
+  prices: PriceFetchReport;
+  fx: FxFetchReport;
+  conflicts: readonly ManualMarkConflict[];
+};
 
 const PRICE_ROUTE_BY_INSTRUMENT_TYPE = {
   stock: "price:stock",
@@ -83,6 +114,8 @@ export class MarketDataCoordinator {
   private readonly priceSources: readonly PriceSource[];
   private readonly fxSources: readonly FxSource[];
   private readonly eurRateSources: readonly HistoricalEurRateSource[];
+  private readonly now: () => Date;
+  private readonly resolutions: DailyResolutions;
 
   constructor(options: MarketDataCoordinatorOptions) {
     this.store = options.store;
@@ -90,6 +123,146 @@ export class MarketDataCoordinator {
     this.priceSources = options.priceSources;
     this.fxSources = options.fxSources;
     this.eurRateSources = options.eurRateSources;
+    this.now = options.now ?? (() => new Date());
+    this.resolutions = new DailyResolutions(this.store.dataHome);
+  }
+
+  async refreshValuation(
+    asOf: string,
+    options: { replaceManual?: boolean } = {},
+  ): Promise<Result<{ snapshot: BookSnapshot; report: ValuationRefreshReport }>> {
+    const date = IsoDateSchema.safeParse(asOf);
+    if (!date.success)
+      return fail({
+        type: "validation",
+        message: "Invalid valuation date.",
+        hint: "Use YYYY-MM-DD.",
+      });
+    return withRefreshLock(this.store.dataHome, async () => {
+      const initial = this.store.load();
+      if (!initial.ok) return fail(initial.error);
+      const positions = getPositions(initial.data, date.data);
+      if (!positions.ok) return fail(positions.error);
+      const now = this.now();
+      const currencies = new Set(positions.data.cash.map((entry) => entry.currency));
+      const priceNeeds: PriceNeed[] = [];
+      for (const position of positions.data.positions) {
+        const instrument = initial.data.instruments.find(
+          (value) => value.id === position.instrument,
+        );
+        if (instrument === undefined) throw new Error("Position refers to an unknown instrument.");
+        priceNeeds.push({
+          instrument,
+          identifier: instrument.id,
+          asOf: dailyTarget(date.data, instrument.type === "crypto", now),
+        });
+        currencies.add(instrument.quoteCurrency);
+      }
+      const prices = await this.resolvePrices(priceNeeds, { now });
+      if (!prices.ok) return fail(prices.error);
+      const fxNeeds: FxNeed[] = [...currencies]
+        .filter((currency) => currency !== "EUR")
+        .map((currency) => ({
+          currency,
+          asOf: dailyTarget(
+            date.data,
+            findBinding(this.config, "currency", currency)?.provider === "coingecko",
+            now,
+          ),
+        }));
+      const fx = await this.resolveFxRates(fxNeeds, { now });
+      if (!fx.ok) return fail(fx.error);
+      const current = this.store.load();
+      if (!current.ok) return fail(current.error);
+      const conflicts = this.resolveManualConflicts(
+        initial.data,
+        current.data,
+        prices.data,
+        fx.data,
+        options.replaceManual === true,
+      );
+      if (!conflicts.ok) return fail(conflicts.error);
+      const snapshot = this.store.load();
+      if (!snapshot.ok) return fail(snapshot.error);
+      return succeed({
+        snapshot: snapshot.data,
+        report: {
+          cycle: dailyCycle(now),
+          prices: prices.data,
+          fx: fx.data,
+          conflicts: conflicts.data,
+        },
+      });
+    });
+  }
+
+  private resolveManualConflicts(
+    initial: BookSnapshot,
+    current: BookSnapshot,
+    prices: PriceFetchReport,
+    fx: FxFetchReport,
+    replace: boolean,
+  ): Result<readonly ManualMarkConflict[]> {
+    const conflicts: ManualMarkConflict[] = [];
+    for (const candidate of prices.resolved) {
+      const manual = priceStampAt(candidate.instrument, candidate.asOf, current.prices);
+      if (
+        manual?.provenance.kind !== "manual" ||
+        manual.asOf !== candidate.asOf ||
+        MoneyValue.from(manual.price).subtract(MoneyValue.from(candidate.price)).isZero()
+      )
+        continue;
+      if (replace) {
+        const expected = initial.prices.filter(
+          (mark) =>
+            mark.instrument === candidate.instrument &&
+            mark.asOf === candidate.asOf &&
+            mark.provenance.kind === "manual",
+        );
+        const accepted = this.store.acceptFetchedPrice(candidate, expected);
+        if (!accepted.ok) return fail(accepted.error);
+      }
+      conflicts.push({
+        kind: "price",
+        subject: candidate.instrument,
+        asOf: candidate.asOf,
+        manual: manual.price.amount,
+        fetched: candidate.price.amount,
+        currency: candidate.price.currency,
+        action: replace ? "replaced" : "kept",
+      });
+    }
+    for (const candidate of fx.resolved) {
+      const manual = fxStampAt(candidate.pair.slice(0, -4), candidate.asOf, current.fx);
+      if (
+        manual?.provenance.kind !== "manual" ||
+        manual.asOf !== candidate.asOf ||
+        MoneyValue.from({ amount: manual.rate, currency: "EUR" })
+          .subtract(MoneyValue.from({ amount: candidate.rate, currency: "EUR" }))
+          .isZero()
+      )
+        continue;
+      if (replace) {
+        const expected = initial.fx.filter(
+          (mark) =>
+            mark.pair === candidate.pair &&
+            mark.asOf === candidate.asOf &&
+            mark.provenance.kind === "manual",
+        );
+        const accepted = this.store.acceptFetchedFx(candidate, expected);
+        if (!accepted.ok) return fail(accepted.error);
+      }
+      conflicts.push({
+        kind: "fx",
+        subject: candidate.pair,
+        asOf: candidate.asOf,
+        manual: manual.rate,
+        fetched: candidate.rate,
+        currency: "EUR",
+        action: replace ? "replaced" : "kept",
+      });
+    }
+    return succeed(conflicts);
   }
 
   async resolvePrices(
@@ -98,20 +271,47 @@ export class MarketDataCoordinator {
   ): Promise<Result<PriceFetchReport>> {
     const snapshot = this.store.load();
     if (!snapshot.ok) return fail(snapshot.error);
+    const records = this.resolutions.load();
+    if (!records.ok) return fail(records.error);
+    const cycle = dailyCycle(options.now ?? this.now());
 
     const needs = uniquePriceNeeds(requestedNeeds);
     const pending = new Map<string, PendingPrice>();
     const failures: PriceFetchFailure[] = [];
+    const reused: PriceObservation[] = [];
     let cached = 0;
 
     for (const need of needs) {
-      if (priceIsCached(snapshot.data.prices, need)) {
-        cached += 1;
-        continue;
-      }
       const selection = selectPriceProviders(need, this.config, options.provider);
       if (!selection.ok) {
         failures.push({ need, provider: selection.provider, error: selection.error });
+        continue;
+      }
+      const resolutionKey = JSON.stringify([
+        "price",
+        need.instrument.id,
+        need.instrument.type,
+        need.instrument.quoteCurrency,
+        need.asOf,
+        selection.providers.map((provider) => [
+          provider,
+          providerPriceNeed(need, provider, this.config).identifier,
+        ]),
+      ]);
+      const cachedRecord = cachedResolution(
+        records.data,
+        resolutionKey,
+        cycle,
+        need.asOf,
+        snapshot.data,
+      );
+      if (
+        cachedRecord?.observation.kind === "price" &&
+        cachedRecord.observation.mark.provenance.kind === "fetched"
+      ) {
+        const mark = cachedRecord.observation.mark;
+        reused.push({ ...mark, provenance: cachedRecord.observation.mark.provenance });
+        cached += 1;
         continue;
       }
       pending.set(priceNeedKey(need), {
@@ -119,6 +319,8 @@ export class MarketDataCoordinator {
         providers: selection.providers,
         providerIndex: 0,
         lastFailure: undefined,
+        resolutionKey,
+        cycle,
       });
     }
 
@@ -140,7 +342,13 @@ export class MarketDataCoordinator {
       }
     }
 
-    return succeed({ requested: needs.length, cached, fetched, failures });
+    return succeed({
+      requested: needs.length,
+      cached,
+      fetched,
+      resolved: [...reused, ...fetched],
+      failures,
+    });
   }
 
   async resolveFxRates(
@@ -149,20 +357,45 @@ export class MarketDataCoordinator {
   ): Promise<Result<FxFetchReport>> {
     const snapshot = this.store.load();
     if (!snapshot.ok) return fail(snapshot.error);
+    const records = this.resolutions.load();
+    if (!records.ok) return fail(records.error);
+    const cycle = dailyCycle(options.now ?? this.now());
 
     const needs = uniqueFxNeeds(requestedNeeds);
     const pending = new Map<string, PendingFx>();
     const failures: FxFetchFailure[] = [];
+    const reused: FxObservation[] = [];
     let cached = 0;
 
     for (const need of needs) {
-      if (fxIsCached(snapshot.data.fx, need)) {
-        cached += 1;
-        continue;
-      }
       const selection = selectFxProviders(need, this.config, options.provider);
       if (!selection.ok) {
         failures.push({ need, provider: selection.provider, error: selection.error });
+        continue;
+      }
+      const resolutionKey = JSON.stringify([
+        "fx",
+        need.currency,
+        need.asOf,
+        selection.providers.map((provider) => [
+          provider,
+          providerFxNeed(need, provider, this.config).identifier,
+        ]),
+      ]);
+      const cachedRecord = cachedResolution(
+        records.data,
+        resolutionKey,
+        cycle,
+        need.asOf,
+        snapshot.data,
+      );
+      if (
+        cachedRecord?.observation.kind === "fx" &&
+        cachedRecord.observation.mark.provenance.kind === "fetched"
+      ) {
+        const mark = cachedRecord.observation.mark;
+        reused.push({ ...mark, provenance: cachedRecord.observation.mark.provenance });
+        cached += 1;
         continue;
       }
       pending.set(fxNeedKey(need), {
@@ -170,6 +403,8 @@ export class MarketDataCoordinator {
         providers: selection.providers,
         providerIndex: 0,
         lastFailure: undefined,
+        resolutionKey,
+        cycle,
       });
     }
 
@@ -190,7 +425,13 @@ export class MarketDataCoordinator {
       }
     }
 
-    return succeed({ requested: needs.length, cached, fetched, failures });
+    return succeed({
+      requested: needs.length,
+      cached,
+      fetched,
+      resolved: [...reused, ...fetched],
+      failures,
+    });
   }
 
   async resolveHistoricalEurRate(
@@ -338,6 +579,13 @@ export class MarketDataCoordinator {
       }
       const appended = this.store.appendFx(observation.data);
       if (!appended.ok) throw new CoordinatorStorageError(appended.error);
+      const recorded = this.resolutions.save({
+        key: item.resolutionKey,
+        cycle: item.cycle,
+        checkedAt: this.now().toISOString(),
+        observation: { kind: "fx", mark: observation.data },
+      });
+      if (!recorded.ok) throw new CoordinatorStorageError(recorded.error);
       pending.delete(key);
       fetched.push(observation.data);
     }
@@ -412,6 +660,13 @@ export class MarketDataCoordinator {
       if (!appended.ok) {
         throw new CoordinatorStorageError(appended.error);
       }
+      const recorded = this.resolutions.save({
+        key: item.resolutionKey,
+        cycle: item.cycle,
+        checkedAt: this.now().toISOString(),
+        observation: { kind: "price", mark: observation.data },
+      });
+      if (!recorded.ok) throw new CoordinatorStorageError(recorded.error);
       pending.delete(key);
       fetched.push(observation.data);
     }
@@ -691,23 +946,9 @@ function uniquePriceNeeds(needs: readonly PriceNeed[]): readonly PriceNeed[] {
 }
 
 function fxNeedKey(need: FxNeed): string {
-  return `${need.currency}:${need.asOf}:${need.mode}`;
+  return `${need.currency}:${need.asOf}`;
 }
 
 function priceNeedKey(need: PriceNeed): string {
-  return `${need.instrument.id}:${need.asOf}:${need.mode}`;
-}
-
-function fxIsCached(fx: readonly FxStamp[], need: FxNeed): boolean {
-  return fx.some((stamp) => {
-    if (stamp.pair !== `${need.currency}/EUR`) return false;
-    return need.mode === "historical" && stamp.asOf <= need.asOf;
-  });
-}
-
-function priceIsCached(prices: readonly PriceStamp[], need: PriceNeed): boolean {
-  return prices.some((stamp) => {
-    if (stamp.instrument !== need.instrument.id) return false;
-    return need.mode === "historical" && stamp.asOf <= need.asOf;
-  });
+  return `${need.instrument.id}:${need.asOf}`;
 }

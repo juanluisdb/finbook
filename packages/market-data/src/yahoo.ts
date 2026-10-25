@@ -1,44 +1,33 @@
 import YahooFinance from "yahoo-finance2";
-import { IsoDateSchema, MoneyValue, type Instrument } from "@finbook/core";
-
+import { CurrencySchema, IsoDateSchema, MoneyValue, TimeZoneSchema } from "@finbook/core";
+import { z } from "zod";
 import { createRetryingFetch } from "./http.js";
-import {
-  type PriceNeed,
-  type PriceOutcome,
-  type PriceSource,
-  type ProviderFailure,
-} from "./contracts.js";
-import { validateLatestObservationTime } from "./latest-observation.js";
+import { type PriceNeed, type PriceOutcome, type PriceSource } from "./contracts.js";
 
-const MAX_LATEST_QUOTE_AGE_HOURS = 7 * 24;
-
-export type YahooQuote = {
-  symbol: string;
-  currency?: string;
-  regularMarketPrice?: number;
-  regularMarketTime?: Date;
+export type YahooHistoryPoint = { date: Date; close: number | null };
+export type YahooChartWindow = { from: string; to: string };
+export type YahooChart = {
+  currency: string;
+  timeZone: string;
+  quotes: readonly YahooHistoryPoint[];
 };
-
-export type YahooHistoryPoint = {
-  date: Date;
-  close: number | null;
-};
-
-export type YahooChartWindow = {
-  from: string;
-  to: string;
-};
-
-export type YahooGateway = {
-  quote(symbols: readonly string[]): Promise<readonly YahooQuote[]>;
-  chart(symbol: string, window: YahooChartWindow): Promise<readonly YahooHistoryPoint[]>;
-};
-
+export type YahooGateway = { chart(symbol: string, window: YahooChartWindow): Promise<YahooChart> };
 export type YahooSourceOptions = {
   gateway?: YahooGateway;
   fetchImplementation?: typeof fetch;
   now?: () => Date;
 };
+
+const ChartSchema = z
+  .object({
+    meta: z
+      .object({ currency: CurrencySchema, exchangeTimezoneName: TimeZoneSchema })
+      .passthrough(),
+    quotes: z.array(
+      z.object({ date: z.coerce.date(), close: z.number().finite().nullable() }).passthrough(),
+    ),
+  })
+  .passthrough();
 
 export class YahooSource implements PriceSource {
   readonly id = "yahoo" as const;
@@ -50,120 +39,70 @@ export class YahooSource implements PriceSource {
     this.now = options.now ?? (() => new Date());
   }
 
-  async fetchPrices(needs: readonly PriceNeed[]): Promise<readonly PriceOutcome[]> {
-    const outcomes = new Map<string, PriceOutcome>();
-    const current = needs.filter((need) => need.mode === "latest");
-    const historical = needs.filter((need) => need.mode === "historical");
-
-    if (current.length > 0) await this.fetchCurrent(current, outcomes);
-    await Promise.all(historical.map(async (need) => this.fetchHistorical(need, outcomes)));
-
-    return needs.map(
-      (need) =>
-        outcomes.get(priceNeedKey(need)) ?? {
-          need,
-          ok: false,
-          error: { kind: "invalid-response", message: "Yahoo omitted a requested price." },
-        },
-    );
+  fetchPrices(needs: readonly PriceNeed[]): Promise<readonly PriceOutcome[]> {
+    return Promise.all(needs.map((need) => this.fetchPrice(need)));
   }
 
-  private async fetchCurrent(
-    needs: readonly PriceNeed[],
-    outcomes: Map<string, PriceOutcome>,
-  ): Promise<void> {
-    let quotes: readonly YahooQuote[];
+  private async fetchPrice(need: PriceNeed): Promise<PriceOutcome> {
+    let chart: YahooChart;
     try {
-      quotes = await this.gateway.quote(needs.map((need) => need.identifier));
-    } catch (error) {
-      const failure: ProviderFailure = {
-        kind: "unavailable",
-        message: error instanceof Error ? error.message : "Yahoo quote request failed.",
+      chart = await this.gateway.chart(need.identifier, yahooChartWindow(need.asOf));
+    } catch {
+      return {
+        need,
+        ok: false,
+        error: { kind: "unavailable", message: "Yahoo daily price request failed." },
       };
-      for (const need of needs)
-        outcomes.set(priceNeedKey(need), { need, ok: false, error: failure });
-      return;
     }
-
-    for (const need of needs) {
-      const quote = quotes.find((candidate) => candidate.symbol === need.identifier);
-      if (quote === undefined) {
-        outcomes.set(priceNeedKey(need), {
-          need,
-          ok: false,
-          error: { kind: "not-found", message: `Yahoo returned no quote for ${need.identifier}.` },
-        });
-        continue;
-      }
-      outcomes.set(priceNeedKey(need), normalizeQuote(need, quote, this.now()));
-    }
-  }
-
-  private async fetchHistorical(
-    need: PriceNeed,
-    outcomes: Map<string, PriceOutcome>,
-  ): Promise<void> {
-    let points: readonly YahooHistoryPoint[];
-    try {
-      points = await this.gateway.chart(need.identifier, yahooChartWindow(need.asOf));
-    } catch (error) {
-      outcomes.set(priceNeedKey(need), {
-        need,
-        ok: false,
-        error: {
-          kind: "unavailable",
-          message: error instanceof Error ? error.message : "Yahoo historical request failed.",
-        },
-      });
-      return;
-    }
-    let selected: YahooHistoryPoint | undefined;
-    for (const point of points) {
-      const date = dateOnly(point.date);
-      if (date === undefined || date > need.asOf || point.close === null) continue;
-      if (!Number.isFinite(point.close) || point.close <= 0) continue;
-      const selectedDate = selected === undefined ? undefined : dateOnly(selected.date);
-      if (selected === undefined || (selectedDate !== undefined && date > selectedDate)) {
-        selected = point;
-      }
-    }
-    if (selected === undefined) {
-      outcomes.set(priceNeedKey(need), {
-        need,
-        ok: false,
-        error: { kind: "not-found", message: `Yahoo returned no history for ${need.identifier}.` },
-      });
-      return;
-    }
-    const date = dateOnly(selected.date);
-    if (date === undefined || selected.close === null) {
-      outcomes.set(priceNeedKey(need), {
+    if (chart.currency !== need.instrument.quoteCurrency) {
+      return {
         need,
         ok: false,
         error: {
           kind: "invalid-response",
-          message: `Yahoo returned invalid history for ${need.identifier}.`,
+          message: "Yahoo daily quote currency does not match the instrument.",
         },
-      });
-      return;
+      };
     }
-    outcomes.set(priceNeedKey(need), {
+    let selected: { asOf: string; close: number } | undefined;
+    const tradingDate = new Intl.DateTimeFormat("en-CA", {
+      timeZone: chart.timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    for (const point of chart.quotes) {
+      if (point.close === null || !Number.isFinite(point.close) || point.close <= 0) continue;
+      const parts = tradingDate.formatToParts(point.date);
+      const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+      const date = IsoDateSchema.safeParse(`${values.year}-${values.month}-${values.day}`);
+      if (!date.success || date.data > need.asOf) continue;
+      if (selected === undefined || date.data > selected.asOf)
+        selected = { asOf: date.data, close: point.close };
+    }
+    if (selected === undefined) {
+      return {
+        need,
+        ok: false,
+        error: {
+          kind: "not-found",
+          message: `Yahoo returned no daily close for ${need.identifier}.`,
+        },
+      };
+    }
+    return {
       need,
       ok: true,
       data: {
         instrument: need.instrument.id,
-        price: {
-          amount: plainAmount(selected.close, need.instrument),
-          currency: need.instrument.quoteCurrency,
-        },
-        asOf: date,
-        provenance: {
-          kind: "fetched",
-          source: "yahoo",
-          retrievedAt: this.now().toISOString(),
-        },
+        price: MoneyValue.from({
+          amount: String(selected.close),
+          currency: chart.currency,
+        }).toMoney(),
+        asOf: selected.asOf,
+        provenance: { kind: "fetched", source: "yahoo", retrievedAt: this.now().toISOString() },
       },
-    });
+    };
   }
 }
 
@@ -175,99 +114,27 @@ function createYahooGateway(fetchImplementation: typeof fetch = globalThis.fetch
     queue: { concurrency: 4 },
   });
   return {
-    async quote(symbols) {
-      const quotes = await client.quote([...symbols], {
-        fields: ["symbol", "regularMarketPrice", "currency", "regularMarketTime"],
-        return: "array",
-      });
-      return quotes.map((quote) => ({
-        symbol: quote.symbol,
-        currency: quote.currency,
-        regularMarketPrice: quote.regularMarketPrice,
-        regularMarketTime: quote.regularMarketTime,
-      }));
-    },
     async chart(symbol, window) {
-      const start = new Date(window.from);
-      const end = new Date(window.to);
-      const chart = await client.chart(symbol, {
-        period1: start,
-        period2: end,
+      const response = await client.chart(symbol, {
+        period1: new Date(window.from),
+        period2: new Date(window.to),
         interval: "1d",
         return: "array",
       });
-      return chart.quotes.map((quote) => ({ date: quote.date, close: quote.close }));
+      const parsed = ChartSchema.parse(response);
+      return {
+        currency: parsed.meta.currency,
+        timeZone: parsed.meta.exchangeTimezoneName,
+        quotes: parsed.quotes,
+      };
     },
   };
 }
 
 function yahooChartWindow(asOf: string): YahooChartWindow {
   const end = new Date(`${asOf}T00:00:00.000Z`);
-  const from = new Date(end.getTime() - 9 * 86_400_000);
-  const to = new Date(end.getTime() + 86_400_000);
-  return { from: from.toISOString(), to: to.toISOString() };
-}
-
-function normalizeQuote(need: PriceNeed, quote: YahooQuote, now: Date): PriceOutcome {
-  if (quote.currency !== need.instrument.quoteCurrency) {
-    return {
-      need,
-      ok: false,
-      error: {
-        kind: "invalid-response",
-        message: `Yahoo returned ${quote.currency ?? "no currency"} for ${need.instrument.quoteCurrency}.`,
-      },
-    };
-  }
-  if (
-    quote.regularMarketPrice === undefined ||
-    !Number.isFinite(quote.regularMarketPrice) ||
-    quote.regularMarketPrice <= 0
-  ) {
-    return {
-      need,
-      ok: false,
-      error: {
-        kind: "invalid-response",
-        message: `Yahoo returned an incomplete quote for ${need.identifier}.`,
-      },
-    };
-  }
-  const timestampFailure = validateLatestObservationTime({
-    provider: "Yahoo",
-    identifier: need.identifier,
-    observedAt: quote.regularMarketTime,
-    retrievedAt: now,
-    maxAgeHours: MAX_LATEST_QUOTE_AGE_HOURS,
-  });
-  if (timestampFailure !== undefined) return { need, ok: false, error: timestampFailure };
-  const asOf = need.asOf;
   return {
-    need,
-    ok: true,
-    data: {
-      instrument: need.instrument.id,
-      price: {
-        amount: plainAmount(quote.regularMarketPrice, need.instrument),
-        currency: need.instrument.quoteCurrency,
-      },
-      asOf,
-      provenance: { kind: "fetched", source: "yahoo", retrievedAt: now.toISOString() },
-    },
+    from: new Date(end.getTime() - 10 * 86_400_000).toISOString(),
+    to: new Date(end.getTime() + 2 * 86_400_000).toISOString(),
   };
-}
-
-function plainAmount(value: number, instrument: Instrument): string {
-  return MoneyValue.from({ amount: String(value), currency: instrument.quoteCurrency }).toMoney()
-    .amount;
-}
-
-function dateOnly(value: Date): string | undefined {
-  if (!Number.isFinite(value.getTime())) return undefined;
-  const date = value.toISOString().slice(0, 10);
-  return IsoDateSchema.safeParse(date).success ? date : undefined;
-}
-
-function priceNeedKey(need: PriceNeed): string {
-  return `${need.instrument.id}:${need.asOf}:${need.mode}`;
 }

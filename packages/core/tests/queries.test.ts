@@ -193,7 +193,7 @@ describe("replay and queries", () => {
     });
   });
 
-  it("uses the last trade price as a fallback when no price stamp exists", () => {
+  it("does not treat a transaction price as valuation evidence", () => {
     const result = getPositions(
       snapshot({
         prices: [],
@@ -208,9 +208,48 @@ describe("replay and queries", () => {
           {
             instrument: "HROW",
             quantity: "1",
-            valueEur: { amount: "36", currency: "EUR" },
+            valueEur: null,
           },
         ],
+        holes: expect.arrayContaining([expect.objectContaining({ sourceId: "price:HROW" })]),
+      },
+    });
+  });
+
+  it("prefers manual evidence on the same date and returns the selected evidence", () => {
+    const initial = snapshot();
+    const book = snapshot({
+      prices: [
+        ...initial.prices,
+        {
+          instrument: "HROW",
+          price: { amount: "999", currency: "USD" },
+          asOf: "2026-04-01",
+          provenance: { kind: "fetched", source: "yahoo", retrievedAt: "2026-04-02T06:00:00Z" },
+        },
+      ],
+      fx: [
+        ...initial.fx,
+        {
+          pair: "USD/EUR",
+          rate: "0.1",
+          asOf: "2026-04-01",
+          provenance: { kind: "fetched", source: "ecb", retrievedAt: "2026-04-02T06:00:00Z" },
+        },
+      ],
+    });
+
+    expect(getPositions(book, "2026-05-01")).toMatchObject({
+      ok: true,
+      data: {
+        positions: [
+          {
+            valueEur: { amount: "36", currency: "EUR" },
+            priceMark: { asOf: "2026-04-01", source: "manual" },
+            fxMark: { asOf: "2026-04-01", source: "manual" },
+          },
+        ],
+        cash: [{ fxMark: { asOf: "2026-04-01", source: "manual" } }],
       },
     });
   });

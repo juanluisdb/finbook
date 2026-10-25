@@ -94,13 +94,21 @@ The replay ordering and mutation guarantees live in `packages/core/src/domain/re
 
 `show glance` adds total value, contributed capital, the difference between them, and breakdowns by platform, asset type, and native currency.
 
-For date `D`, finbook replays events through `D`, selects the latest eligible price and FX stamp on or before `D`, and values the resulting state. When no price stamp exists, the latest eligible trade price is the instrument-price fallback.
+For date `D`, finbook replays events through `D`, selects the latest eligible price and FX stamp on or before `D`, and values the resulting state. A manual mark wins a same-date tie against a fetched observation; otherwise the later appended mark wins the tie. A transaction price is not valuation evidence and never supplies a fallback.
+
+Position queries expose the dates and sources of selected price and FX observations. The glance includes these positions alongside its aggregates. EUR cash needs no conversion observation.
 
 EUR cash needs no FX stamp. Every other live currency needs a currency-to-EUR stamp.
 
 Missing valuation evidence stays visible as a hole. Affected values, totals, and weights are unknown rather than guessed; the remaining positions and cash are still returned.
 
-An explicit latest-data refresh saves only provider observations with a trustworthy recent timestamp. Missing, stale, or implausibly future timestamps fail the affected fetch instead of making an old value look current.
+Daily refresh cycles start at 06:00 UTC, independently of the book timezone. For a cycle dated `C`, stock, ETF, ETC, fund, and fiat FX requests target observations through `C - 1`; crypto requests target the midnight UTC snapshot on `C`. An earlier view date caps each target. Current holdings remain current even when their valuation evidence is older.
+
+The first explicit `--fetch` for an unresolved subject checks its configured providers. Successful resolutions are reused within the cycle, including across process restarts; an exact-date result remains reusable in later cycles. A lagging result can be checked again in the next cycle. Failed subjects remain retryable. A provider binding change or a newly held subject creates a distinct need.
+
+Observations retain their actual economic dates. A successful check returning Friday's close does not turn it into a Monday observation. Each refresh reports fetched, reused, and failed needs. The operation is on demand and performs no scheduling itself.
+
+When a fetched observation differs from a same-date manual mark, the manual value remains selected and the CLI reports both values. `--fetch --replace-manual` persistently accepts the saved provider candidate by removing the same-date manual marks. Acceptance rejects a concurrent manual change rather than overwriting it unseen. Identical values need no conflict warning.
 
 The difference between total value and contributed capital is a portfolio glance, not realized gain, tax profit, or performance attribution.
 
