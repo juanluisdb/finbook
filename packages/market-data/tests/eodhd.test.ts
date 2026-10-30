@@ -41,41 +41,36 @@ function source(fetchImplementation: typeof fetch, apiKey = "test-secret"): Eodh
 }
 
 describe("EODHD source", () => {
-  it("fetches a raw daily close once and preserves its actual date", async () => {
-    const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(
+  it("preserves raw closes in native history and single-date requests", async () => {
+    const fetchImplementation = vi.fn<typeof fetch>().mockImplementation(async () =>
       jsonResponse([
-        {
-          date: "2026-03-02",
-          open: 101,
-          high: 102,
-          low: 100,
-          close: 101.25,
-          adjusted_close: 99.5,
-          volume: 0,
-        },
+        { date: "2026-02-27", close: 100.5, adjusted_close: 98.5 },
+        { date: "2026-03-02", close: 101.25, adjusted_close: 99.5 },
+        { date: "2026-03-03", close: 103.75, adjusted_close: 101 },
       ]),
     );
-
-    const result = await source(fetchImplementation).fetchPrices([need()]);
-
-    expect(result).toMatchObject([
-      {
-        ok: true,
-        data: {
+    const provider = source(fetchImplementation);
+    const result = await provider.fetchPriceHistory({
+      instrument: fund,
+      identifier: "FUND.X.EUFUND",
+      from: "2026-02-27",
+      through: "2026-03-03",
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      data: [
+        { instrument: "fund-x", price: { amount: "100.5", currency: "EUR" }, asOf: "2026-02-27" },
+        { instrument: "fund-x", price: { amount: "101.25", currency: "EUR" }, asOf: "2026-03-02" },
+        {
           instrument: "fund-x",
-          price: { amount: "101.25", currency: "EUR" },
-          asOf: "2026-03-02",
-          provenance: {
-            kind: "fetched",
-            source: "eodhd",
-            retrievedAt: "2026-03-03T22:00:00.000Z",
-          },
+          price: { amount: "103.75", currency: "EUR" },
+          asOf: "2026-03-03",
+          provenance: { kind: "fetched", source: "eodhd", retrievedAt: "2026-03-03T22:00:00.000Z" },
         },
-      },
-    ]);
+      ],
+    });
     expect(fetchImplementation).toHaveBeenCalledOnce();
     const requested = fetchImplementation.mock.calls[0]?.[0];
-    expect(requested).toBeInstanceOf(URL);
     if (!(requested instanceof URL)) throw new Error("Expected an EODHD URL");
     expect(requested.pathname).toBe("/api/eod/FUND.X.EUFUND");
     expect(Object.fromEntries(requested.searchParams)).toEqual({
@@ -83,9 +78,15 @@ describe("EODHD source", () => {
       fmt: "json",
       period: "d",
       order: "d",
-      from: "2026-02-22",
       to: "2026-03-03",
     });
+    expect(await provider.fetchPrices([need()])).toMatchObject([
+      { ok: true, data: { asOf: "2026-03-03", price: { amount: "103.75", currency: "EUR" } } },
+    ]);
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
+    const pointRequest = fetchImplementation.mock.calls[1]?.[0];
+    if (!(pointRequest instanceof URL)) throw new Error("Expected an EODHD URL");
+    expect(pointRequest.searchParams.get("from")).toBe("2026-02-22");
   });
 
   it("selects the newest eligible historical close and retains its date", async () => {
@@ -123,18 +124,18 @@ describe("EODHD source", () => {
 
   it("rejects absent credentials and unsupported instruments without requesting data", async () => {
     const fetchImplementation = vi.fn<typeof fetch>();
-    const stockNeed: PriceNeed = {
+    const etfNeed: PriceNeed = {
       ...need(),
       instrument: InstrumentSchema.parse({
-        id: "stock-x",
-        name: "Stock X",
-        type: "stock",
+        id: "etf-x",
+        name: "ETF X",
+        type: "etf",
         quoteCurrency: "EUR",
       }),
     };
 
     const missingKey = await source(fetchImplementation, "").fetchPrices([need()]);
-    const unsupported = await source(fetchImplementation).fetchPrices([stockNeed]);
+    const unsupported = await source(fetchImplementation).fetchPrices([etfNeed]);
 
     expect(missingKey).toMatchObject([{ ok: false, error: { kind: "unauthorized" } }]);
     expect(unsupported).toMatchObject([{ ok: false, error: { kind: "unsupported" } }]);

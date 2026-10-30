@@ -78,6 +78,35 @@ type Bucket = {
 
 type BucketMap = Map<string, Bucket>;
 
+export function getHistory(
+  snapshot: BookSnapshot,
+  from: string,
+  through: string,
+): Result<readonly Glance[]> {
+  const start = IsoDateSchema.safeParse(from);
+  const end = IsoDateSchema.safeParse(through);
+  if (!start.success || !end.success || start.data > end.data) {
+    return fail(
+      validationError("Invalid history interval.", "Use YYYY-MM-DD with from on or before to."),
+    );
+  }
+  const earliest = snapshot.events.reduce<string | undefined>(
+    (date, event) => (date === undefined || event.date < date ? event.date : date),
+    undefined,
+  );
+  if (earliest === undefined || earliest > end.data) return { ok: true, data: [] };
+  const rows: Glance[] = [];
+  let date = start.data > earliest ? start.data : earliest;
+  while (date <= end.data) {
+    const glance = getGlance(snapshot, date);
+    if (!glance.ok) return glance;
+    rows.push(glance.data);
+    if (date === end.data) break;
+    date = new Date(Date.parse(`${date}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+  }
+  return { ok: true, data: rows };
+}
+
 export function getPositions(snapshot: BookSnapshot, asOf: string): Result<PositionsResult> {
   const valuation = deriveValuation(snapshot, asOf);
   if (!valuation.ok) return fail(valuation.error);

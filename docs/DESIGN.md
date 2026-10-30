@@ -22,7 +22,7 @@ packages/cli  --------->  packages/market-data
 
 `packages/core` owns schemas, decimal arithmetic, event application, replay, queries, the local file adapter, and the shared result model.
 
-`packages/market-data` owns daily refresh planning, normalized provider contracts, non-secret source configuration, provider adapters, routing, retries, and incremental cache writes. It derives valuation needs from core queries and depends on core types and storage, while core has no knowledge of provider protocols or refresh cycles.
+`packages/market-data` owns historical acquisition and daily refresh planning, normalized provider contracts, non-secret source configuration, provider adapters, routing, retries, and incremental cache writes. It derives valuation needs from core queries and depends on core types and storage, while core has no knowledge of provider protocols or refresh cycles.
 
 `packages/cli` owns process boot, environment parsing, Commander registration, input preparation, human and JSON rendering, and exit codes. It composes core and market data without moving their rules into command handlers.
 
@@ -35,6 +35,8 @@ The public package surfaces are `packages/core/src/index.ts` and `packages/marke
 Event application is a pure state transition in `packages/core/src/domain/apply.ts::apply`.
 
 Replay in `packages/core/src/domain/replay.ts::replayEvents` orders the selected events and folds them through `apply`. Queries in `packages/core/src/domain/queries.ts::getPositions` and `packages/core/src/domain/queries.ts::getGlance` replay a snapshot and then value the derived state.
+
+`packages/core/src/domain/queries.ts::getHistory` composes the same dated glance over an inclusive daily interval. It stores no derived daily totals and carries no independent accounting rules.
 
 These functions do not read files, environment variables, clocks, or providers. Their inputs contain every fact needed to produce the result.
 
@@ -76,6 +78,7 @@ $FINBOOK_HOME/
   fx.jsonl
   market-data.json
   market-refresh.jsonl
+  market-history.jsonl
 ```
 
 `meta.json` carries the schema version and book timezone. Accounts and instruments are JSON arrays. Events, prices, and FX rates are JSONL so ledger order and append order remain explicit. Market-data configuration is described in [Market data](MARKET_DATA.md).
@@ -86,7 +89,7 @@ The adapter initializes missing book files only on ordinary load or mutation pat
 
 Account and instrument writes replace their JSON file atomically. Event add, replacement, and deletion construct the complete candidate sequence, replay it, and atomically replace `events.jsonl` only after validation succeeds.
 
-Price and FX stamps append one normalized record at a time. Their ordering is useful cache state, and retaining each successful fetch makes interrupted work resumable. Market data writes a resolution receipt only after its observation is persisted; the receipt never substitutes for the observation itself.
+Price and FX stamps append one normalized record at a time. Their ordering is useful cache state, and retaining each successful fetch makes interrupted work resumable. Market data writes a resolution receipt only after all of its observations are persisted; the receipt never substitutes for the observation itself.
 
 `packages/core/src/domain/store.ts::FileBookStore.acceptFetchedPrice` and `packages/core/src/domain/store.ts::FileBookStore.acceptFetchedFx` compare the expected manual records while holding the book lock, then atomically rewrite the affected mark file. They remove only same-date manual records and make the accepted candidate the last fetched record for that date. Event history is untouched.
 

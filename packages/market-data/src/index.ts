@@ -7,3 +7,4 @@ export * from "./contracts.js";
 export { dailyCycle, dailyTarget } from "./daily.js";
 export * from "./http.js";
 export * from "./yahoo.js";
+export type { HistoryRange, HistoryUpdateReport } from "./history.js";

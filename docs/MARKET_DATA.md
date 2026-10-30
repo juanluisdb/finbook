@@ -1,8 +1,8 @@
 # Market-data subsystem
 
-`packages/market-data` resolves daily portfolio valuation needs into validated local stamps. It isolates network providers from the event book, reuses completed work, and preserves partial progress when one request fails.
+`packages/market-data` resolves historical and single-date portfolio valuation needs into validated local stamps. It isolates network providers from the event book, reuses completed work, and preserves partial progress when one request fails.
 
-`packages/market-data/src/coordinator.ts::MarketDataCoordinator.refreshValuation` derives needs for the holdings and cash in a requested core view, resolves daily observations, and handles manual-mark conflicts. The subsystem never changes transactions, schedules work, or fetches without an invoking caller. Historical event-rate resolution is a separate operation.
+`packages/market-data/src/coordinator.ts::MarketDataCoordinator.updateHistory` delegates whole-book historical acquisition to `packages/market-data/src/history.ts::HistoryUpdater`. `packages/market-data/src/coordinator.ts::MarketDataCoordinator.refreshValuation` derives needs for the holdings and cash in a requested core view, resolves daily observations, and handles manual-mark conflicts. The subsystem never changes transactions, schedules work, or fetches without an invoking caller. Historical event-rate resolution is a separate operation.
 
 ## Follow the resolution flow
 
@@ -53,7 +53,7 @@ Instrument bindings require an existing local instrument because the book owns t
 
 Configuration validation rejects duplicate bindings and providers assigned to unsupported routes. Selection also rejects disabled providers and empty effective routes before calling an adapter.
 
-The resolution precedence lives in `packages/market-data/src/coordinator.ts::selectPriceProviders`, `packages/market-data/src/coordinator.ts::selectFxProviders`, and `packages/market-data/src/coordinator.ts::selectHistoricalEurRateProviders`.
+The resolution precedence lives in `packages/market-data/src/routing.ts::selectPriceProviders`, `packages/market-data/src/routing.ts::selectFxProviders`, and `packages/market-data/src/routing.ts::selectHistoricalEurRateProviders`.
 
 ## Keep configuration non-secret
 
@@ -65,6 +65,36 @@ Credentials come from the process environment when `packages/cli/src/main.ts::ma
 
 CoinGecko reads its demo API credential from `FINBOOK_COINGECKO_DEMO_API_KEY`. EODHD reads `FINBOOK_EODHD_API_KEY`. Yahoo and ECB need no configured credential.
 
+## Acquire history from recorded exposures
+
+```text
+recorded events -> end-of-day core queries -> required exposure intervals
+    -> subtract intact source-matching checks -> newest unchecked ranges
+    -> native provider range / batched ECB feed -> validate whole response
+    -> retain interval and latest predecessor -> append each observation
+    -> persist range check -> report saved, reused, empty and failed work
+```
+
+`packages/market-data/src/history-plan.ts::historyRequirements` queries core at event-date boundaries. Holdings require prices; both foreign cash and a held instrument's quote currency require FX. Subjects are deduplicated across accounts and adjacent exposures merge. Fully sold positions and spent currencies remain historical requirements. This planning introduces no parallel accounting state.
+
+`packages/market-data/src/history.ts::HistoryUpdater` subtracts the union of matching checked intervals and sorts unchecked work by its newest required end date. The completed-date cutoff comes from `packages/market-data/src/daily.ts::dailyTarget`. It uses native range operations rather than repeating single-date calls. Compatible currency needs share a provider batch.
+
+The range contracts live in `packages/market-data/src/contracts.ts::PriceHistorySource` and `packages/market-data/src/contracts.ts::FxHistorySource`. A logical portfolio interval is explicit. When no locally stored predecessor exists, the normalized request leaves its source start open and the adapter requests available historical context. Otherwise incremental requests start at the unchecked range. Only observations within the logical interval and its latest eligible predecessor are retained.
+
+Yahoo history supports fund NAVs and preserves exchange-local dates. Its historical stock closes can use split-adjusted units, so that operation rejects stocks. EODHD history supports funds and stocks and uses raw closes. Default routes remain shared with single-date fetching; a historical stock therefore needs an EODHD binding or route. ECB reads its historical feed once per batch, preserves economic dates, and inverts foreign units per EUR into EUR per foreign unit. No bundled crypto history operation exists.
+
+`packages/market-data/src/history-checks.ts::HistoryChecks` owns append-only `market-history.jsonl` under the book lock. A check records the subject and effective route/binding identity, logical interval, check instant, serving provider, and the actual retained normalized observations. Credentials never enter this identity. `packages/market-data/src/history-checks.ts::checkIsIntact` requires those facts still to exist before a receipt can suppress work. Valid empty checks retain an empty evidence list; errors receive no successful check.
+
+A check is written only after every retained observation is saved. Interrupted commits preserve earlier stamps and leave the range retryable. An unchanged fetched fact can be reused with its original retrieval identity, while a changed latest candidate is appended. Provider failures preserve completed ranges. Storage failures stop the operation. The refresh lock spans the whole update; ordinary book locks cover only local reads and commits.
+
+Historical checks have no expiry, automatic overlap, or corrective recheck command. Late NAVs and corrections within checked periods can stay absent. A new unchecked request may incidentally return older data, and retaining its predecessor can improve an earlier value. Changing a binding or effective route creates distinct work; adding earlier events exposes unchecked earlier intervals.
+
+`packages/market-data/src/history.ts::HistoryUpdateReport` carries checked, reused, empty and failed ranges, saved-observation counts, and manual conflicts. Reads derive values from the saved facts and show missing inputs and selected dates; a successful provider check is not a guarantee of complete portfolio value. Historical update preserves manual marks and reports candidates without accepting replacements.
+
+## Keep acquisition records separate
+
+The explicit whole-book update and the single-date `--fetch` operation have separate request semantics and receipt formats. `market-history.jsonl` records durable intervals; `market-refresh.jsonl` records daily point resolutions. Both append the same core price and FX facts. Neither receipt format is valuation data, and neither proves the other's request completed. Historical event-rate lookup remains independent of both.
+
 ## Resolve daily observations
 
 `packages/market-data/src/daily.ts::dailyCycle` defines the UTC cycle boundary. `packages/market-data/src/daily.ts::dailyTarget` caps price and fiat FX requests at the preceding completed UTC date and crypto requests at the cycle's midnight UTC snapshot. The requested portfolio date is an additional upper bound. Invoking the operation late does not advance these targets into an intraday session.
@@ -73,7 +103,7 @@ A need declares a target economic date. The provider may return an older eligibl
 
 Yahoo is the default price source for stocks, ETFs, funds, and ETCs. It reads daily chart closes, validates the returned quote currency, and interprets the trading date in the exchange timezone. It does not fetch live quotes for portfolio valuation.
 
-EODHD provides fund prices from its daily EOD feed and is opt-in through a source binding. It uses the raw close because adjusted closes belong to return analysis rather than unit valuation. One unresolved fund need costs one request; there is no discovery, bulk feed, or automatic retry.
+EODHD provides fund and stock prices from its daily EOD feed and is opt-in through a source binding. It uses the raw close because adjusted closes belong to return analysis rather than unit valuation. One unresolved single-date need costs one request; there is no discovery, bulk feed, or automatic retry.
 
 CoinGecko uses its dated historical snapshot endpoint for crypto valuation and bound crypto cash. The observation represents midnight UTC on the requested date. Historical event rates retain their separate range-based lookup and are not subject to the valuation refresh cycle.
 

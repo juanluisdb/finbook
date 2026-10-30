@@ -70,9 +70,10 @@ describe("market-data configuration", () => {
     expect(defaultRoute("eur-rate:crypto")).toEqual(["coingecko"]);
   });
 
-  it("offers EODHD for explicit fund bindings without changing the default route", () => {
+  it("offers EODHD for explicit fund and stock bindings without changing the default route", () => {
     expect(providerSupportsRoute("eodhd", "price:fund")).toBe(true);
-    expect(providerSupportsRoute("eodhd", "price:stock")).toBe(false);
+    expect(providerSupportsRoute("eodhd", "price:stock")).toBe(true);
+    expect(defaultRoute("price:stock")).toEqual(["yahoo"]);
     expect(defaultRoute("price:fund")).toEqual(["yahoo"]);
   });
 

@@ -9,7 +9,14 @@ import {
 import { z } from "zod";
 
 import { createRetryingFetch } from "./http.js";
-import { type EurRateNeed, type EurRateOutcome, type FxNeed, type FxOutcome } from "./contracts.js";
+import {
+  type EurRateNeed,
+  type EurRateOutcome,
+  type FxNeed,
+  type FxOutcome,
+  type FxHistoryNeed,
+  type FxHistoryOutcome,
+} from "./contracts.js";
 
 const DEFAULT_BASE_URL = "https://www.ecb.europa.eu/stats/eurofxref";
 const EcbRateSchema = z
@@ -140,6 +147,42 @@ export class EcbSource {
           provenance: this.provenance(),
         },
       };
+    });
+  }
+
+  async fetchFxHistory(needs: readonly FxHistoryNeed[]): Promise<readonly FxHistoryOutcome[]> {
+    if (needs.length === 0) return [];
+    const loaded = await this.loadDays("eurofxref-hist.xml");
+    if (!loaded.ok) return needs.map((need) => ({ need, ok: false, error: loaded.error }));
+    return needs.map((need) => {
+      if (!loaded.data.some((day) => day.rates.some((rate) => rate.currency === need.currency)))
+        return {
+          need,
+          ok: false,
+          error: {
+            kind: "unsupported",
+            message: `ECB does not publish ${need.currency} reference rates.`,
+          },
+        };
+      const data = loaded.data.flatMap((day) => {
+        if (
+          day.date > need.through ||
+          (need.sourceFrom !== undefined && day.date < need.sourceFrom)
+        )
+          return [];
+        const rate = day.rates.find((value) => value.currency === need.currency);
+        return rate === undefined
+          ? []
+          : [
+              {
+                pair: `${need.currency}/EUR`,
+                rate: invert(rate.rate),
+                asOf: day.date,
+                provenance: this.provenance(),
+              },
+            ];
+      });
+      return { need, ok: true, data };
     });
   }
 

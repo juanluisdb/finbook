@@ -41,6 +41,8 @@ export async function main(
         priceSources: [yahoo, coingecko, eodhd],
         fxSources: [ecb, coingecko],
         eurRateSources: [ecb, coingecko],
+        priceHistorySources: [yahoo, eodhd],
+        fxHistorySources: [ecb],
       });
     };
     const program = createProgram(dataHome, { marketDataFactory: marketData });
