@@ -40,6 +40,8 @@ Replay in `packages/core/src/domain/replay.ts::replayEvents` orders the selected
 
 These functions do not read files, environment variables, clocks, or providers. Their inputs contain every fact needed to produce the result.
 
+`packages/core/src/domain/apply.ts::applySell` subtracts disposed units from aggregate holdings before allocating the remaining quantity across lots. The final allocation takes the explicit unit residual; non-final allocations cannot exceed the quantity still unallocated. Proportional cost allocation remains separate from that exact total.
+
 The file adapter and CLI perform effects around this deterministic center. Clocks, ID generators, provider gateways, and fetch implementations are passed in at effect boundaries where tests need control.
 
 ## Parse each boundary once
@@ -85,7 +87,7 @@ $FINBOOK_HOME/
 
 Loading validates every complete file before returning a snapshot. An invalid or empty JSONL record identifies its file and line rather than being skipped.
 
-The adapter initializes missing book files only on ordinary load or mutation paths. `packages/core/src/domain/store.ts::FileBookStore.inspect` reads an existing book without creating it.
+The adapter initializes the complete core file set only when none of those files exist. If some core files exist and others are missing, ordinary reads and mutations fail without recreating them. Configuration-only first use remains valid; optional market-data files do not determine core initialization. `packages/core/src/domain/store.ts::FileBookStore.inspect` reads an existing book without creating it. This detects partial core-file loss; removing the entire core book is indistinguishable from a new home.
 
 Account and instrument writes replace their JSON file atomically. Event add, replacement, and deletion construct the complete candidate sequence, replay it, and atomically replace `events.jsonl` only after validation succeeds.
 
@@ -97,13 +99,19 @@ Temporary files are written in the same directory as their target before rename.
 
 The store keeps the data directory owner-only and regular book files owner-readable and owner-writable on platforms that expose POSIX permissions.
 
+`packages/core/src/version.ts::CURRENT_SCHEMA_VERSION` defines the supported persisted format. Version mismatches stop core reads and mutations without migrating or replacing financial files. An older reader that requires event rates cannot consume rate-free events; restoring a whole version-compatible backup is part of rollback, not a consequence of reverting code alone.
+
+## Keep the book outside the running checkout
+
+`packages/cli/src/environment.ts::loadRuntimeConfig` resolves relative user paths against the caller's directory and derives the protected checkout from the running module's source/built monorepo location. Canonical path comparison includes existing symlinked parents of a not-yet-created data directory. The caller's directory is not the checkout boundary. This prevents accidental placement of private book data; it is not a sandbox against concurrent filesystem changes by the owner.
+
 ## Serialize access to one book
 
 Every store operation that may initialize, read for mutation, or write uses `packages/core/src/domain/lock.ts::withBookLock`.
 
 The lock is an owner-only directory containing a validated owner record with process, host, creation instant, and acquisition token. Directory creation provides mutual exclusion for independent CLI processes.
 
-A live same-host owner fails fast. A definitely dead same-host owner is quarantined and reclaimed. Foreign-host, malformed, missing-owner, and unverifiable locks are uncertain and require human inspection.
+An existing live, abandoned, or uncertain lock prevents the protected operation from running. finbook never reclaims a stale lock automatically: inspecting ownership and subsequently deleting a pathname cannot guarantee that the pathname still belongs to that owner. Failures name the lock and advise waiting for a live owner or confirming that no process uses the book before manual recovery. Failed acquisition cleans up a directory only when that acquisition created it.
 
 Release verifies the acquisition token before removing the lock. A release failure reports that the operation may have committed.
 
@@ -111,7 +119,7 @@ Release verifies the acquisition token before removing the lock. A release failu
 
 This lock protects one local book from concurrent CLI processes. It is not a distributed lock or a synchronization protocol for replicated folders.
 
-`packages/core/src/domain/lock.ts::withRefreshLock` uses a separate per-book refresh lock over the asynchronous provider operation. A competing refresh fails fast and can retry after completion. Ordinary book locks cover only local reads and commits, not network waits. Both locks use the same ownership and dead-process recovery rules.
+`packages/core/src/domain/lock.ts::withRefreshLock` uses a separate per-book refresh lock over the asynchronous provider operation. A competing refresh fails fast and can retry after completion. Ordinary book locks cover only local reads and commits, not network waits. Both locks use the same ownership and manual recovery rules.
 
 ## Prevent stale event edits
 
@@ -142,6 +150,8 @@ An incomplete explicit fetch is an external failure even when it produced useful
 Typed event commands expose only the legal flags for their event variant. File input accepts one canonical event object and reaches the same core mutation boundary.
 
 `packages/cli/src/event-input.ts::parseAddInput` and `packages/cli/src/event-input.ts::parseEditInput` own event option validation. Input preparation resolves defaults and optional historical rates before asking the store to commit.
+
+Event preparation distinguishes required contribution rates from optional reporting evidence. A rate-free optional event triggers no provider call. Explicit `--fetch-rate` must resolve successfully before saving. Typed optional-rate edits expose `--clear-eur-rate`; stale supplied foreign rates require replacement or clearing, while unrelated edits retain them. Core schemas reject orphaned rate provenance and invalid effective dates.
 
 Trade input requires the exact gross amount. Fee source and amount are supplied together; an omitted pair means no fee. Edits preserve an existing fee only while its unit remains unchanged, and require an explicit replacement amount or clear when a quote currency or instrument change would reinterpret that value.
 

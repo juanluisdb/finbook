@@ -168,7 +168,7 @@ const TradeFields = {
   price: PositiveMoneySchema,
   grossAmount: PositiveDecimalStringSchema,
   fee: TradeFeeSchema.optional(),
-  eurPerUnit: EurRateSchema,
+  eurPerUnit: EurRateSchema.optional(),
   eurRateProvenance: EurRateProvenanceSchema.optional(),
 };
 
@@ -192,7 +192,7 @@ const DividendSchema = AccountEventSchema.extend({
   gross: PositiveMoneySchema,
   withholdingForeign: NonNegativeMoneySchema.optional(),
   withholdingDomestic: NonNegativeMoneySchema.optional(),
-  eurPerUnit: EurRateSchema,
+  eurPerUnit: EurRateSchema.optional(),
   eurRateProvenance: EurRateProvenanceSchema.optional(),
 })
   .superRefine(validateWithholdingCurrencies)
@@ -206,7 +206,7 @@ const InterestSchema = AccountEventSchema.extend({
   gross: PositiveMoneySchema,
   withholdingForeign: NonNegativeMoneySchema.optional(),
   withholdingDomestic: NonNegativeMoneySchema.optional(),
-  eurPerUnit: EurRateSchema,
+  eurPerUnit: EurRateSchema.optional(),
   eurRateProvenance: EurRateProvenanceSchema.optional(),
 })
   .superRefine(validateWithholdingCurrencies)
@@ -218,7 +218,7 @@ const InterestSchema = AccountEventSchema.extend({
 const FeeEventSchema = AccountEventSchema.extend({
   type: z.literal("fee"),
   amount: PositiveMoneySchema,
-  eurPerUnit: EurRateSchema,
+  eurPerUnit: EurRateSchema.optional(),
   eurRateProvenance: EurRateProvenanceSchema.optional(),
 })
   .superRefine((fee, context) => validateEurPerUnit(fee.amount.currency, fee.eurPerUnit, context))
@@ -265,8 +265,12 @@ export const FxStampSchema = z
   })
   .strict();
 
-function validateEurPerUnit(currency: string, eurPerUnit: string, context: z.RefinementCtx): void {
-  if (currency === "EUR" && !new DecimalMath(eurPerUnit).equals(1)) {
+function validateEurPerUnit(
+  currency: string,
+  eurPerUnit: string | undefined,
+  context: z.RefinementCtx,
+): void {
+  if (currency === "EUR" && eurPerUnit !== undefined && !new DecimalMath(eurPerUnit).equals(1)) {
     context.addIssue({
       code: "custom",
       path: ["eurPerUnit"],
@@ -276,9 +280,20 @@ function validateEurPerUnit(currency: string, eurPerUnit: string, context: z.Ref
 }
 
 function validateEurRateProvenance(
-  event: { date: string; eurRateProvenance?: { effectiveDate: string } | undefined },
+  event: {
+    date: string;
+    eurPerUnit?: string | undefined;
+    eurRateProvenance?: { effectiveDate: string } | undefined;
+  },
   context: z.RefinementCtx,
 ): void {
+  if (event.eurRateProvenance !== undefined && event.eurPerUnit === undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["eurRateProvenance"],
+      message: "EUR rate provenance requires an EUR-per-unit rate",
+    });
+  }
   if (event.eurRateProvenance !== undefined && event.eurRateProvenance.effectiveDate > event.date) {
     context.addIssue({
       code: "custom",

@@ -273,6 +273,8 @@ export class FileBookStore {
     return withBookLock(this.dataHome, () => {
       const initialized = this.ensureInitialized();
       if (!initialized.ok) return fail(initialized.error);
+      const metadata = this.readMetadata();
+      if (!metadata.ok) return fail(metadata.error);
       const written = this.appendJsonLine(FILES.fx, parsed.data);
       if (!written.ok) return fail(written.error);
       return succeed(undefined);
@@ -432,6 +434,15 @@ export class FileBookStore {
 
   private ensureInitialized(): Result<void> {
     try {
+      const existing = Object.values(FILES).filter((name) => existsSync(join(this.dataHome, name)));
+      if (existing.length > 0 && existing.length < Object.values(FILES).length) {
+        const missing = Object.values(FILES).filter((name) => !existing.includes(name));
+        return fail({
+          type: "storage",
+          message: `The book is incomplete; missing required files: ${missing.join(", ")}.`,
+          hint: "Stop finbook and restore a complete, version-compatible backup to a separate directory. Missing files were not recreated.",
+        });
+      }
       mkdirSync(this.dataHome, { recursive: true, mode: 0o700 });
       this.setOwnerOnly(this.dataHome, 0o700);
       const meta = this.ensureJsonFile(FILES.meta, {

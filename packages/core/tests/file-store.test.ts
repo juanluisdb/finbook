@@ -574,7 +574,7 @@ describe("FileBookStore", () => {
     expect(readFileSync(eventPath, "utf8")).toBe(before);
   });
 
-  it.each([2, 4])("rejects unsupported schema version %s without rewriting metadata", (version) => {
+  it.each([3, 5])("rejects unsupported schema version %s without rewriting metadata", (version) => {
     const store = temporaryStore();
     expect(store.load().ok).toBe(true);
     const metaPath = join(store.dataHome, "meta.json");
@@ -596,11 +596,11 @@ describe("FileBookStore", () => {
 
     expect(store.loadMetadata()).toEqual({
       ok: true,
-      data: { schemaVersion: 3, timeZone: "Europe/Madrid" },
+      data: { schemaVersion: 4, timeZone: "Europe/Madrid" },
     });
     expect(store.setTimeZone("atlantic/canary")).toEqual({
       ok: true,
-      data: { schemaVersion: 3, timeZone: "Atlantic/Canary" },
+      data: { schemaVersion: 4, timeZone: "Atlantic/Canary" },
     });
 
     const metaPath = join(store.dataHome, "meta.json");
@@ -705,7 +705,7 @@ describe("FileBookStore", () => {
       ok: true,
       data: {
         initialized: true,
-        metadata: { schemaVersion: 3, timeZone: "Europe/Madrid" },
+        metadata: { schemaVersion: 4, timeZone: "Europe/Madrid" },
         replay: {
           ok: false,
           error: { message: expect.stringContaining("buy-without-cash") },
@@ -845,4 +845,103 @@ describe("FileBookStore", () => {
       },
     });
   });
+});
+
+it("commits the exact final unit after a nonterminating partial-sale allocation", () => {
+  const store = temporaryStore();
+  seedBook(store);
+  expect(store.appendEvent(event).ok).toBe(true);
+  for (const [id, type, date, qty] of [
+    ["buy-three", "buy", "2026-03-02", "3"],
+    ["sell-two", "sell", "2026-03-03", "2"],
+    ["sell-last", "sell", "2026-03-04", "1"],
+  ]) {
+    expect(
+      store.appendEvent(
+        EventSchema.parse({
+          id,
+          type,
+          date,
+          source: "manual",
+          account: "ib",
+          instrument: "HROW",
+          qty,
+          price: { amount: "1", currency: "USD" },
+          grossAmount: qty,
+          eurPerUnit: "0.9",
+        }),
+      ),
+    ).toMatchObject({ ok: true });
+  }
+  expect(getPositions(loaded(store), "2026-03-04")).toMatchObject({
+    data: { positions: [], cash: [{ balance: { amount: "100", currency: "USD" } }] },
+  });
+});
+
+it.each([
+  "meta.json",
+  "accounts.json",
+  "instruments.json",
+  "events.jsonl",
+  "prices.jsonl",
+  "fx.jsonl",
+])(
+  "leaves a missing %s missing and rejects reads and writes without altering surviving facts",
+  (missing) => {
+    const store = temporaryStore();
+    seedBook(store);
+    expect(store.appendEvent(event).ok).toBe(true);
+    const names = [
+      "meta.json",
+      "accounts.json",
+      "instruments.json",
+      "events.jsonl",
+      "prices.jsonl",
+      "fx.jsonl",
+    ];
+    const surviving = names
+      .filter((name) => name !== missing)
+      .map((name) => ({ name, contents: readFileSync(join(store.dataHome, name), "utf8") }));
+    rmSync(join(store.dataHome, missing));
+    expect(store.inspect()).toMatchObject({ ok: false, error: { type: "storage" } });
+    expect(store.load()).toMatchObject({
+      ok: false,
+      error: { type: "storage", message: expect.stringContaining(missing) },
+    });
+    expect(store.loadMetadata()).toMatchObject({ ok: false, error: { type: "storage" } });
+    expect(
+      store.appendFx({
+        pair: "USD/EUR",
+        rate: "0.8",
+        asOf: "2026-03-04",
+        provenance: { kind: "manual" },
+      }),
+    ).toMatchObject({ ok: false, error: { type: "storage" } });
+    expect(store.appendEvent({ ...event, id: "another", externalId: "another" })).toMatchObject({
+      ok: false,
+      error: { type: "storage" },
+    });
+    expect(existsSync(join(store.dataHome, missing))).toBe(false);
+    for (const file of surviving)
+      expect(readFileSync(join(store.dataHome, file.name), "utf8")).toBe(file.contents);
+  },
+);
+
+it("does not finish an interrupted initialization or overwrite malformed content", () => {
+  const store = temporaryStore();
+  writeFileSync(join(store.dataHome, "accounts.json"), "not-json");
+  expect(store.load()).toMatchObject({ ok: false, error: { type: "storage" } });
+  expect(existsSync(join(store.dataHome, "meta.json"))).toBe(false);
+  expect(existsSync(join(store.dataHome, "events.jsonl"))).toBe(false);
+  expect(readFileSync(join(store.dataHome, "accounts.json"), "utf8")).toBe("not-json");
+});
+
+it("initializes after configuration-first use and permits absent optional sidecars", () => {
+  const store = temporaryStore();
+  writeFileSync(join(store.dataHome, "market-data.json"), "{}");
+  expect(store.inspect()).toEqual({ ok: true, data: { initialized: false } });
+  expect(store.appendAccount(account).ok).toBe(true);
+  rmSync(join(store.dataHome, "market-data.json"));
+  expect(store.load()).toMatchObject({ ok: true, data: { accounts: [account] } });
+  expect(existsSync(join(store.dataHome, "market-history.jsonl"))).toBe(false);
 });

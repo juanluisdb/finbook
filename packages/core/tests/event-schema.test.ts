@@ -146,7 +146,7 @@ describe("event schemas", () => {
     ).toThrow();
   });
 
-  it("requires an EUR rate for rate-bearing events", () => {
+  it("requires an EUR contribution rate for external deposits", () => {
     const deposit = {
       ...base,
       type: "deposit",
@@ -277,4 +277,40 @@ describe("event schemas", () => {
       }),
     ).toThrow();
   });
+});
+
+it.each([
+  {
+    type: "buy",
+    instrument: "HROW",
+    qty: "2",
+    price: { amount: "40", currency: "USD" },
+    grossAmount: "80",
+  },
+  {
+    type: "sell",
+    instrument: "HROW",
+    qty: "2",
+    price: { amount: "40", currency: "USD" },
+    grossAmount: "80",
+  },
+  { type: "dividend", instrument: "HROW", gross: { amount: "7", currency: "USD" } },
+  { type: "interest", gross: { amount: "8", currency: "EUR" } },
+  { type: "fee", amount: { amount: "3", currency: "USD" } },
+])("accepts a rate-free $type and preserves explicitly supplied rate evidence", (fields) => {
+  const rateFree = { ...base, account: "ib", ...fields };
+  expect(EventSchema.parse(rateFree)).toEqual(rateFree);
+  const rate = "gross" in fields && fields.gross.currency === "EUR" ? "1" : "0.83";
+  const supplied = {
+    ...rateFree,
+    eurPerUnit: rate,
+    eurRateProvenance: {
+      source: "ecb",
+      effectiveDate: "2026-03-02",
+      retrievedAt: "2026-03-03T12:00:00Z",
+    },
+  };
+  expect(EventSchema.parse(supplied)).toEqual(supplied);
+  const orphaned = { ...rateFree, eurRateProvenance: supplied.eurRateProvenance };
+  expect(EventSchema.safeParse(orphaned).success).toBe(false);
 });

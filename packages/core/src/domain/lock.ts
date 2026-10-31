@@ -1,13 +1,5 @@
 import { randomUUID } from "node:crypto";
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -116,8 +108,10 @@ function acquireBookLock(dataHome: string, directory = LOCK_DIRECTORY): Result<s
   }
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    let created = false;
     try {
       mkdirSync(lockPath, { mode: 0o700 });
+      created = true;
       const owner: LockOwner = {
         pid: process.pid,
         hostname: hostname(),
@@ -141,7 +135,7 @@ function acquireBookLock(dataHome: string, directory = LOCK_DIRECTORY): Result<s
       }
       if (!isAlreadyExists(error)) {
         try {
-          rmSync(lockPath, { recursive: true, force: true });
+          if (created) rmSync(lockPath, { recursive: true, force: true });
         } catch {
           return fail(
             storageError(
@@ -164,7 +158,7 @@ function acquireBookLock(dataHome: string, directory = LOCK_DIRECTORY): Result<s
     if (inspection.kind === "uncertain") {
       return fail(
         storageError(
-          `The book lock is active or uncertain; ${inspection.reason}; the mutation did not run`,
+          `The lock at ${lockPath} is active or uncertain; ${inspection.reason}; the mutation did not run`,
           `Inspect ${lockPath} and remove it only after confirming no finbook process is using the book.`,
         ),
       );
@@ -172,29 +166,22 @@ function acquireBookLock(dataHome: string, directory = LOCK_DIRECTORY): Result<s
     if (inspection.kind === "active") {
       return fail(
         storageError(
-          `The book is locked by PID ${inspection.owner.pid} on ${inspection.owner.hostname}; the mutation did not run`,
+          `The lock at ${lockPath} is held by PID ${inspection.owner.pid} on ${inspection.owner.hostname}; the mutation did not run`,
           "Retry after that process finishes.",
         ),
       );
     }
-    try {
-      const quarantine = join(dataHome, `.${directory}.stale-${randomUUID()}`);
-      renameSync(lockPath, quarantine);
-      rmSync(quarantine, { recursive: true, force: true });
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : "unknown filesystem error";
-      return fail(
-        storageError(
-          `Could not reclaim the stale book lock: ${detail}; the mutation did not run`,
-          `Inspect ${lockPath} and retry after confirming the owner is dead.`,
-        ),
-      );
-    }
+    return fail(
+      storageError(
+        `The lock at ${lockPath} is abandoned: PID ${inspection.owner.pid} on ${inspection.owner.hostname}, created ${inspection.owner.createdAt}; the operation did not run`,
+        `Stop finbook, inspect ${lockPath}, and remove it only after confirming no process is using the book.`,
+      ),
+    );
   }
 
   return fail(
     storageError(
-      "The book lock changed while a stale owner was being reclaimed; the mutation did not run",
+      "The lock changed while acquisition was attempted; the mutation did not run",
       `Inspect ${lockPath} and retry after confirming no finbook process is using the book.`,
     ),
   );

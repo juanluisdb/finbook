@@ -359,7 +359,7 @@ function registerTradeEdit(
   const command = parent.command(`${type} <id>`).description(`edit a ${type}`);
   addBaseEditOptions(command);
   addTradeEditOptions(command);
-  addRateOptions(command);
+  addOptionalRateEditOptions(command);
   addJsonOption(command);
   addExample(command, `finbook event edit ${type} ${type}-1 --qty 15`);
   command.action((id, _options, current) =>
@@ -405,7 +405,7 @@ function registerIncomeEdit(
     .option("--clear-withholding-foreign", "remove foreign withholding")
     .option("--withholding-domestic-amount <decimal>", "domestic withholding")
     .option("--clear-withholding-domestic", "remove domestic withholding");
-  addRateOptions(command);
+  addOptionalRateEditOptions(command);
   addJsonOption(command);
   addExample(
     command,
@@ -446,7 +446,7 @@ function registerFeeEdit(
   const command = parent.command("fee <id>").description("edit a fee");
   addBaseEditOptions(command);
   addAccountMoneyEditOptions(command);
-  addRateOptions(command);
+  addOptionalRateEditOptions(command);
   addJsonOption(command);
   addExample(command, "finbook event edit fee fee-1 --amount 3");
   command.action((id, _options, current) =>
@@ -564,6 +564,11 @@ function addRateOptions(command: Command): void {
     .option("--eur-per-unit <decimal>", "historical EUR per unit rate")
     .option("--fetch-rate", "fetch the historical EUR rate before writing")
     .option("--provider <id>", "pin the historical-rate provider");
+}
+
+function addOptionalRateEditOptions(command: Command): void {
+  addRateOptions(command);
+  command.option("--clear-eur-rate", "remove the optional reporting EUR rate and its provenance");
 }
 
 function rateResolver(
