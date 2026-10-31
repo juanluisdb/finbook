@@ -18,37 +18,6 @@ function source(responseBody = fixture, status = 200): EcbSource {
 }
 
 describe("ECB source", () => {
-  it("returns EUR-per-currency FX marks using the latest available date", async () => {
-    const result = await source().fetchFxRates([
-      { currency: "USD", asOf: "2026-03-03" },
-      { currency: "GBP", asOf: "2026-03-01" },
-    ]);
-
-    expect(result).toMatchObject([
-      {
-        ok: true,
-        data: {
-          pair: "USD/EUR",
-          rate: "0.909090909090909091",
-          asOf: "2026-03-02",
-          provenance: {
-            kind: "fetched",
-            source: "ecb",
-            retrievedAt: "2026-03-03T12:00:00.000Z",
-          },
-        },
-      },
-      {
-        ok: true,
-        data: {
-          pair: "GBP/EUR",
-          rate: "1.234567901234567901",
-          asOf: "2026-03-01",
-        },
-      },
-    ]);
-  });
-
   it("returns a historical EUR rate with the provider effective date", async () => {
     const result = await source().fetchHistoricalEurRates([
       { currency: "USD", date: "2026-03-03" },
@@ -67,12 +36,14 @@ describe("ECB source", () => {
   });
 
   it("reports unsupported currencies and provider HTTP failures per need", async () => {
-    const unsupported = await source().fetchFxRates([{ currency: "BTC", asOf: "2026-03-03" }]);
-    const unavailable = await source("unauthorized", 401).fetchFxRates([
-      { currency: "USD", asOf: "2026-03-03" },
+    const unsupported = await source().fetchFxHistory([
+      { currency: "BTC", from: "2026-03-01", through: "2026-03-03" },
+    ]);
+    const unavailable = await source("unauthorized", 401).fetchFxHistory([
+      { currency: "USD", from: "2026-03-01", through: "2026-03-03" },
     ]);
 
-    expect(unsupported).toMatchObject([{ ok: false, error: { kind: "not-found" } }]);
+    expect(unsupported).toMatchObject([{ ok: false, error: { kind: "unsupported" } }]);
     expect(unavailable).toMatchObject([
       { ok: false, error: { kind: "unauthorized", status: 401 } },
     ]);

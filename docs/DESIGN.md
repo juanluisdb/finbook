@@ -22,7 +22,7 @@ packages/cli  --------->  packages/market-data
 
 `packages/core` owns schemas, decimal arithmetic, event application, replay, queries, the local file adapter, and the shared result model.
 
-`packages/market-data` owns historical acquisition and daily refresh planning, normalized provider contracts, non-secret source configuration, provider adapters, routing, retries, and incremental cache writes. It derives valuation needs from core queries and depends on core types and storage, while core has no knowledge of provider protocols or refresh cycles.
+`packages/market-data` owns historical acquisition, normalized provider contracts, non-secret source configuration, provider adapters, routing, retries, and incremental cache writes. It derives valuation needs from core queries and depends on core types and storage; core has no knowledge of provider protocols or acquisition timing.
 
 `packages/cli` owns process boot, environment parsing, Commander registration, input preparation, human and JSON rendering, and exit codes. It composes core and market data without moving their rules into command handlers.
 
@@ -79,7 +79,6 @@ $FINBOOK_HOME/
   prices.jsonl
   fx.jsonl
   market-data.json
-  market-refresh.jsonl
   market-history.jsonl
 ```
 
@@ -93,13 +92,13 @@ Account and instrument writes replace their JSON file atomically. Event add, rep
 
 Price and FX stamps append one normalized record at a time. Their ordering is useful cache state, and retaining each successful fetch makes interrupted work resumable. Market data writes a resolution receipt only after all of its observations are persisted; the receipt never substitutes for the observation itself.
 
-`packages/core/src/domain/store.ts::FileBookStore.acceptFetchedPrice` and `packages/core/src/domain/store.ts::FileBookStore.acceptFetchedFx` compare the expected manual records while holding the book lock, then atomically rewrite the affected mark file. They remove only same-date manual records and make the accepted candidate the last fetched record for that date. Event history is untouched.
+Manual marks retain same-date precedence. Corrections append an explicit price or FX observation through the same file adapter; acquisition does not remove manual facts or bulk-replace them with provider candidates.
 
 Temporary files are written in the same directory as their target before rename. A failure after the rename is reported as a mutation that may have committed so callers do not retry blindly.
 
 The store keeps the data directory owner-only and regular book files owner-readable and owner-writable on platforms that expose POSIX permissions.
 
-`packages/core/src/version.ts::CURRENT_SCHEMA_VERSION` defines the supported persisted format. Version mismatches stop core reads and mutations without migrating or replacing financial files. An older reader that requires event rates cannot consume rate-free events; restoring a whole version-compatible backup is part of rollback, not a consequence of reverting code alone.
+`packages/core/src/version.ts::CURRENT_SCHEMA_VERSION` identifies the persisted schema. Core validates metadata before reading or writing book facts.
 
 ## Keep the book outside the running checkout
 
@@ -141,7 +140,7 @@ Core and adapters return failures that callers can handle. Internal programming 
 
 `packages/cli/src/output.ts::writeSuccess` and `packages/cli/src/output.ts::writeError` keep the JSON envelope stable. JSON results go to stdout; human failures and diagnostics go to stderr.
 
-An incomplete explicit fetch is an external failure even when it produced useful data. The CLI returns the partial view and the saved-work report without disguising the failed needs as success.
+An incomplete update is an external failure even when it saves useful observations. The CLI returns the saved-work report and failed ranges; offline views remain available from those persisted facts.
 
 ## Keep the CLI as an adapter
 

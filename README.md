@@ -1,12 +1,10 @@
 # finbook
 
-Wealth-management apps can track almost everything. That breadth is useful, but it can make basic questions and awkward cases hard to control.
+finbook is a small local CLI for keeping investment records and following daily portfolio value in EUR.
 
-finbook takes the opposite approach. It is boring on purpose: a small, opinionated, local ledger focused on the needs of a Spanish investor.
+Record deposits, transfers, currency exchanges, trades, income, and fees. Explicitly update available historical prices and FX, then read positions, contributions, and daily values offline. Transactions and dated valuation observations stay in inspectable files on your machine.
 
-Record what happened once—deposits, transfers, currency exchanges, trades, income, and fees—and finbook derives what you own, where it sits, how much you contributed, and what it is worth in EUR. Its rules cover details that generic summaries often blur, such as own-account transfers, trade fees, withholding, and historical exchange rates.
-
-The book lives on your machine in inspectable files. The CLI is non-interactive and provides structured output, so people and coding agents can use the same predictable interface. finbook neither connects to a broker nor files taxes; it preserves the dated native-currency facts needed to understand the portfolio and support later Spanish tax work.
+The same non-interactive commands and structured output work for people and coding agents. Broker statements remain your external records.
 
 ## What it helps with
 
@@ -14,7 +12,7 @@ The book lives on your machine in inspectable files. The CLI is non-interactive 
 - Distinguish new contributions from transfers between accounts you own.
 - Preserve trade fees, withholding, and historical EUR rates with the event they belong to.
 - Inspect positions and daily portfolio value history in EUR.
-- Update available fund, stock, and fiat FX history, then inspect saved values offline.
+- Update available fund, stock, crypto, and FX history, then inspect saved values offline.
 - Correct history without allowing an edit or deletion to invalidate later events.
 - Inspect and automate the book through ordinary files, composable commands, and stable JSON output.
 
@@ -84,27 +82,33 @@ finbook show history --from 2026-03-03 --to 2026-03-10
 finbook show history --from 2026-03-03 --to 2026-03-10 --json
 ```
 
-Use the actual provider identifier for your instrument. Historical updates support Yahoo fund NAVs, EODHD raw fund and stock closes, and ECB fiat exchange rates. Yahoo remains the default fund provider; bind its local instrument ID to the Yahoo symbol when needed. Historical stocks require an explicit EODHD binding or route because Yahoo historical stock closes can use split-adjusted units. Provider credentials and account access determine available history. Corporate actions are not modeled.
+Use the actual provider identifier for your instrument. Yahoo supplies fund NAVs, EODHD raw fund and stock closes, ECB fiat exchange rates, and CoinGecko crypto closing history. Yahoo is the default fund provider; EODHD is the default stock provider and needs its API credential and correct exchange identifier. A source binding pins the chosen provider. Automatic ETF/ETC history and corporate actions are unsupported; manual marks remain usable.
 
-`update` derives requirements from the complete recorded history, including sold assets and foreign cash left after a sale. It checks newest ranges first, saves each observation, and reports failed ranges without discarding completed work. Completed checks, including empty periods, are reused across restarts. They have no expiry or automatic recheck; late NAVs or provider corrections inside a checked period may remain absent. The table shows actual observation dates, carries the last eligible mark over non-trading days, and leaves totals unknown when an indispensable input is missing. A trade price never fills a valuation gap.
+For the public fund and Bitcoin examples:
 
-Crypto historical acquisition is not supported by `update` yet. Such needs are reported as failures while supported work is saved. Ordinary views remain offline. Single-date fetching remains available with `show glance --fetch` or `show positions --fetch`, including crypto; its separate daily cache can recheck lagging observations on a later cycle.
+```sh
+finbook config source set --instrument <local-fund-id> --provider yahoo --identifier 0P00000WLG.F
+finbook config source set --instrument <local-bitcoin-id> --provider coingecko --identifier bitcoin
+```
 
-Both operations start their daily cycle at 06:00 UTC. History, security prices, and fiat FX stop at the preceding completed UTC date; single-date crypto uses the cycle date's midnight UTC snapshot. Earlier single-date views cap their targets at the requested date. The CLI performs no background scheduling.
+Create the corresponding local instruments first and verify the identifiers and currencies. CoinGecko can use public access or `FINBOOK_COINGECKO_DEMO_API_KEY`; its Demo history is limited to the past 365 days. Earlier unavailable values remain unknown. No paid subscription is selected automatically.
+
+`update` derives needs from the complete recorded history, including sold assets and foreign cash left after a sale. It checks newest ranges first and saves each observation. Provider failures retain completed work and leave failed ranges retryable. Completed checks, including empty periods, are reused across restarts.
+
+When new dates need acquisition, the same range request also catches up from the last saved eligible observation. This lets delayed NAVs advance without a separate refresh command. Repeating the same completed update makes no request. There is no automatic old-history correction scan; late interior prices or final prices arriving after an exposure ends may remain absent.
+
+Acquisition stops at the preceding completed UTC date, advancing its cutoff at 06:00 UTC. For crypto, a value dated 10 September uses the midnight UTC snapshot starting 11 September as the close of 10 September. Fund NAVs, stock closes, and fiat FX keep their own economic dates. The result is an indicative mixed-market value, with the dates of the selected evidence visible.
 
 ```sh
 finbook update --json
 finbook show glance
+finbook show positions --as-of 2026-03-04
 finbook doctor
 ```
 
-Manual marks take priority over fetched observations for the same date. Fetching reports differing values and retains the provider candidate. To accept it persistently without another provider request:
+All views read saved facts offline. A missing required price or FX observation makes the affected total unknown; trade prices never fill valuation gaps. The last eligible mark carries across non-trading days with its date preserved. Having all required inputs does not mean every price is recent.
 
-```sh
-finbook show glance --fetch --replace-manual
-```
-
-This replaces conflicting same-date manual price and FX marks in the requested view; it does not affect transactions or manual marks on other dates. `--json` includes refresh counts, conflicts, and selected valuation evidence.
+Manual marks take priority on the same date. Update retains and reports differing provider values. To correct your choice, use `price set` or `fx set` for that subject and date. There is no bulk replacement option on update. JSON keeps exact decimal strings, acquisition results, conflicts, and selected valuation evidence; displayed EUR valuations round to cents.
 
 Use `finbook <command> --help` for the complete command-specific flags and examples.
 
@@ -132,7 +136,7 @@ A partially missing core book fails instead of recreating the missing files. An 
 
 For restoration, keep the damaged original and copy a known consistent, version-compatible whole backup into a separate location. Point `FINBOOK_HOME` there and run `finbook doctor` before continuing. Do not combine selected files from different snapshots. Doctor inspects without repairing, unlocking, or initializing the book.
 
-This build uses book schema 4 and rejects earlier book formats without rewriting their financial files. There is no automatic migration. Create a disposable test book in a new directory when needed. Rolling back a build after writing rate-free events also requires a compatible reader or a complete pre-change backup.
+The project is unreleased. Disposable test books can be regenerated when data conventions change; no migration or compatibility workflow is provided.
 
 ## Development
 

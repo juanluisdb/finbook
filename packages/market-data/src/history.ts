@@ -17,7 +17,7 @@ import type {
   ProviderId,
 } from "./contracts.js";
 import { findBinding } from "./config.js";
-import { dailyTarget } from "./daily.js";
+import { completedHistoryDate } from "./history-date.js";
 import {
   HistoryChecks,
   checkIsIntact,
@@ -60,6 +60,8 @@ type HistoryWork = {
   requirement: HistoryRequirement;
   key: string;
   providers: readonly ProviderId[];
+  sourceFrom: string | undefined;
+  retainFrom: string;
 };
 type HistoryResponse =
   | { ok: true; observations: readonly HistoryObservation[] }
@@ -80,7 +82,7 @@ export class HistoryUpdater {
       const checked = this.checks.load();
       if (!checked.ok) return checked;
       const now = this.options.now();
-      const through = dailyTarget(now.toISOString().slice(0, 10), false, now);
+      const through = completedHistoryDate(now);
       const required = historyRequirements(loaded.data, through);
       if (!required.ok) return required;
       const report: HistoryUpdateReport = {
@@ -107,8 +109,8 @@ export class HistoryUpdater {
           lastProvider = provider;
           const response =
             item.requirement.kind === "price"
-              ? await this.fetchPrice(item, provider, snapshot)
-              : await this.fetchFx(item, provider, snapshot, work, fxResponses);
+              ? await this.fetchPrice(item, provider)
+              : await this.fetchFx(item, provider, work, fxResponses);
           if (!response.ok) {
             failure = response.error;
             continue;
@@ -123,7 +125,7 @@ export class HistoryUpdater {
               asOf: observation.mark.asOf,
               observation,
             })),
-            item.requirement,
+            { from: item.retainFrom, through: item.requirement.through },
           ).map((value) => value.observation);
           const saved = this.save(item, provider, retained, snapshot, report);
           if (!saved.ok) return saved;
@@ -165,17 +167,11 @@ export class HistoryUpdater {
           ? selectPriceProviders(
               {
                 instrument: requirement.instrument,
-                asOf: requirement.through,
-                identifier: requirement.subject,
               },
               this.options.config,
               undefined,
             )
-          : selectFxProviders(
-              { currency: requirement.subject, asOf: requirement.through },
-              this.options.config,
-              undefined,
-            );
+          : selectFxProviders({ currency: requirement.subject }, this.options.config, undefined);
       if (!selection.ok) {
         report.failures.push({ ...range(requirement, selection.provider), error: selection.error });
         continue;
@@ -207,10 +203,14 @@ export class HistoryUpdater {
         }
       }
       for (const missing of uncheckedRanges(requirement, matching)) {
+        const sourceFrom = latestObservationDate(requirement, snapshot, missing.from);
+        const retainFrom = sourceFrom ?? missing.from;
         work.push({
           requirement: { ...requirement, ...missing },
           key,
           providers: selection.providers,
+          sourceFrom,
+          retainFrom: retainFrom < requirement.from ? requirement.from : retainFrom,
         });
       }
     }
@@ -231,11 +231,7 @@ export class HistoryUpdater {
     return binding?.provider === provider ? binding.identifier : requirement.subject;
   }
 
-  private async fetchPrice(
-    item: HistoryWork,
-    provider: ProviderId,
-    snapshot: BookSnapshot,
-  ): Promise<HistoryResponse> {
+  private async fetchPrice(item: HistoryWork, provider: ProviderId): Promise<HistoryResponse> {
     const requirement = item.requirement;
     if (requirement.kind !== "price") throw new Error("Expected price history work.");
     const source = this.options.priceSources.find((value) => value.id === provider);
@@ -247,7 +243,7 @@ export class HistoryUpdater {
       through: requirement.through,
     };
     const response = await source.fetchPriceHistory(
-      hasPredecessor(requirement, snapshot) ? { ...need, sourceFrom: requirement.from } : need,
+      item.sourceFrom === undefined ? need : { ...need, sourceFrom: item.sourceFrom },
     );
     return response.ok
       ? { ok: true, observations: response.data.map((mark) => ({ kind: "price", mark })) }
@@ -257,7 +253,6 @@ export class HistoryUpdater {
   private async fetchFx(
     item: HistoryWork,
     provider: ProviderId,
-    snapshot: BookSnapshot,
     work: readonly HistoryWork[],
     allResponses: Map<ProviderId, Map<HistoryWork, HistoryResponse>>,
   ): Promise<HistoryResponse> {
@@ -287,9 +282,8 @@ export class HistoryUpdater {
         from: value.requirement.from,
         through: value.requirement.through,
       };
-      const request: FxHistoryNeed = hasPredecessor(value.requirement, snapshot)
-        ? { ...need, sourceFrom: need.from }
-        : need;
+      const request: FxHistoryNeed =
+        value.sourceFrom === undefined ? need : { ...need, sourceFrom: value.sourceFrom };
       return { work: value, need: request };
     });
     const outcomes = await source.fetchFxHistory(requests.map((request) => request.need));
@@ -413,14 +407,20 @@ function unsupported(provider: ProviderId): HistoryResponse {
   };
 }
 
-function hasPredecessor(requirement: HistoryRequirement, snapshot: BookSnapshot): boolean {
-  return requirement.kind === "price"
-    ? snapshot.prices.some(
-        (mark) => mark.instrument === requirement.subject && mark.asOf <= requirement.from,
-      )
-    : snapshot.fx.some(
-        (mark) => mark.pair === `${requirement.subject}/EUR` && mark.asOf <= requirement.from,
-      );
+function latestObservationDate(
+  requirement: HistoryRequirement,
+  snapshot: BookSnapshot,
+  through: string,
+): string | undefined {
+  const marks =
+    requirement.kind === "price"
+      ? snapshot.prices.filter((mark) => mark.instrument === requirement.subject)
+      : snapshot.fx.filter((mark) => mark.pair === `${requirement.subject}/EUR`);
+  return marks
+    .filter((mark) => mark.asOf <= through)
+    .map((mark) => mark.asOf)
+    .sort()
+    .at(-1);
 }
 
 function validateHistory(

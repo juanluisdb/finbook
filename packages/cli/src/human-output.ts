@@ -6,13 +6,13 @@ import {
   type FxStamp,
   type Glance,
   type Hole,
+  type Money,
   type Instrument,
   type PositionsResult,
   type PriceStamp,
 } from "@finbook/core";
 
 import type { DoctorReport } from "./doctor.js";
-import type { ValuationRefreshReport } from "@finbook/market-data";
 import { formatMoney, formatRows } from "./output.js";
 
 export function renderDoctor(report: DoctorReport): string {
@@ -94,10 +94,13 @@ export function renderFx(stamps: readonly FxStamp[]): string {
 export function renderGlance(glance: Glance): string {
   const lines = [
     `as of: ${glance.asOf}`,
-    `total: ${formatMoney(glance.totalEur)}`,
-    `contributed: ${formatMoney(glance.contributedEur)}`,
-    `pnl: ${formatMoney(glance.pnlEur)}`,
-    `holes: ${String(glance.holes.length)}`,
+    `total: ${formatValuation(glance.totalEur)}`,
+    `contributed: ${formatValuation(glance.contributedEur)}`,
+    `value minus contributions: ${formatValuation(glance.pnlEur)}`,
+    `missing inputs: ${String(glance.holes.length)}`,
+    "",
+    "valuation evidence (economic dates)",
+    renderValuationEvidence(glance.positions, glance.cash),
     "",
     "by platform",
     renderBreakdowns(glance.byPlatform),
@@ -107,11 +110,8 @@ export function renderGlance(glance: Glance): string {
     "",
     "by currency",
     renderBreakdowns(glance.byCurrency),
-    "",
-    "valuation evidence",
-    renderValuationEvidence(glance.positions, glance.cash),
   ];
-  return appendHoles(lines, glance.holes, glance.asOf, "glance");
+  return appendHoles(lines, glance.holes, glance.asOf);
 }
 
 export function renderPositions(result: PositionsResult): string {
@@ -125,7 +125,7 @@ export function renderPositions(result: PositionsResult): string {
         position.instrument,
         position.quantity,
         formatMoney(position.cost),
-        formatMoney(position.valueEur),
+        formatValuation(position.valueEur),
         formatEvidence(position.priceMark),
         formatEvidence(position.fxMark),
       ]),
@@ -138,16 +138,12 @@ export function renderPositions(result: PositionsResult): string {
         entry.account,
         entry.currency,
         formatMoney(entry.balance),
-        formatMoney(entry.valueEur),
+        formatValuation(entry.valueEur),
         formatEvidence(entry.fxMark),
       ]),
     ),
   ];
-  return appendHoles(lines, result.holes, result.asOf, "positions");
-}
-
-export function renderRefresh(report: ValuationRefreshReport): string {
-  return `daily cycle: ${report.cycle} / 06:00 UTC; fetched: ${report.prices.fetched.length + report.fx.fetched.length}; reused: ${report.prices.cached + report.fx.cached}`;
+  return appendHoles(lines, result.holes, result.asOf);
 }
 
 function formatEvidence(mark: PositionsResult["positions"][number]["priceMark"]): string {
@@ -178,11 +174,7 @@ function renderValuationEvidence(
   return formatRows(["SUBJECT", "OBSERVATION / SOURCE"], [...rows.values()]);
 }
 
-export function renderHoles(
-  holes: readonly Hole[],
-  asOf: string,
-  view: "glance" | "positions",
-): string {
+export function renderHoles(holes: readonly Hole[], asOf: string): string {
   if (holes.length === 0) return "";
   const lines = ["", "missing data"];
   for (const hole of holes) {
@@ -191,7 +183,7 @@ export function renderHoles(
       lines.push(
         `- price ${price} in ${hole.currency} as of ${asOf}`,
         `  add: finbook price set --instrument ${price} --amount <decimal> --currency ${hole.currency} --as-of ${asOf}`,
-        `  or:  finbook show ${view} --as-of ${asOf} --fetch`,
+        "  or:  finbook update",
       );
       continue;
     }
@@ -201,12 +193,12 @@ export function renderHoles(
       lines.push(
         `- FX ${pair} as of ${asOf}`,
         `  add: finbook fx set --pair ${pair} --rate <decimal> --as-of ${asOf}`,
-        `  or:  finbook show ${view} --as-of ${asOf} --fetch`,
+        "  or:  finbook update",
       );
       continue;
     }
 
-    lines.push(`- ${hole.message}`, `  or: finbook show ${view} --as-of ${asOf} --fetch`);
+    lines.push(`- ${hole.message}`, "  or: finbook update");
   }
   return lines.join("\n");
 }
@@ -258,20 +250,21 @@ function netIncome(event: Extract<Event, { type: "dividend" | "interest" }>) {
 function renderBreakdowns(rows: readonly Breakdown[]): string {
   return formatRows(
     ["KEY", "VALUE EUR", "WEIGHT"],
-    rows.map((row) => [row.key, formatMoney(row.valueEur), row.weight ?? "unknown"]),
+    rows.map((row) => [row.key, formatValuation(row.valueEur), row.weight ?? "unknown"]),
   );
 }
 
-function appendHoles(
-  lines: readonly string[],
-  holes: readonly Hole[],
-  asOf: string,
-  view: "glance" | "positions",
-): string {
-  const rendered = renderHoles(holes, asOf, view);
+function appendHoles(lines: readonly string[], holes: readonly Hole[], asOf: string): string {
+  const rendered = renderHoles(holes, asOf);
   return (rendered === "" ? lines : [...lines, rendered]).join("\n");
 }
 
 function prefixedValue(value: string, prefix: string): string | undefined {
   return value.startsWith(prefix) ? value.slice(prefix.length) : undefined;
+}
+
+function formatValuation(money: Money | null): string {
+  return money === null
+    ? "unknown"
+    : `${MoneyValue.from(money).amount.toFixed(2)} ${money.currency}`;
 }

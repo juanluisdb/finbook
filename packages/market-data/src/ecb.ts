@@ -12,8 +12,6 @@ import { createRetryingFetch } from "./http.js";
 import {
   type EurRateNeed,
   type EurRateOutcome,
-  type FxNeed,
-  type FxOutcome,
   type FxHistoryNeed,
   type FxHistoryOutcome,
 } from "./contracts.js";
@@ -85,46 +83,9 @@ export class EcbSource {
     this.now = options.now ?? (() => new Date());
   }
 
-  async fetchFxRates(needs: readonly FxNeed[]): Promise<readonly FxOutcome[]> {
-    if (needs.length === 0) return [];
-    const loaded = await this.loadDays("eurofxref-hist.xml");
-    if (!loaded.ok) return needs.map((need) => ({ need, ok: false, error: loaded.error }));
-    return needs.map((need) => {
-      if (need.currency === "EUR")
-        return {
-          need,
-          ok: false,
-          error: {
-            kind: "invalid-response",
-            message: "ECB does not publish an EUR/EUR rate.",
-          },
-        };
-      const rate = rateAt(loaded.data, need.currency, need.asOf);
-      if (rate === undefined)
-        return {
-          need,
-          ok: false,
-          error: {
-            kind: "not-found",
-            message: `ECB has no ${need.currency} rate on or before ${need.asOf}.`,
-          },
-        };
-      return {
-        need,
-        ok: true,
-        data: {
-          pair: `${need.currency}/EUR`,
-          rate: invert(rate.rate),
-          asOf: rate.date,
-          provenance: this.provenance(),
-        },
-      };
-    });
-  }
-
   async fetchHistoricalEurRates(needs: readonly EurRateNeed[]): Promise<readonly EurRateOutcome[]> {
     if (needs.length === 0) return [];
-    const loaded = await this.loadDays("eurofxref-hist.xml");
+    const loaded = await this.loadDays();
     if (!loaded.ok) return needs.map((need) => ({ need, ok: false, error: loaded.error }));
     return needs.map((need) => {
       const rate = rateAt(loaded.data, need.currency, need.date);
@@ -152,7 +113,7 @@ export class EcbSource {
 
   async fetchFxHistory(needs: readonly FxHistoryNeed[]): Promise<readonly FxHistoryOutcome[]> {
     if (needs.length === 0) return [];
-    const loaded = await this.loadDays("eurofxref-hist.xml");
+    const loaded = await this.loadDays();
     if (!loaded.ok) return needs.map((need) => ({ need, ok: false, error: loaded.error }));
     return needs.map((need) => {
       if (!loaded.data.some((day) => day.rates.some((rate) => rate.currency === need.currency)))
@@ -186,10 +147,10 @@ export class EcbSource {
     });
   }
 
-  private async loadDays(file: "eurofxref-daily.xml" | "eurofxref-hist.xml"): Promise<ParseResult> {
+  private async loadDays(): Promise<ParseResult> {
     let response: Response;
     try {
-      response = await this.fetch(new URL(file, this.baseUrl));
+      response = await this.fetch(new URL("eurofxref-hist.xml", this.baseUrl));
     } catch (error) {
       return {
         ok: false,

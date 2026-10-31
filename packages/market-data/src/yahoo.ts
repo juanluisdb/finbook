@@ -1,11 +1,9 @@
 import YahooFinance from "yahoo-finance2";
-import { CurrencySchema, IsoDateSchema, MoneyValue, TimeZoneSchema } from "@finbook/core";
+import { CurrencySchema, IsoDateSchema, TimeZoneSchema } from "@finbook/core";
 import { z } from "zod";
 import { createRetryingFetch } from "./http.js";
 import {
-  type PriceNeed,
-  type PriceOutcome,
-  type PriceSource,
+  type PriceHistorySource,
   type PriceHistoryNeed,
   type PriceHistoryOutcome,
 } from "./contracts.js";
@@ -35,7 +33,7 @@ const ChartSchema = z
   })
   .passthrough();
 
-export class YahooSource implements PriceSource {
+export class YahooSource implements PriceHistorySource {
   readonly id = "yahoo" as const;
   private readonly gateway: YahooGateway;
   private readonly now: () => Date;
@@ -43,10 +41,6 @@ export class YahooSource implements PriceSource {
   constructor(options: YahooSourceOptions = {}) {
     this.gateway = options.gateway ?? createYahooGateway(options.fetchImplementation);
     this.now = options.now ?? (() => new Date());
-  }
-
-  fetchPrices(needs: readonly PriceNeed[]): Promise<readonly PriceOutcome[]> {
-    return Promise.all(needs.map((need) => this.fetchPrice(need)));
   }
 
   async fetchPriceHistory(need: PriceHistoryNeed): Promise<PriceHistoryOutcome> {
@@ -119,68 +113,6 @@ export class YahooSource implements PriceSource {
     }
     return { ok: true, data: observations };
   }
-
-  private async fetchPrice(need: PriceNeed): Promise<PriceOutcome> {
-    let chart: YahooChart;
-    try {
-      chart = await this.gateway.chart(need.identifier, yahooChartWindow(need.asOf));
-    } catch {
-      return {
-        need,
-        ok: false,
-        error: { kind: "unavailable", message: "Yahoo daily price request failed." },
-      };
-    }
-    if (chart.currency !== need.instrument.quoteCurrency) {
-      return {
-        need,
-        ok: false,
-        error: {
-          kind: "invalid-response",
-          message: "Yahoo daily quote currency does not match the instrument.",
-        },
-      };
-    }
-    let selected: { asOf: string; close: number } | undefined;
-    const tradingDate = new Intl.DateTimeFormat("en-CA", {
-      timeZone: chart.timeZone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    });
-    for (const point of chart.quotes) {
-      if (point.close === null || !Number.isFinite(point.close) || point.close <= 0) continue;
-      const parts = tradingDate.formatToParts(point.date);
-      const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-      const date = IsoDateSchema.safeParse(`${values.year}-${values.month}-${values.day}`);
-      if (!date.success || date.data > need.asOf) continue;
-      if (selected === undefined || date.data > selected.asOf)
-        selected = { asOf: date.data, close: point.close };
-    }
-    if (selected === undefined) {
-      return {
-        need,
-        ok: false,
-        error: {
-          kind: "not-found",
-          message: `Yahoo returned no daily close for ${need.identifier}.`,
-        },
-      };
-    }
-    return {
-      need,
-      ok: true,
-      data: {
-        instrument: need.instrument.id,
-        price: MoneyValue.from({
-          amount: String(selected.close),
-          currency: chart.currency,
-        }).toMoney(),
-        asOf: selected.asOf,
-        provenance: { kind: "fetched", source: "yahoo", retrievedAt: this.now().toISOString() },
-      },
-    };
-  }
 }
 
 function createYahooGateway(fetchImplementation: typeof fetch = globalThis.fetch): YahooGateway {
@@ -205,13 +137,5 @@ function createYahooGateway(fetchImplementation: typeof fetch = globalThis.fetch
         quotes: parsed.quotes,
       };
     },
-  };
-}
-
-function yahooChartWindow(asOf: string): YahooChartWindow {
-  const end = new Date(`${asOf}T00:00:00.000Z`);
-  return {
-    from: new Date(end.getTime() - 10 * 86_400_000).toISOString(),
-    to: new Date(end.getTime() + 2 * 86_400_000).toISOString(),
   };
 }

@@ -2,8 +2,8 @@ import { effectiveRoute, findBinding } from "./config.js";
 import {
   providerSupportsRoute,
   type MarketDataConfig,
-  type PriceNeed,
-  type FxNeed,
+  type PriceHistoryNeed,
+  type FxHistoryNeed,
   type ProviderId,
   type ProviderFailure,
   type RouteKey,
@@ -19,10 +19,10 @@ const PRICE_ROUTE_BY_INSTRUMENT_TYPE = {
   fund: "price:fund",
   etc: "price:etc",
   crypto: "price:crypto",
-} as const satisfies Record<PriceNeed["instrument"]["type"], RouteKey>;
+} as const satisfies Record<PriceHistoryNeed["instrument"]["type"], RouteKey>;
 
 export function selectPriceProviders(
-  need: PriceNeed,
+  need: Pick<PriceHistoryNeed, "instrument">,
   config: MarketDataConfig,
   providerOverride: ProviderId | undefined,
 ): ProviderSelection {
@@ -34,7 +34,7 @@ export function selectPriceProviders(
 }
 
 export function selectFxProviders(
-  need: FxNeed,
+  need: Pick<FxHistoryNeed, "currency">,
   config: MarketDataConfig,
   providerOverride: ProviderId | undefined,
 ): ProviderSelection {
@@ -96,24 +96,6 @@ function selectRouteProviders(route: RouteKey, config: MarketDataConfig): Provid
   return { ok: true, providers };
 }
 
-function priceRoute(type: PriceNeed["instrument"]["type"]): RouteKey {
+function priceRoute(type: PriceHistoryNeed["instrument"]["type"]): RouteKey {
   return PRICE_ROUTE_BY_INSTRUMENT_TYPE[type];
-}
-
-export function providerFxNeed(
-  need: FxNeed,
-  provider: ProviderId,
-  config: MarketDataConfig,
-): FxNeed {
-  const binding = findBinding(config, "currency", need.currency);
-  return binding?.provider === provider ? { ...need, identifier: binding.identifier } : need;
-}
-
-export function providerPriceNeed(
-  need: PriceNeed,
-  provider: ProviderId,
-  config: MarketDataConfig,
-): PriceNeed {
-  const binding = findBinding(config, "instrument", need.instrument.id);
-  return binding?.provider === provider ? { ...need, identifier: binding.identifier } : need;
 }

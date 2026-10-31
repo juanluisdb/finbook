@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { InstrumentSchema } from "@finbook/core";
-import { EcbSource, EodhdSource, YahooSource } from "../src/index.js";
+import { EcbSource, EodhdSource, YahooSource, type YahooGateway } from "../src/index.js";
 
 it("gets multiple Yahoo fund observations in one chart request using exchange dates", async () => {
   const chart = vi.fn().mockResolvedValue({
@@ -104,4 +104,37 @@ it("gets Friday context for a weekend, inverts native ECB rates and batches curr
     { ok: true, data: [{ asOf: "2024-09-06", pair: "GBP/EUR", rate: "1.25" }] },
   ]);
   expect(fetchImplementation).toHaveBeenCalledOnce();
+});
+
+it("rejects mismatched Yahoo currencies and invalid closes, and keeps empty history distinct from transport failure", async () => {
+  const instrument = InstrumentSchema.parse({
+    id: "fund",
+    name: "Fund",
+    type: "fund",
+    quoteCurrency: "EUR",
+  });
+  const chart = vi.fn<YahooGateway["chart"]>();
+  const source = new YahooSource({ gateway: { chart } });
+  const need = { instrument, identifier: "FUND.F", from: "2026-03-01", through: "2026-03-03" };
+  chart.mockResolvedValueOnce({ currency: "USD", timeZone: "UTC", quotes: [] });
+  expect(await source.fetchPriceHistory(need)).toMatchObject({
+    ok: false,
+    error: { kind: "invalid-response" },
+  });
+  chart.mockResolvedValueOnce({
+    currency: "EUR",
+    timeZone: "UTC",
+    quotes: [{ date: new Date("2026-03-02T00:00:00Z"), close: -9 }],
+  });
+  expect(await source.fetchPriceHistory(need)).toMatchObject({
+    ok: false,
+    error: { kind: "invalid-response" },
+  });
+  chart.mockResolvedValueOnce({ currency: "EUR", timeZone: "UTC", quotes: [] });
+  expect(await source.fetchPriceHistory(need)).toEqual({ ok: true, data: [] });
+  chart.mockRejectedValueOnce(new Error("private transport details"));
+  expect(await source.fetchPriceHistory(need)).toEqual({
+    ok: false,
+    error: { kind: "unavailable", message: "Yahoo historical price request failed." },
+  });
 });

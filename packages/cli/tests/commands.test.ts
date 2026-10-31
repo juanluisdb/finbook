@@ -509,7 +509,7 @@ describe("read CLI", () => {
       expect(result.stdout).toContain(
         "finbook fx set --pair USD/EUR --rate <decimal> --as-of 2026-03-05",
       );
-      expect(result.stdout).toContain(`finbook show ${view} --as-of 2026-03-05 --fetch`);
+      expect(result.stdout).toContain("finbook update");
     }
 
     const json = runCli(dataHome, ["show", "glance", "--as-of", "2026-03-05", "--json"]);
@@ -641,133 +641,6 @@ describe("read CLI", () => {
 
     expect(result.status).toBe(0);
     expect(body).toMatchObject({ ok: true, data: { asOf: expected } });
-  });
-
-  it("returns a partial JSON view and nonzero status when a price fetch fails", () => {
-    const dataHome = temporaryHome();
-    const store = new FileBookStore(dataHome);
-    seedAccount(store);
-    expect(
-      store.appendInstrument(
-        InstrumentSchema.parse({
-          id: "EUROW",
-          name: "Euro instrument",
-          type: "stock",
-          quoteCurrency: "EUR",
-        }),
-      ).ok,
-    ).toBe(true);
-    expect(
-      store.appendEvent(
-        EventSchema.parse({
-          id: "deposit-eur",
-          date: "2026-03-01",
-          source: "manual",
-          type: "deposit",
-          account: "ib",
-          amount: { amount: "100", currency: "EUR" },
-          eurPerUnit: "1",
-        }),
-      ).ok,
-    ).toBe(true);
-    expect(
-      store.appendEvent(
-        EventSchema.parse({
-          id: "buy-hrow",
-          date: "2026-03-02",
-          source: "manual",
-          type: "buy",
-          account: "ib",
-          instrument: "EUROW",
-          qty: "1",
-          price: { amount: "40", currency: "EUR" },
-          grossAmount: "40",
-          eurPerUnit: "1",
-        }),
-      ).ok,
-    ).toBe(true);
-    const disabled = runCli(dataHome, ["config", "provider", "disable", "yahoo", "--json"]);
-    const result = runCli(dataHome, [
-      "show",
-      "glance",
-      "--as-of",
-      "2026-03-03",
-      "--fetch",
-      "--json",
-    ]);
-    const body = JSON.parse(result.stdout);
-
-    expect(disabled.status).toBe(0);
-    expect(result.status).toBe(1);
-    expect(result.stderr).toBe("");
-    expect(body).toMatchObject({
-      ok: false,
-      error: {
-        type: "external",
-        details: {
-          requested: { prices: 1, fx: 0 },
-          saved: { prices: 0, fx: 0 },
-          failures: [{ kind: "price", subject: "EUROW", reason: "unavailable" }],
-          partial: { asOf: "2026-03-03" },
-        },
-      },
-    });
-  });
-
-  it("keeps a human partial view on stdout and grouped failures on stderr", () => {
-    const dataHome = temporaryHome();
-    const store = new FileBookStore(dataHome);
-    seedAccount(store);
-    expect(
-      store.appendInstrument(
-        InstrumentSchema.parse({
-          id: "EUROW",
-          name: "Euro instrument",
-          type: "stock",
-          quoteCurrency: "EUR",
-        }),
-      ).ok,
-    ).toBe(true);
-    expect(
-      store.appendEvent(
-        EventSchema.parse({
-          id: "deposit-eur",
-          date: "2026-03-01",
-          source: "manual",
-          type: "deposit",
-          account: "ib",
-          amount: { amount: "100", currency: "EUR" },
-          eurPerUnit: "1",
-        }),
-      ).ok,
-    ).toBe(true);
-    expect(
-      store.appendEvent(
-        EventSchema.parse({
-          id: "buy-hrow",
-          date: "2026-03-02",
-          source: "manual",
-          type: "buy",
-          account: "ib",
-          instrument: "EUROW",
-          qty: "1",
-          price: { amount: "40", currency: "EUR" },
-          grossAmount: "40",
-          eurPerUnit: "1",
-        }),
-      ).ok,
-    ).toBe(true);
-    expect(runCli(dataHome, ["config", "provider", "disable", "yahoo", "--json"]).status).toBe(0);
-
-    const result = runCli(dataHome, ["show", "glance", "--as-of", "2026-03-03", "--fetch"]);
-
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain("as of: 2026-03-03");
-    expect(result.stderr).toBe(
-      "error: Could not fetch every requested market-data observation.\n" +
-        "- price EUROW via none: unavailable: No enabled provider is configured for price:stock.\n" +
-        "hint: Retry the command or add the missing marks manually.\n",
-    );
   });
 
   it("rejects an inverted event date range as validation", () => {

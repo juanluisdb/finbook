@@ -1,158 +1,86 @@
 # Market-data subsystem
 
-`packages/market-data` resolves historical and single-date portfolio valuation needs into validated local stamps. It isolates network providers from the event book, reuses completed work, and preserves partial progress when one request fails.
+`packages/market-data` turns recorded portfolio exposures into validated, dated local price and FX observations. Explicit historical acquisition saves useful progress, reuses completed work, and leaves portfolio reads independent of the network. Historical event-rate lookup is a separate input operation.
 
-`packages/market-data/src/coordinator.ts::MarketDataCoordinator.updateHistory` delegates whole-book historical acquisition to `packages/market-data/src/history.ts::HistoryUpdater`. `packages/market-data/src/coordinator.ts::MarketDataCoordinator.refreshValuation` derives needs for the holdings and cash in a requested core view, resolves daily observations, and handles manual-mark conflicts. The subsystem never changes transactions, schedules work, or fetches without an invoking caller. Historical event-rate resolution is a separate operation.
+`packages/market-data/src/coordinator.ts::MarketDataCoordinator.updateHistory` delegates acquisition to `packages/market-data/src/history.ts::HistoryUpdater`. The subsystem never changes transactions, schedules work, or fetches without an invoking caller. Core sees normalized economic dates and decimal strings rather than provider payloads.
 
-## Follow the resolution flow
-
-```text
-requested portfolio date
-          |
-          v
- holdings -> daily targets -> resolution receipts
-          |
-          v
- route -> binding -> enabled provider
-          |
-          v
- provider adapter -> validated observation
-          |
-          v
- append one local stamp -> save its resolution receipt
-          |
-          v
- report fetched, cached, and failed needs
-```
-
-`packages/market-data/src/contracts.ts` defines the normalized needs, observations, provider failures, source interfaces, route keys, and capability registry.
-
-`packages/market-data/src/coordinator.ts::MarketDataCoordinator` selects providers, batches compatible needs, validates observations against the request, appends successes, and returns a complete report.
-
-Provider adapters translate their external API into those contracts. Core sees only normalized price stamps, FX stamps, and historical event-rate facts.
-
-## Distinguish valuation from event history
-
-Price observations value an instrument on an economic date. FX observations value one unit of a currency in EUR on an economic date. Both become stamps in the local book.
-
-Historical EUR-rate observations prepare contribution events and explicitly requested reporting evidence. The CLI embeds the normalized rate, effective date, provider, and retrieval instant into the event before append.
-
-A current FX stamp must not supply an event’s historical `eurPerUnit`. Fetching a historical event rate must not append a valuation stamp as a side effect.
-
-Fetched provenance records the provider and a UTC retrieval instant. Economic dates remain date-only values and retain the provider's observation date. Refresh-cycle dates and retrieval times do not replace them.
-
-## Route without guessing
-
-Provider capabilities have one source of truth in `packages/market-data/src/contracts.ts::PROVIDER_CAPABILITIES`.
-
-Default route order lives in `packages/market-data/src/config.ts::defaultRoute`. Route overrides may reorder or replace that list, and disabled providers are removed from effective routes.
-
-An explicit provider option pins the request to that provider. A source binding pins one local instrument or currency to a provider-specific identifier. Pinned selection does not silently fall back to another provider.
-
-Instrument bindings require an existing local instrument because the book owns that namespace. Currency bindings validate the currency shape but do not require a registry because the book has none.
-
-Configuration validation rejects duplicate bindings and providers assigned to unsupported routes. Selection also rejects disabled providers and empty effective routes before calling an adapter.
-
-The resolution precedence lives in `packages/market-data/src/routing.ts::selectPriceProviders`, `packages/market-data/src/routing.ts::selectFxProviders`, and `packages/market-data/src/routing.ts::selectHistoricalEurRateProviders`.
-
-## Keep configuration non-secret
-
-`packages/market-data/src/config.ts::MarketDataConfigStore` stores disabled providers, route overrides, and source bindings in `$FINBOOK_HOME/market-data.json`.
-
-The store validates on read and writes replacements atomically under the same book lock as core storage. Inspection returns defaults without creating a missing file.
-
-Credentials come from the process environment when `packages/cli/src/main.ts::main` constructs providers. They do not enter market-data configuration, book records, command output, or logs.
-
-CoinGecko reads its demo API credential from `FINBOOK_COINGECKO_DEMO_API_KEY`. EODHD reads `FINBOOK_EODHD_API_KEY`. Yahoo and ECB need no configured credential.
-
-## Acquire history from recorded exposures
+## Follow the acquisition flow
 
 ```text
 recorded events -> end-of-day core queries -> required exposure intervals
     -> subtract intact source-matching checks -> newest unchecked ranges
-    -> native provider range / batched ECB feed -> validate whole response
-    -> retain interval and latest predecessor -> append each observation
+    -> include catch-up from latest saved eligible observation
+    -> native provider range / batched FX feed -> validate whole response
+    -> retain relevant interval and catch-up dates -> append observations
     -> persist range check -> report saved, reused, empty and failed work
 ```
 
-`packages/market-data/src/history-plan.ts::historyRequirements` queries core at event-date boundaries. Holdings require prices; both foreign cash and a held instrument's quote currency require FX. Subjects are deduplicated across accounts and adjacent exposures merge. Fully sold positions and spent currencies remain historical requirements. This planning introduces no parallel accounting state.
+`packages/market-data/src/contracts.ts` owns normalized history needs, observations, provider failures, interfaces, route keys, and capabilities. Adapters own source identifiers, network protocols, available depth, and timestamp translation. Accounting and valuation remain in core.
 
-`packages/market-data/src/history.ts::HistoryUpdater` subtracts the union of matching checked intervals and sorts unchecked work by its newest required end date. The completed-date cutoff comes from `packages/market-data/src/daily.ts::dailyTarget`. It uses native range operations rather than repeating single-date calls. Compatible currency needs share a provider batch.
+## Keep valuation and event evidence separate
 
-The range contracts live in `packages/market-data/src/contracts.ts::PriceHistorySource` and `packages/market-data/src/contracts.ts::FxHistorySource`. A logical portfolio interval is explicit. When no locally stored predecessor exists, the normalized request leaves its source start open and the adapter requests available historical context. Otherwise incremental requests start at the unchecked range. Only observations within the logical interval and its latest eligible predecessor are retained.
+Price and FX stamps value holdings and cash on an economic date. They never change event history. Historical EUR rates prepare contribution events and explicitly requested reporting evidence; the CLI embeds the rate and its provenance into the event.
 
-Yahoo history supports fund NAVs and preserves exchange-local dates. Its historical stock closes can use split-adjusted units, so that operation rejects stocks. EODHD history supports funds and stocks and uses raw closes. Default routes remain shared with single-date fetching; a historical stock therefore needs an EODHD binding or route. ECB reads its historical feed once per batch, preserves economic dates, and inverts foreign units per EUR into EUR per foreign unit. No bundled crypto history operation exists.
+A saved valuation stamp cannot supply an event's historical rate. Looking up an event rate cannot append a valuation stamp. CoinGecko's closing-date translation applies to portfolio observations, while its event-rate lookup preserves the selected observation's own effective date.
 
-`packages/market-data/src/history-checks.ts::HistoryChecks` owns append-only `market-history.jsonl` under the book lock. A check records the subject and effective route/binding identity, logical interval, check instant, serving provider, and the actual retained normalized observations. Credentials never enter this identity. `packages/market-data/src/history-checks.ts::checkIsIntact` requires those facts still to exist before a receipt can suppress work. Valid empty checks retain an empty evidence list; errors receive no successful check.
+Fetched provenance records the provider and UTC retrieval instant. Retrieval time never replaces the economic date. For crypto closing observations, the source row at midnight UTC starting the following day represents the preceding day's close. Other sources retain their quoted economic dates.
 
-A check is written only after every retained observation is saved. Interrupted commits preserve earlier stamps and leave the range retryable. An unchanged fetched fact can be reused with its original retrieval identity, while a changed latest candidate is appended. Provider failures preserve completed ranges. Storage failures stop the operation. The refresh lock spans the whole update; ordinary book locks cover only local reads and commits.
+## Route without guessing
 
-Historical checks have no expiry, automatic overlap, or corrective recheck command. Late NAVs and corrections within checked periods can stay absent. A new unchecked request may incidentally return older data, and retaining its predecessor can improve an earlier value. Changing a binding or effective route creates distinct work; adding earlier events exposes unchecked earlier intervals.
+`packages/market-data/src/contracts.ts::PROVIDER_CAPABILITIES` declares bundled historical operations. Default routes live in `packages/market-data/src/config.ts::defaultRoute`. Route overrides may reorder or replace providers; disabled providers are removed from effective routes.
 
-`packages/market-data/src/history.ts::HistoryUpdateReport` carries checked, reused, empty and failed ranges, saved-observation counts, and manual conflicts. Reads derive values from the saved facts and show missing inputs and selected dates; a successful provider check is not a guarantee of complete portfolio value. Historical update preserves manual marks and reports candidates without accepting replacements.
+A source binding pins one local instrument or currency to a provider-specific identifier. A historical event-rate request may also explicitly pin a provider. Pinned selection never silently falls back. Unpinned routes may try their next configured provider after failure.
 
-## Keep acquisition records separate
+Instrument bindings require an existing local instrument. Currency bindings validate the currency shape; the book has no separate currency registry. Configuration rejects duplicate bindings and unsupported routes. Selection rejects disabled providers and empty effective routes before adapter I/O.
 
-The explicit whole-book update and the single-date `--fetch` operation have separate request semantics and receipt formats. `market-history.jsonl` records durable intervals; `market-refresh.jsonl` records daily point resolutions. Both append the same core price and FX facts. Neither receipt format is valuation data, and neither proves the other's request completed. Historical event-rate lookup remains independent of both.
+Resolution precedence lives in `packages/market-data/src/routing.ts::selectPriceProviders`, `packages/market-data/src/routing.ts::selectFxProviders`, and `packages/market-data/src/routing.ts::selectHistoricalEurRateProviders`.
 
-## Resolve daily observations
+Yahoo supplies fund history. EODHD is the default stock source and also supports explicit fund bindings. It uses raw closes matching the units held on the economic date; split-adjusted Yahoo stock history is not eligible. Stock exchange identifiers must be configured correctly. ETF and ETC automatic history has no bundled route; manual marks remain usable.
 
-`packages/market-data/src/daily.ts::dailyCycle` defines the UTC cycle boundary. `packages/market-data/src/daily.ts::dailyTarget` caps price and fiat FX requests at the preceding completed UTC date and crypto requests at the cycle's midnight UTC snapshot. The requested portfolio date is an additional upper bound. Invoking the operation late does not advance these targets into an intraday session.
+CoinGecko supplies crypto instrument history and bound crypto-currency FX. ECB supplies fiat FX and historical contribution rates. A new provider must not require changes to core accounting or valuation.
 
-A need declares a target economic date. The provider may return an older eligible observation, such as a prior trading close or delayed NAV, but never an observation after the target. A successful lagging response completes the check for that cycle and becomes eligible for another check in the next one.
+## Acquire history from recorded exposures
 
-Yahoo is the default price source for stocks, ETFs, funds, and ETCs. It reads daily chart closes, validates the returned quote currency, and interprets the trading date in the exchange timezone. It does not fetch live quotes for portfolio valuation.
+`packages/market-data/src/history-plan.ts::historyRequirements` queries core at event-date boundaries. Held instruments require prices. Foreign cash and held instruments' quote currencies require FX. Subjects are deduplicated across accounts and adjacent exposures merge. Sold assets and spent currencies remain historical requirements; no parallel accounting state is introduced.
 
-EODHD provides fund and stock prices from its daily EOD feed and is opt-in through a source binding. It uses the raw close because adjusted closes belong to return analysis rather than unit valuation. One unresolved single-date need costs one request; there is no discovery, bulk feed, or automatic retry.
+`packages/market-data/src/history.ts::HistoryUpdater` subtracts matching checked intervals and sorts unchecked work by newest required end date. `packages/market-data/src/history-date.ts::completedHistoryDate` supplies the preceding completed UTC date with the existing morning publication allowance. The limit advances at 06:00 UTC and implies no background scheduling.
 
-CoinGecko uses its dated historical snapshot endpoint for crypto valuation and bound crypto cash. The observation represents midnight UTC on the requested date. Historical event rates retain their separate range-based lookup and are not subject to the valuation refresh cycle.
+Logical portfolio intervals differ from source request windows. Without an eligible predecessor, adapters request available context. Otherwise the new request includes history since the latest saved eligible observation. Retention includes every relevant catch-up date, even behind the newly unchecked interval, plus a predecessor needed to value the exposure's start. Unrelated pre-exposure history is not retained.
 
-ECB selects the latest eligible daily reference rate from its historical feed and batches currency needs. Transaction-rate lookup remains separate from valuation stamps.
+Catch-up runs only when there is new unchecked work. Repeating a completed cutoff makes no request. Old checks do not expire, and there is no rolling correction scan or recheck command. Late interior observations before the last saved mark, corrections to old dates, and final values published after a sold exposure ends may remain absent. Stored new observations naturally change derived historical views.
 
-Adapter behaviour lives in `packages/market-data/src/yahoo.ts::YahooSource`, `packages/market-data/src/coingecko.ts::CoinGeckoSource`, `packages/market-data/src/ecb.ts::EcbSource`, and `packages/market-data/src/eodhd.ts::EodhdSource`.
+Yahoo preserves exchange-local NAV dates. EODHD retains raw closes. ECB reads its historical feed once per compatible batch and inverts foreign units per EUR into EUR per foreign unit.
 
-## Reuse resolutions, not arbitrary old marks
+`packages/market-data/src/coingecko.ts::CoinGeckoSource` requests daily midnight rows through the installed SDK. It translates closing date D into source midnight on D+1 and never substitutes an intraday point. Demo access is bounded to its rolling available horizon; requests for earlier history retain available later values while older portfolio dates remain unknown. A successful check establishes acquisition under that source's access limits, not complete market coverage or an observation on every day.
 
-`packages/market-data/src/daily.ts::DailyResolutions` owns append-only `market-refresh.jsonl` records under the book lock. Each receipt identifies the subject, target, effective route and binding, cycle, retrieval instant, and saved observation. Identifiers are non-secret; credentials never enter a receipt.
+## Reuse durable checks
 
-`packages/market-data/src/daily.ts::cachedResolution` requires both a matching request identity and the referenced observation in the book. Successful same-cycle receipts are reusable even when the provider returned an older date. Exact-target receipts remain reusable across cycles. An arbitrary manual or older fetched mark without a matching receipt does not prove the provider request was resolved.
+`packages/market-data/src/history-checks.ts::HistoryChecks` owns append-only `market-history.jsonl` under the book lock. Each check records subject, effective route/binding identity, logical interval, check instant, serving provider, and retained normalized observations. Credentials never enter that identity.
 
-Changing a subject's binding or effective route creates a different request identity. New subjects fetch independently. Failed needs receive no successful receipt, so retrying does not repeat completed work. A crash after saving a mark but before its receipt can cause another request, but cannot create a false cache hit.
+`packages/market-data/src/history-checks.ts::checkIsIntact` requires referenced facts still to exist before a check suppresses work. Valid empty results are reusable. Errors receive no successful check. New subjects, changed source selection, and earlier transactions can introduce unchecked work.
 
-The refresh lock serializes complete refresh operations across processes. The book lock protects local commits and is released during network waits. A caller finding an active refresh fails fast rather than starting duplicate network work. Abandoned or uncertain book and refresh locks remain in place and stop work for manual recovery; acquisition never removes another owner's lock.
+Each observation is appended before its check is saved. Interrupted commits retain earlier stamps and leave the range retryable. An unchanged fetched fact retains its retrieval identity; a changed latest candidate is appended. Storage failures stop acquisition. Provider failures preserve completed subjects and remain explicit in the report.
 
-## Resolve manual conflicts explicitly
+The refresh lock spans a complete asynchronous update; ordinary book locks cover only local reads and commits. Network waits do not hold the book lock. Competing updates fail fast. Abandoned or uncertain locks stop work for manual recovery and are never reclaimed automatically.
 
-Provider candidates are saved even when a same-date manual mark takes precedence. The refresh report includes differing manual and fetched values. By default the manual mark remains selected.
+## Preserve manual choices
 
-Explicit replacement compares the manual records read before the request with those present at commit. A concurrent change fails with a conflict. Otherwise the core file adapter removes those same-date manual marks and keeps the accepted provider candidate selected. A later invocation can accept a cached candidate without another provider request. Marks on other dates and transaction history remain untouched.
+Manual marks win same-date selection against fetched marks. Update saves differing provider candidates and reports both values while keeping the manual choice. An explicit price or FX entry is the correction path. Whole-book acquisition has no bulk replacement option.
 
-## Preserve partial progress
+`packages/market-data/src/history.ts::HistoryUpdateReport` carries checked, reused, empty and failed intervals, saved counts, and conflicts. CLI update failures include the saved-work report; subsequent offline views expose remaining unknown values and the evidence actually selected. Acquisition success is not a freshness guarantee.
 
-`packages/market-data/src/coordinator.ts::MarketDataCoordinator.resolvePrices` and `packages/market-data/src/coordinator.ts::MarketDataCoordinator.resolveFxRates` deduplicate requested needs and reuse matching resolution receipts.
+## Keep configuration and failures explicit
 
-Compatible pending needs are grouped by provider. Each valid observation is appended immediately through the store before the coordinator advances to the next work.
+`packages/market-data/src/config.ts::MarketDataConfigStore` stores non-secret routes, disabled providers, and bindings in `market-data.json`, validates reads, and replaces writes atomically under the book lock. Inspection returns defaults without creating a missing file.
 
-Default route lists can fall through to their next provider after a failed outcome. Exhausted and unrouteable needs remain explicit failures with the provider and normalized failure kind.
+`packages/cli/src/main.ts::main` reads provider credentials from the process environment. CoinGecko can use public access or the configured Demo credential; EODHD requires its configured API credential. Credentials never enter configuration, observations, output, logs, or successful-check identities. No paid-tier selection or subscription management is provided.
 
-A storage failure stops resolution because the subsystem cannot claim the observation was saved. A provider failure does not discard observations already appended.
+`packages/market-data/src/contracts.ts::ProviderFailureKind` distinguishes unsupported, not found, rate limited, unauthorized, unavailable, and invalid response. Adapters validate response structures before normalization; acquisition also verifies subject, currency/pair, date direction, and fetched provenance before committing marks. Provider errors cannot masquerade as empty successful ranges.
 
-The shared refresh operation reloads the book after fetching and manual-conflict handling. The CLI derives the partial or complete view from this persisted snapshot. An incomplete fetch exits as an external failure while still returning the useful view and counts of requested and saved work.
+`packages/market-data/src/http.ts::createRetryingFetch` centralizes bounded transient retries. EODHD performs one bounded request without retrying to keep quota cost predictable. SDK payloads remain inside their adapters and are not persisted.
 
-## Normalize failures
+## Verify the surviving boundaries
 
-Provider failures use the stable categories defined by `packages/market-data/src/contracts.ts::ProviderFailureKind`: unsupported, not found, rate limited, unauthorized, unavailable, or invalid response.
+Adapter tests exercise sanitized source fixtures and controlled gateways or HTTP behavior. The ordinary gate has no live provider calls. Historical update tests exercise range reuse, catch-up, publication delays, source changes, validation, interruption, batching, fallback, and refresh-lock exclusion with temporary books.
 
-Adapters validate response structure and semantic fields before constructing an observation. A provider returning the wrong subject, currency, pair, date direction, or provenance is an invalid response.
-
-`packages/market-data/src/http.ts::createRetryingFetch` centralizes bounded retries for providers where an automatic retry is appropriate and respects acceptable `Retry-After` values. EODHD deliberately performs one bounded request without retrying so a fetch has predictable cost against a small daily quota.
-
-Provider SDKs and response shapes stay inside their adapters. No raw provider response is written to the book.
-
-## Test without live providers
-
-Adapter tests use captured fixtures, injected gateways, and local fetch behaviour. The normal repository gate makes no live network request.
-
-Coordinator tests use controlled sources and temporary books to cover routing, batching, fallback, cycle boundaries, restart reuse, exact-date historical reuse, response validation, incremental persistence, interruption, concurrency, and manual-conflict acceptance.
-
-Configuration tests exercise schema validation and the real temporary filesystem. Built-CLI tests use a Node preload fixture at the HTTP boundary to exercise fetching, warnings, JSON, partial failure, and cached acceptance without a live network connection. Historical event-rate tests remain separate.
+Built-CLI tests replace HTTP at the process boundary and verify mixed holdings, sold assets, foreign cash, closing dates, offline agreement, explicit corrections, partial failure, and removed fetch flags. Event-rate tests independently verify contribution-rate behavior and the absence of valuation side effects.

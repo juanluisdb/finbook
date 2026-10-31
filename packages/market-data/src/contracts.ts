@@ -2,7 +2,7 @@ import type { FxStamp, Instrument, PriceStamp, Provenance } from "@finbook/core"
 
 import { z } from "zod";
 
-import { CurrencySchema, IsoDateSchema, InstrumentIdSchema } from "@finbook/core";
+import { CurrencySchema, InstrumentIdSchema } from "@finbook/core";
 
 export const ProviderIdSchema = z.enum(["yahoo", "coingecko", "ecb", "eodhd"]);
 export type ProviderId = z.infer<typeof ProviderIdSchema>;
@@ -20,7 +20,7 @@ export const RouteKeySchema = z.enum([
 export type RouteKey = z.infer<typeof RouteKeySchema>;
 
 export const PROVIDER_CAPABILITIES = {
-  yahoo: ["price:stock", "price:etf", "price:fund", "price:etc", "price:crypto"],
+  yahoo: ["price:fund"],
   coingecko: ["price:crypto", "fx", "eur-rate:crypto"],
   ecb: ["fx", "eur-rate:fiat"],
   eodhd: ["price:fund", "price:stock"],
@@ -126,31 +126,11 @@ export const MarketDataConfigSchema = z
 
 export type MarketDataConfig = z.infer<typeof MarketDataConfigSchema>;
 
-export type PriceNeed = {
-  instrument: Instrument;
-  asOf: string;
-  identifier: string;
-};
-
-export type FxNeed = {
-  currency: string;
-  asOf: string;
-  identifier?: string;
-};
-
 export type EurRateNeed = {
   currency: string;
   date: string;
   identifier?: string;
 };
-
-export type PriceOutcome =
-  | { need: PriceNeed; ok: true; data: PriceObservation }
-  | { need: PriceNeed; ok: false; error: ProviderFailure };
-
-export type FxOutcome =
-  | { need: FxNeed; ok: true; data: FxObservation }
-  | { need: FxNeed; ok: false; error: ProviderFailure };
 
 export type EurRateOutcome =
   | { need: EurRateNeed; ok: true; data: EurRateObservation }
@@ -189,16 +169,6 @@ export type ProviderFailure = {
   retryAfterMs?: number;
 };
 
-export interface PriceSource {
-  readonly id: ProviderId;
-  fetchPrices(needs: readonly PriceNeed[]): Promise<readonly PriceOutcome[]>;
-}
-
-export interface FxSource {
-  readonly id: ProviderId;
-  fetchFxRates(needs: readonly FxNeed[]): Promise<readonly FxOutcome[]>;
-}
-
 export interface HistoricalEurRateSource {
   readonly id: ProviderId;
   fetchHistoricalEurRates(needs: readonly EurRateNeed[]): Promise<readonly EurRateOutcome[]>;
@@ -223,35 +193,3 @@ export interface FxHistorySource {
   readonly id: ProviderId;
   fetchFxHistory(needs: readonly FxHistoryNeed[]): Promise<readonly FxHistoryOutcome[]>;
 }
-
-export type PriceFetchFailure = {
-  need: PriceNeed;
-  provider: ProviderId | "none";
-  error: ProviderFailure;
-};
-
-export type PriceFetchReport = {
-  requested: number;
-  cached: number;
-  fetched: readonly PriceObservation[];
-  resolved: readonly PriceObservation[];
-  failures: readonly PriceFetchFailure[];
-};
-
-export type FxFetchFailure = {
-  need: FxNeed;
-  provider: ProviderId | "none";
-  error: ProviderFailure;
-};
-
-export type FxFetchReport = {
-  requested: number;
-  cached: number;
-  fetched: readonly FxObservation[];
-  resolved: readonly FxObservation[];
-  failures: readonly FxFetchFailure[];
-};
-
-export const DateNeedSchema = z.object({
-  asOf: IsoDateSchema,
-});

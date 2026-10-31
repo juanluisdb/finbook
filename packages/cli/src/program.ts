@@ -14,11 +14,7 @@ import {
   type Event,
 } from "@finbook/core";
 import { Command } from "commander";
-import {
-  MarketDataConfigStore,
-  type MarketDataCoordinator,
-  type ValuationRefreshReport,
-} from "@finbook/market-data";
+import { MarketDataConfigStore, type MarketDataCoordinator } from "@finbook/market-data";
 
 import {
   listProviders,
@@ -30,14 +26,7 @@ import {
   showConfig,
 } from "./config.js";
 import { currentDate, parseDate, requireDate } from "./dates.js";
-import {
-  CliFailure,
-  externalFailure,
-  notFoundFailure,
-  requireResult,
-  type ExternalFailureDetails,
-  validationFailure,
-} from "./errors.js";
+import { CliFailure, notFoundFailure, requireResult, validationFailure } from "./errors.js";
 import { doctorError, inspectDoctor } from "./doctor.js";
 import { registerEventCommands } from "./event-commands.js";
 import {
@@ -49,7 +38,6 @@ import {
   renderInstruments,
   renderPositions,
   renderPrices,
-  renderRefresh,
 } from "./human-output.js";
 import { writeSuccess } from "./output.js";
 import { renderHistory, renderHistoryUpdate } from "./history-output.js";
@@ -272,35 +260,19 @@ export function createProgram(dataHome: string, options: ProgramOptions = {}): C
     const rows = requireResult(getHistory(loadSnapshot(store), parsed.data.from, parsed.data.to));
     writeSuccess(rows, jsonMode(command), renderHistory(rows));
   });
-  const glance = show.command("glance").description("show the portfolio glance");
-  glance
-    .option("--as-of <date>", "valuation date")
-    .option("--fetch", "resolve daily valuation data for the active 06:00 UTC cycle")
-    .option(
-      "--replace-manual",
-      "accept fetched same-date prices and FX instead of manual marks; requires --fetch",
-    );
+  const glance = show
+    .command("glance")
+    .description("show the saved portfolio glance without fetching");
+  glance.option("--as-of <date>", "valuation date");
   addJsonOption(glance);
   glance.action((_options, command) =>
-    showGlance(store, command.opts(), jsonMode(command), resolveDefaultDate(), marketDataFactory),
+    showGlance(store, command.opts(), jsonMode(command), resolveDefaultDate()),
   );
-  const positions = show.command("positions").description("show current positions");
-  positions
-    .option("--as-of <date>", "valuation date")
-    .option("--fetch", "resolve daily valuation data for the active 06:00 UTC cycle")
-    .option(
-      "--replace-manual",
-      "accept fetched same-date prices and FX instead of manual marks; requires --fetch",
-    );
+  const positions = show.command("positions").description("show saved positions without fetching");
+  positions.option("--as-of <date>", "valuation date");
   addJsonOption(positions);
   positions.action((_options, command) =>
-    showPositions(
-      store,
-      command.opts(),
-      jsonMode(command),
-      resolveDefaultDate(),
-      marketDataFactory,
-    ),
+    showPositions(store, command.opts(), jsonMode(command), resolveDefaultDate()),
   );
 
   program.addHelpText(
@@ -312,7 +284,7 @@ export function createProgram(dataHome: string, options: ProgramOptions = {}): C
       "  finbook instrument add --help",
       "  finbook event add --help",
       "  finbook price set --help",
-      "  finbook show glance --fetch",
+      "  finbook update",
       "  finbook show glance",
       "  finbook event get <id>",
       "  finbook event edit <type> <id> --help",
@@ -337,8 +309,6 @@ type EventListOptions = JsonOptions & {
 
 type AsOfOptions = JsonOptions & {
   asOf?: string | undefined;
-  fetch?: boolean | undefined;
-  replaceManual?: boolean | undefined;
 };
 
 function addJsonOption(command: Command): void {
@@ -476,120 +446,26 @@ function listFx(store: FileBookStore, json: boolean): void {
   writeSuccess(fx, json, renderFx(fx));
 }
 
-async function showGlance(
+function showGlance(
   store: FileBookStore,
   options: AsOfOptions,
   json: boolean,
   defaultDate: string,
-  marketDataFactory?: () => MarketDataCoordinator,
-): Promise<void> {
+): void {
   const asOf = requireDate(options.asOf, "--as-of", defaultDate);
-  const fetched = await awaitSnapshot(store, options, asOf, marketDataFactory);
-  const glance = requireResult(getGlance(fetched.snapshot, asOf));
-  showRefresh(fetched.refresh, json);
-  if (fetched.refresh !== null && hasFetchFailures(fetched.refresh)) {
-    if (!json) writeSuccess(glance, false, renderGlance(glance));
-    throw partialFetchFailure(fetched.refresh, glance);
-  }
-  writeSuccess({ ...glance, refresh: fetched.refresh }, json, renderGlance(glance));
+  const glance = requireResult(getGlance(loadSnapshot(store), asOf));
+  writeSuccess(glance, json, renderGlance(glance));
 }
 
-async function showPositions(
+function showPositions(
   store: FileBookStore,
   options: AsOfOptions,
   json: boolean,
   defaultDate: string,
-  marketDataFactory?: () => MarketDataCoordinator,
-): Promise<void> {
+): void {
   const asOf = requireDate(options.asOf, "--as-of", defaultDate);
-  const fetched = await awaitSnapshot(store, options, asOf, marketDataFactory);
-  const positions = requireResult(getPositions(fetched.snapshot, asOf));
-  showRefresh(fetched.refresh, json);
-  if (fetched.refresh !== null && hasFetchFailures(fetched.refresh)) {
-    if (!json) writeSuccess(positions, false, renderPositions(positions));
-    throw partialFetchFailure(fetched.refresh, positions);
-  }
-  writeSuccess({ ...positions, refresh: fetched.refresh }, json, renderPositions(positions));
-}
-
-type FetchedSnapshot = {
-  snapshot: BookSnapshot;
-  refresh: ValuationRefreshReport | null;
-};
-
-async function awaitSnapshot(
-  store: FileBookStore,
-  options: AsOfOptions,
-  asOf: string,
-  marketDataFactory: (() => MarketDataCoordinator) | undefined,
-): Promise<FetchedSnapshot> {
-  if (options.replaceManual === true && options.fetch !== true) {
-    throw validationFailure(
-      "--replace-manual requires --fetch.",
-      "Use --fetch to resolve provider candidates before replacing manual marks.",
-    );
-  }
-  if (options.fetch !== true) return { snapshot: loadSnapshot(store), refresh: null };
-  if (marketDataFactory === undefined) {
-    throw validationFailure(
-      "Valuation fetching is not configured.",
-      "Configure a market-data provider before using --fetch.",
-    );
-  }
-  const result = requireResult(
-    await marketDataFactory().refreshValuation(asOf, {
-      replaceManual: options.replaceManual === true,
-    }),
-  );
-  return { snapshot: result.snapshot, refresh: result.report };
-}
-
-function showRefresh(report: ValuationRefreshReport | null, json: boolean): void {
-  if (report === null || json) return;
-  process.stdout.write(`${renderRefresh(report)}\n`);
-  for (const conflict of report.conflicts) {
-    if (conflict.action === "replaced") continue;
-    process.stderr.write(
-      `warning: ${conflict.subject} ${conflict.asOf}: kept manual ${conflict.manual} ${conflict.currency}; fetched ${conflict.fetched} ${conflict.currency}. Use --fetch --replace-manual to accept the fetched value.\n`,
-    );
-  }
-}
-
-function hasFetchFailures(reports: ValuationRefreshReport): boolean {
-  return reports.prices.failures.length > 0 || reports.fx.failures.length > 0;
-}
-
-function partialFetchFailure(
-  reports: ValuationRefreshReport,
-  partial: ExternalFailureDetails["partial"],
-) {
-  const failures = [
-    ...reports.prices.failures.map(({ need, provider, error }) => ({
-      kind: "price" as const,
-      subject: need.instrument.id,
-      provider,
-      reason: error.kind,
-      message: error.message,
-    })),
-    ...reports.fx.failures.map(({ need, provider, error }) => ({
-      kind: "fx" as const,
-      subject: need.currency,
-      provider,
-      reason: error.kind,
-      message: error.message,
-    })),
-  ];
-  return externalFailure(
-    "Could not fetch every requested market-data observation.",
-    "Retry the command or add the missing marks manually.",
-    {
-      requested: { prices: reports.prices.requested, fx: reports.fx.requested },
-      saved: { prices: reports.prices.fetched.length, fx: reports.fx.fetched.length },
-      failures,
-      partial,
-      refresh: reports,
-    },
-  );
+  const positions = requireResult(getPositions(loadSnapshot(store), asOf));
+  writeSuccess(positions, json, renderPositions(positions));
 }
 
 function eventBelongsToAccount(event: Event, accountId: string): boolean {

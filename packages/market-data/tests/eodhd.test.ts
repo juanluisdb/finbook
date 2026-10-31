@@ -1,8 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
-
+import { expect, it, vi } from "vitest";
 import { InstrumentSchema } from "@finbook/core";
-
-import { EodhdSource, type PriceNeed } from "../src/index.js";
+import { EodhdSource } from "../src/index.js";
 
 const fund = InstrumentSchema.parse({
   id: "fund-x",
@@ -10,219 +8,100 @@ const fund = InstrumentSchema.parse({
   type: "fund",
   quoteCurrency: "EUR",
 });
+const need = {
+  instrument: fund,
+  identifier: "FUND.X.EUFUND",
+  from: "2026-02-27",
+  through: "2026-03-03",
+  sourceFrom: "2026-02-27",
+};
 
-type JsonValue =
-  | null
-  | boolean
-  | number
-  | string
-  | readonly JsonValue[]
-  | { readonly [key: string]: JsonValue };
-
-function need(asOf = "2026-03-03"): PriceNeed {
-  return { instrument: fund, asOf, identifier: "FUND.X.EUFUND" };
-}
-
-function jsonResponse(value: JsonValue, status = 200, headers?: HeadersInit): Response {
-  const responseHeaders = new Headers({ "content-type": "application/json" });
-  new Headers(headers).forEach((headerValue, name) => responseHeaders.set(name, headerValue));
-  return new Response(JSON.stringify(value), {
-    status,
-    headers: responseHeaders,
-  });
-}
-
-function source(fetchImplementation: typeof fetch, apiKey = "test-secret"): EodhdSource {
-  return new EodhdSource({
-    apiKey,
+it("retains every raw native close, independently of adjusted closes, in a single request", async () => {
+  const fetchImplementation = vi.fn<typeof fetch>().mockImplementation(async () =>
+    Response.json([
+      { date: "2026-02-27", close: 100.5, adjusted_close: 25 },
+      { date: "2026-03-02", close: 101.25, adjusted_close: 26 },
+      { date: "2026-03-03", close: 103.75, adjusted_close: 27 },
+    ]),
+  );
+  const provider = new EodhdSource({
+    apiKey: "fixture-key",
     fetchImplementation,
-    now: () => new Date("2026-03-03T22:00:00.000Z"),
+    now: () => new Date("2026-03-04T12:00:00Z"),
   });
-}
+  expect(await provider.fetchPriceHistory(need)).toMatchObject({
+    ok: true,
+    data: [
+      { asOf: "2026-02-27", price: { amount: "100.5", currency: "EUR" } },
+      { asOf: "2026-03-02", price: { amount: "101.25", currency: "EUR" } },
+      { asOf: "2026-03-03", price: { amount: "103.75", currency: "EUR" } },
+    ],
+  });
+  expect(fetchImplementation).toHaveBeenCalledOnce();
+});
 
-describe("EODHD source", () => {
-  it("preserves raw closes in native history and single-date requests", async () => {
-    const fetchImplementation = vi.fn<typeof fetch>().mockImplementation(async () =>
-      jsonResponse([
-        { date: "2026-02-27", close: 100.5, adjusted_close: 98.5 },
-        { date: "2026-03-02", close: 101.25, adjusted_close: 99.5 },
-        { date: "2026-03-03", close: 103.75, adjusted_close: 101 },
-      ]),
+it("rejects future rows, malformed payloads and non-JSON successes", async () => {
+  const fetchImplementation = vi
+    .fn<typeof fetch>()
+    .mockResolvedValueOnce(Response.json([{ date: "2026-03-04", close: 104 }]))
+    .mockResolvedValueOnce(Response.json([{ date: "2026-03-03", close: -8 }]))
+    .mockResolvedValueOnce(new Response("not-json"));
+  const provider = new EodhdSource({ apiKey: "fixture-key", fetchImplementation });
+  for (let index = 0; index < 3; index++)
+    expect(await provider.fetchPriceHistory(need)).toMatchObject({
+      ok: false,
+      error: { kind: "invalid-response" },
+    });
+});
+
+it("rejects absent credentials and unsupported instruments before requesting data", async () => {
+  const fetchImplementation = vi.fn<typeof fetch>();
+  expect(await new EodhdSource({ fetchImplementation }).fetchPriceHistory(need)).toMatchObject({
+    ok: false,
+    error: { kind: "unauthorized" },
+  });
+  expect(
+    await new EodhdSource({ apiKey: "fixture-key", fetchImplementation }).fetchPriceHistory({
+      ...need,
+      instrument: { ...fund, type: "crypto" },
+    }),
+  ).toMatchObject({ ok: false, error: { kind: "unsupported" } });
+  expect(fetchImplementation).not.toHaveBeenCalled();
+});
+
+it.each([
+  [401, "unauthorized"],
+  [403, "unauthorized"],
+  [404, "not-found"],
+  [429, "rate-limited"],
+  [422, "invalid-response"],
+  [503, "unavailable"],
+] as const)("normalizes HTTP %s without retrying or exposing the key", async (status, kind) => {
+  const fetchImplementation = vi
+    .fn<typeof fetch>()
+    .mockImplementation(
+      async () => new Response("private-key", { status, headers: { "retry-after": "9" } }),
     );
-    const provider = source(fetchImplementation);
-    const result = await provider.fetchPriceHistory({
-      instrument: fund,
-      identifier: "FUND.X.EUFUND",
-      from: "2026-02-27",
-      through: "2026-03-03",
-    });
-    expect(result).toMatchObject({
-      ok: true,
-      data: [
-        { instrument: "fund-x", price: { amount: "100.5", currency: "EUR" }, asOf: "2026-02-27" },
-        { instrument: "fund-x", price: { amount: "101.25", currency: "EUR" }, asOf: "2026-03-02" },
-        {
-          instrument: "fund-x",
-          price: { amount: "103.75", currency: "EUR" },
-          asOf: "2026-03-03",
-          provenance: { kind: "fetched", source: "eodhd", retrievedAt: "2026-03-03T22:00:00.000Z" },
-        },
-      ],
-    });
-    expect(fetchImplementation).toHaveBeenCalledOnce();
-    const requested = fetchImplementation.mock.calls[0]?.[0];
-    if (!(requested instanceof URL)) throw new Error("Expected an EODHD URL");
-    expect(requested.pathname).toBe("/api/eod/FUND.X.EUFUND");
-    expect(Object.fromEntries(requested.searchParams)).toEqual({
-      api_token: "test-secret",
-      fmt: "json",
-      period: "d",
-      order: "d",
-      to: "2026-03-03",
-    });
-    expect(await provider.fetchPrices([need()])).toMatchObject([
-      { ok: true, data: { asOf: "2026-03-03", price: { amount: "103.75", currency: "EUR" } } },
-    ]);
-    expect(fetchImplementation).toHaveBeenCalledTimes(2);
-    const pointRequest = fetchImplementation.mock.calls[1]?.[0];
-    if (!(pointRequest instanceof URL)) throw new Error("Expected an EODHD URL");
-    expect(pointRequest.searchParams.get("from")).toBe("2026-02-22");
+  const result = await new EodhdSource({
+    apiKey: "private-key",
+    fetchImplementation,
+  }).fetchPriceHistory(need);
+  expect(result).toMatchObject({ ok: false, error: { kind, status } });
+  expect(JSON.stringify(result)).not.toContain("private-key");
+  expect(fetchImplementation).toHaveBeenCalledOnce();
+});
+
+it("retains a rate-limit retry delay and redacts transport failures", async () => {
+  const fetchImplementation = vi
+    .fn<typeof fetch>()
+    .mockResolvedValueOnce(new Response("limit", { status: 429, headers: { "retry-after": "9" } }))
+    .mockRejectedValueOnce(new Error("URL contains private-key"));
+  const provider = new EodhdSource({ apiKey: "private-key", fetchImplementation });
+  expect(await provider.fetchPriceHistory(need)).toMatchObject({
+    ok: false,
+    error: { kind: "rate-limited", retryAfterMs: 9000 },
   });
-
-  it("selects the newest eligible historical close and retains its date", async () => {
-    const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(
-      jsonResponse([
-        { date: "2026-02-28", close: 100.5 },
-        { date: "2026-02-27", close: 99 },
-      ]),
-    );
-
-    const result = await source(fetchImplementation).fetchPrices([need("2026-03-01")]);
-
-    expect(result).toMatchObject([
-      {
-        ok: true,
-        data: { price: { amount: "100.5", currency: "EUR" }, asOf: "2026-02-28" },
-      },
-    ]);
-  });
-
-  it("rejects a future daily observation date", async () => {
-    const fetchImplementation = vi
-      .fn<typeof fetch>()
-      .mockResolvedValue(jsonResponse([{ date: "2026-03-04", close: 100 }]));
-
-    const result = await source(fetchImplementation).fetchPrices([need()]);
-
-    expect(result).toMatchObject([
-      {
-        ok: false,
-        error: { kind: "invalid-response", message: expect.stringContaining("future") },
-      },
-    ]);
-  });
-
-  it("rejects absent credentials and unsupported instruments without requesting data", async () => {
-    const fetchImplementation = vi.fn<typeof fetch>();
-    const etfNeed: PriceNeed = {
-      ...need(),
-      instrument: InstrumentSchema.parse({
-        id: "etf-x",
-        name: "ETF X",
-        type: "etf",
-        quoteCurrency: "EUR",
-      }),
-    };
-
-    const missingKey = await source(fetchImplementation, "").fetchPrices([need()]);
-    const unsupported = await source(fetchImplementation).fetchPrices([etfNeed]);
-
-    expect(missingKey).toMatchObject([{ ok: false, error: { kind: "unauthorized" } }]);
-    expect(unsupported).toMatchObject([{ ok: false, error: { kind: "unsupported" } }]);
-    expect(fetchImplementation).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    [400, "invalid-response"],
-    [401, "unauthorized"],
-    [403, "unauthorized"],
-    [404, "not-found"],
-    [422, "invalid-response"],
-    [429, "rate-limited"],
-    [500, "unavailable"],
-  ] as const)("normalizes HTTP %s without retrying", async (status, kind) => {
-    const fetchImplementation = vi
-      .fn<typeof fetch>()
-      .mockResolvedValue(jsonResponse({ message: "provider detail" }, status));
-
-    const result = await source(fetchImplementation).fetchPrices([need()]);
-
-    expect(result).toMatchObject([{ ok: false, error: { kind, status } }]);
-    expect(fetchImplementation).toHaveBeenCalledOnce();
-  });
-
-  it("reports a usable retry delay without issuing another request", async () => {
-    const fetchImplementation = vi
-      .fn<typeof fetch>()
-      .mockResolvedValue(jsonResponse({}, 429, { "retry-after": "30" }));
-
-    const result = await source(fetchImplementation).fetchPrices([need()]);
-
-    expect(result).toMatchObject([
-      { ok: false, error: { kind: "rate-limited", retryAfterMs: 30_000 } },
-    ]);
-    expect(fetchImplementation).toHaveBeenCalledOnce();
-  });
-
-  it("spends one request for each unresolved fund need", async () => {
-    const fetchImplementation = vi
-      .fn<typeof fetch>()
-      .mockImplementation(() =>
-        Promise.resolve(jsonResponse([{ date: "2026-03-02", close: 100 }])),
-      );
-    const otherNeed: PriceNeed = {
-      ...need(),
-      instrument: InstrumentSchema.parse({
-        id: "fund-y",
-        name: "Fund Y",
-        type: "fund",
-        quoteCurrency: "EUR",
-      }),
-      identifier: "FUND.Y.EUFUND",
-    };
-
-    const result = await source(fetchImplementation).fetchPrices([need(), otherNeed]);
-
-    expect(result).toMatchObject([{ ok: true }, { ok: true }]);
-    expect(fetchImplementation).toHaveBeenCalledTimes(2);
-  });
-
-  it("rejects empty, malformed, and non-JSON success payloads", async () => {
-    const emptyFetch = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse([]));
-    const malformedFetch = vi
-      .fn<typeof fetch>()
-      .mockResolvedValue(jsonResponse([{ date: "not-a-date", close: -1 }]));
-    const nonJsonFetch = vi.fn<typeof fetch>().mockResolvedValue(new Response("not JSON"));
-
-    const empty = await source(emptyFetch).fetchPrices([need()]);
-    const malformed = await source(malformedFetch).fetchPrices([need()]);
-    const nonJson = await source(nonJsonFetch).fetchPrices([need()]);
-
-    expect(empty).toMatchObject([{ ok: false, error: { kind: "not-found" } }]);
-    expect(malformed).toMatchObject([{ ok: false, error: { kind: "invalid-response" } }]);
-    expect(nonJson).toMatchObject([{ ok: false, error: { kind: "invalid-response" } }]);
-  });
-
-  it("does not expose the API key when transport fails", async () => {
-    const secret = "secret-that-must-not-appear";
-    const fetchImplementation = vi
-      .fn<typeof fetch>()
-      .mockRejectedValue(new Error(`failed URL contains ${secret}`));
-
-    const result = await source(fetchImplementation, secret).fetchPrices([need()]);
-    const rendered = JSON.stringify(result);
-
-    expect(result).toMatchObject([{ ok: false, error: { kind: "unavailable" } }]);
-    expect(rendered).not.toContain(secret);
-  });
+  const failed = await provider.fetchPriceHistory(need);
+  expect(failed).toMatchObject({ ok: false, error: { kind: "unavailable" } });
+  expect(JSON.stringify(failed)).not.toContain("private-key");
 });
