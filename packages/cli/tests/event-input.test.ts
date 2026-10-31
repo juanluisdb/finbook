@@ -580,3 +580,169 @@ describe("event input preparation", () => {
     verify(loadEvent(store, current.id));
   });
 });
+
+it("adds every optional-rate variant without inventing a rate or calling a provider", async () => {
+  const store = temporaryStore();
+  seedAccount(store);
+  seedInstrument(store);
+  appendEvent(store, {
+    id: "cash",
+    type: "deposit",
+    date: "2026-03-01",
+    account: "ib",
+    source: "manual",
+    amount: { amount: "1000", currency: "USD" },
+    eurPerUnit: "0.8",
+  });
+  let calls = 0;
+  const resolver = {
+    resolveHistoricalEurRate: async () => {
+      calls++;
+      return successfulRate("0.9");
+    },
+  };
+  for (const fields of [
+    {
+      type: "buy",
+      instrument: "HROW",
+      qty: "2",
+      priceAmount: "40",
+      priceCurrency: "USD",
+      grossAmount: "80",
+    },
+    {
+      type: "sell",
+      instrument: "HROW",
+      qty: "1",
+      priceAmount: "45",
+      priceCurrency: "USD",
+      grossAmount: "45",
+    },
+    { type: "dividend", instrument: "HROW", grossAmount: "7", grossCurrency: "USD" },
+    { type: "interest", grossAmount: "8", grossCurrency: "USD" },
+    { type: "fee", amount: "3", currency: "USD" },
+  ] as const) {
+    await addEvent(
+      store,
+      { ...fields, id: fields.type, date: "2026-03-03", account: "ib" },
+      true,
+      () => fields.type,
+      resolver,
+    );
+    const saved = loadEvent(store, fields.type);
+    expect(saved).not.toHaveProperty("eurPerUnit");
+    expect(saved).not.toHaveProperty("eurRateProvenance");
+  }
+  expect(calls).toBe(0);
+});
+
+it("keeps an explicitly failed optional rate fetch visible and saves no event or valuation mark", async () => {
+  const store = temporaryStore();
+  seedAccount(store);
+  appendEvent(store, {
+    id: "cash",
+    type: "deposit",
+    date: "2026-03-01",
+    account: "ib",
+    source: "manual",
+    amount: { amount: "100", currency: "USD" },
+    eurPerUnit: "0.8",
+  });
+  await expect(
+    addEvent(
+      store,
+      {
+        type: "fee",
+        id: "fee",
+        date: "2026-03-03",
+        account: "ib",
+        amount: "3",
+        currency: "USD",
+        fetchRate: true,
+      },
+      true,
+      () => "fee",
+      {
+        resolveHistoricalEurRate: async () => ({
+          ok: false,
+          error: { kind: "unavailable", message: "Controlled provider failure" },
+        }),
+      },
+    ),
+  ).rejects.toMatchObject({ domainError: { type: "external" } });
+  expect(store.load()).toMatchObject({ data: { events: [{ id: "cash" }], prices: [], fx: [] } });
+});
+
+it("requires explicit clearing when a currency edit invalidates a fetched reporting rate", async () => {
+  const store = temporaryStore();
+  seedAccount(store);
+  seedInstrument(store);
+  expect(
+    store.appendInstrument(
+      InstrumentSchema.parse({
+        id: "EUR-FUND",
+        name: "EUR fund",
+        type: "fund",
+        quoteCurrency: "EUR",
+      }),
+    ).ok,
+  ).toBe(true);
+  appendEvent(store, {
+    id: "usd",
+    type: "deposit",
+    date: "2026-03-01",
+    account: "ib",
+    source: "manual",
+    amount: { amount: "100", currency: "USD" },
+    eurPerUnit: "0.8",
+  });
+  appendEvent(store, {
+    id: "eur",
+    type: "deposit",
+    date: "2026-03-01",
+    account: "ib",
+    source: "manual",
+    amount: { amount: "100", currency: "EUR" },
+    eurPerUnit: "1",
+  });
+  await addEvent(
+    store,
+    {
+      type: "buy",
+      id: "trade",
+      date: "2026-03-03",
+      account: "ib",
+      instrument: "HROW",
+      qty: "1",
+      priceAmount: "40",
+      priceCurrency: "USD",
+      grossAmount: "40",
+      fetchRate: true,
+    },
+    true,
+    () => "trade",
+    { resolveHistoricalEurRate: async () => successfulRate("0.9") },
+  );
+  expect(loadEvent(store, "trade")).toMatchObject({
+    eurPerUnit: "0.9",
+    eurRateProvenance: { source: "ecb" },
+  });
+  await expect(
+    editEvent(store, { type: "buy", instrument: "EUR-FUND", priceCurrency: "EUR" }, "trade", true),
+  ).rejects.toMatchObject({
+    domainError: { type: "validation", hint: expect.stringContaining("--clear-eur-rate") },
+  });
+  expect(loadEvent(store, "trade")).toMatchObject({ instrument: "HROW", eurPerUnit: "0.9" });
+  await editEvent(
+    store,
+    { type: "buy", instrument: "EUR-FUND", priceCurrency: "EUR", clearEurRate: true },
+    "trade",
+    true,
+  );
+  expect(loadEvent(store, "trade")).not.toHaveProperty("eurPerUnit");
+  expect(loadEvent(store, "trade")).not.toHaveProperty("eurRateProvenance");
+  await editEvent(store, { type: "buy", eurPerUnit: "1" }, "trade", true);
+  await editEvent(store, { type: "buy", date: "2026-03-04" }, "trade", true);
+  expect(loadEvent(store, "trade")).toMatchObject({ date: "2026-03-04", eurPerUnit: "1" });
+  expect(store.load()).toMatchObject({ data: { prices: [], fx: [] } });
+});

@@ -11,6 +11,7 @@ import {
   apply,
   createInitialState,
 } from "../src/index.js";
+import { DecimalMath } from "../src/domain/decimal.js";
 
 const accounts: Account[] = [
   AccountSchema.parse({
@@ -675,4 +676,187 @@ describe("accounting engine", () => {
     expect(state.lots.ib?.HROW?.[0]?.quantity).toBe("20");
     expect(state.lots.myinvestor?.HROW?.[0]?.quantity).toBe("2");
   });
+});
+
+it.each([
+  ["2", "1"],
+  ["1", "2"],
+])(
+  "conserves units after selling %s of three and permits the exact final sale",
+  (sold, remaining) => {
+    let state = deposit(initialState(), "100", "USD");
+    state = applyOrThrow(
+      state,
+      EventSchema.parse({
+        id: "buy-three",
+        type: "buy",
+        source: "manual",
+        date: "2026-03-03",
+        account: "ib",
+        instrument: "HROW",
+        qty: "3",
+        price: { amount: "1", currency: "USD" },
+        grossAmount: "3",
+        eurPerUnit: "0.9",
+      }),
+    );
+    state = applyOrThrow(
+      state,
+      EventSchema.parse({
+        id: "partial-sale",
+        type: "sell",
+        source: "manual",
+        date: "2026-03-04",
+        account: "ib",
+        instrument: "HROW",
+        qty: sold,
+        price: { amount: "1", currency: "USD" },
+        grossAmount: sold,
+        eurPerUnit: "0.9",
+      }),
+    );
+    expect(state.lots.ib?.HROW?.[0]?.quantity).toBe(remaining);
+    state = applyOrThrow(
+      state,
+      EventSchema.parse({
+        id: "final-sale",
+        type: "sell",
+        source: "manual",
+        date: "2026-03-05",
+        account: "ib",
+        instrument: "HROW",
+        qty: remaining,
+        price: { amount: "1", currency: "USD" },
+        grossAmount: remaining,
+        eurPerUnit: "0.9",
+      }),
+    );
+    expect(state.lots.ib?.HROW).toBeUndefined();
+    expect(cashAmount(state, "ib", "USD")).toBe("100");
+  },
+);
+
+it("conserves the sum of uneven lots through repeated sales and retains a tiny positive remainder", () => {
+  let state = deposit(initialState(), "100", "USD");
+  for (const [id, qty] of [
+    ["first", "1"],
+    ["second", "2"],
+    ["third", "3"],
+  ]) {
+    state = applyOrThrow(
+      state,
+      EventSchema.parse({
+        id,
+        type: "buy",
+        source: "manual",
+        date: "2026-03-03",
+        account: "ib",
+        instrument: "HROW",
+        qty,
+        price: { amount: "1", currency: "USD" },
+        grossAmount: qty,
+        eurPerUnit: "0.9",
+      }),
+    );
+  }
+  for (const [id, qty, remaining] of [
+    ["sell-first", "1", "5"],
+    ["sell-second", "2", "3"],
+    ["sell-almost-all", "2.999999999999999999999999999999", "0.000000000000000000000000000001"],
+    ["sell-last", "0.000000000000000000000000000001", "0"],
+  ]) {
+    state = applyOrThrow(
+      state,
+      EventSchema.parse({
+        id,
+        type: "sell",
+        source: "manual",
+        date: "2026-03-04",
+        account: "ib",
+        instrument: "HROW",
+        qty,
+        price: { amount: "1", currency: "USD" },
+        grossAmount: qty,
+        eurPerUnit: "0.9",
+      }),
+    );
+    const lots = state.lots.ib?.HROW ?? [];
+    const units = lots.reduce((total, lot) => total.plus(lot.quantity), new DecimalMath(0));
+    expect(units.toFixed()).toBe(remaining);
+    expect(lots.every((lot) => !new DecimalMath(lot.quantity).isNegative())).toBe(true);
+  }
+  expect(state.lots.ib?.HROW).toBeUndefined();
+  expect(cashAmount(state, "ib", "USD")).toBe("100");
+});
+
+it("subtracts fractional instrument fees exactly without permitting a real oversell", () => {
+  let state = deposit(initialState(), "100", "USD");
+  state = applyOrThrow(
+    state,
+    EventSchema.parse({
+      id: "buy-fee",
+      type: "buy",
+      source: "manual",
+      date: "2026-03-03",
+      account: "ib",
+      instrument: "HROW",
+      qty: "3",
+      fee: { kind: "instrument", quantity: "0.1" },
+      price: { amount: "1", currency: "USD" },
+      grossAmount: "3",
+      eurPerUnit: "0.9",
+    }),
+  );
+  state = applyOrThrow(
+    state,
+    EventSchema.parse({
+      id: "sell-fee",
+      type: "sell",
+      source: "manual",
+      date: "2026-03-04",
+      account: "ib",
+      instrument: "HROW",
+      qty: "2",
+      fee: { kind: "instrument", quantity: "0.1" },
+      price: { amount: "1", currency: "USD" },
+      grossAmount: "2",
+      eurPerUnit: "0.9",
+    }),
+  );
+  expect(state.lots.ib?.HROW?.[0]?.quantity).toBe("0.8");
+  expect(
+    apply(
+      state,
+      EventSchema.parse({
+        id: "oversell",
+        type: "sell",
+        source: "manual",
+        date: "2026-03-05",
+        account: "ib",
+        instrument: "HROW",
+        qty: "0.800000000000000000000000000001",
+        price: { amount: "1", currency: "USD" },
+        grossAmount: "0.8",
+        eurPerUnit: "0.9",
+      }),
+    ),
+  ).toMatchObject({ ok: false, error: { type: "invariant" } });
+  state = applyOrThrow(
+    state,
+    EventSchema.parse({
+      id: "sell-last-fee",
+      type: "sell",
+      source: "manual",
+      date: "2026-03-05",
+      account: "ib",
+      instrument: "HROW",
+      qty: "0.7",
+      fee: { kind: "instrument", quantity: "0.1" },
+      price: { amount: "1", currency: "USD" },
+      grossAmount: "0.7",
+      eurPerUnit: "0.9",
+    }),
+  );
+  expect(state.lots.ib?.HROW).toBeUndefined();
+  expect(cashAmount(state, "ib", "USD")).toBe("99.7");
 });

@@ -62,7 +62,7 @@ Reporting currency is EUR and is not configurable.
 
 Amounts, quantities, prices, rates, and weights cross boundaries as decimal strings. finbook uses decimal arithmetic and does not round user input into binary floating-point values.
 
-Every deposit, withdrawal, trade, dividend, interest, and standalone fee carries `eurPerUnit`: the historical EUR value of one unit of that event’s native currency. EUR events use `1`. A fetched historical rate also retains its provider, retrieval instant, and effective economic date.
+External deposits and withdrawals carry `eurPerUnit`, the historical EUR value of one unit of their native currency, because contributions use that rate. EUR contributions use `1`. Trades, dividends, interest, and standalone fees may omit this reporting-only rate. A supplied rate for an event in EUR must be `1`; fetched evidence retains its provider, retrieval instant, and effective economic date and cannot exist without its rate. An EUR-to-USD conversion followed by a USD purchase records two events without requiring a second reporting rate on the purchase.
 
 Historical event rates explain the event in EUR. Current FX stamps value live cash and positions. One must not substitute for the other.
 
@@ -85,6 +85,10 @@ An edit preserves the event ID, type, source, external ID, and ledger position. 
 Before adding, editing, or deleting an event, finbook replays the complete proposed ledger. A correction that would invalidate a later transaction is rejected without changing the event file.
 
 For example, after buying and then selling 20 units, changing the purchase quantity to 15 would make the later sale invalid, so the edit is rejected.
+
+Remaining holdings conserve the exact recorded purchases minus disposals, including instrument-denominated fees. Proportional lot allocation does not define the authoritative unit total. Remaining cost stays proportional and does not claim FIFO or tax-basis accounting.
+
+A typed edit preserves a supplied reporting EUR rate. Changing a foreign rate's economic date or currency requires a replacement or explicit `--clear-eur-rate`, which removes rate and provenance together. Rate-free events edit without requiring a rate. Required contribution rates cannot be cleared.
 
 The replay ordering and mutation guarantees live in `packages/core/src/domain/replay.ts::orderEvents` and `packages/core/src/domain/store.ts::FileBookStore`.
 
@@ -128,7 +132,7 @@ The query contract lives in `packages/core/src/domain/queries.ts::getPositions`,
 
 The CLI is non-interactive. Deletion is immediate once the candidate ledger validates.
 
-finbook creates no automatic backup, tombstone, undo log, or hidden event history. The local data files are the current book.
+finbook creates no automatic backup, tombstone, undo log, or hidden event history. The local data files are the current book. Ordinary first use initializes a new book; a partially missing core book fails without recreating files. Abandoned or uncertain locks stop operations for manual inspection rather than being removed automatically. Whole-folder backup and restoration are deliberate owner procedures described in the README.
 
 `doctor` is an offline, read-only inspection. It can report an uninitialized book, schema or replay problems, unsafe permissions, lock state, market configuration, and valuation completeness. It does not initialize, repair, unlock, fetch, or expose event payloads or credentials.
 

@@ -56,12 +56,12 @@ Record money entering the portfolio, exchange it, and buy the instrument:
 ```sh
 finbook event add deposit --date 2026-03-03 --account broker --amount 800 --currency EUR
 finbook event add fx --date 2026-03-03 --account broker --from-amount 798 --from-currency EUR --to-amount 927.04 --to-currency USD --fee-amount 1.71 --fee-currency EUR
-finbook event add buy --date 2026-03-03 --account broker --instrument ACME --qty 20 --price-amount 40.45 --price-currency USD --gross-amount 809 --fee-in quote --fee-amount 0.28 --eur-per-unit 0.861
+finbook event add buy --date 2026-03-03 --account broker --instrument ACME --qty 20 --price-amount 40.45 --price-currency USD --gross-amount 809 --fee-in quote --fee-amount 0.28
 ```
 
 `--gross-amount` records the exact pre-fee cash value reported for a trade; finbook does not reconstruct it from a rounded unit price. A trade fee can come from quote-currency cash (`--fee-in quote`) or from the traded instrument (`--fee-in instrument`). Omit both fee flags when there is no fee.
 
-`eurPerUnit` records the historical EUR value of one unit of the event currency. For a non-EUR event, provide it directly or use `--fetch-rate`. EUR events store a rate of `1` automatically.
+`eurPerUnit` records the historical EUR value of one unit of the event currency. Non-EUR deposits and withdrawals require it for contribution accounting; provide it directly or use `--fetch-rate`. EUR contributions store `1`. On trades, dividends, interest, and standalone fees the reporting rate is optional: omitting it makes no network request and stores no invented rate. Your EUR-to-USD conversion and subsequent USD purchase can therefore be recorded separately without supplying an extra rate on the purchase. Daily valuation still needs its own market price and FX marks.
 
 Add valuation marks and inspect the portfolio:
 
@@ -113,7 +113,7 @@ Use `finbook <command> --help` for the complete command-specific flags and examp
 - Dates are `YYYY-MM-DD` economic dates, not instants. An omitted view date uses the book timezone, which defaults to `Europe/Madrid`; configure it with `finbook config timezone set <iana-name>`.
 - Reporting is always in EUR. Missing marks remain visible and make affected totals unknown rather than silently approximated.
 - Transfers move the same currency between owned accounts and do not change contributed capital. Currency conversion within an account is an `fx` event.
-- Event edits retain omitted fields. Edits and deletions replay the complete proposed ledger and write nothing when a later event would become invalid.
+- Event edits retain omitted fields. A supplied reporting EUR rate stays recorded; changing its foreign-currency date or currency requires a new rate or `--clear-eur-rate`, which clears rate and provenance together. Required contribution rates cannot be cleared. Edits and deletions replay the complete proposed ledger and write nothing when a later event would become invalid.
 - There is no automatic backup, undo log, or hidden event history.
 - Human-readable output is the default. `--json` returns a stable success or error envelope for scripts.
 - `finbook doctor` is offline and read-only: it reports book, schema, replay, configuration, permission, lock, and valuation health without repairing or initializing anything.
@@ -123,6 +123,16 @@ Use `finbook <command> --help` for the complete command-specific flags and examp
 `$FINBOOK_HOME` contains private financial information. Keep it outside the checkout and do not commit or upload it. finbook uses owner-only permissions where the operating system supports them.
 
 Non-secret provider routes and bindings are stored with the book. CoinGecko and EODHD credentials are read from `FINBOOK_COINGECKO_DEMO_API_KEY` and `FINBOOK_EODHD_API_KEY`; they are not persisted.
+
+## Back up and recover deliberately
+
+Stop every finbook process using the book before copying it. Copy the complete `$FINBOOK_HOME` folder to a private location outside the checkout and preserve its owner-only permissions. Keep all book files together; a copy of an actively changing book can be inconsistent.
+
+A partially missing core book fails instead of recreating the missing files. An abandoned or uncertain lock also stops the operation. The error identifies `.finbook.lock` or `.finbook.refresh.lock` and the available ownership information. Inspect the named lock and confirm no process is using the book before manually removing that lock directory. A live owner should be allowed to finish. finbook provides no automatic lock recovery or unlock command.
+
+For restoration, keep the damaged original and copy a known consistent, version-compatible whole backup into a separate location. Point `FINBOOK_HOME` there and run `finbook doctor` before continuing. Do not combine selected files from different snapshots. Doctor inspects without repairing, unlocking, or initializing the book.
+
+This build uses book schema 4 and rejects earlier book formats without rewriting their financial files. There is no automatic migration. Create a disposable test book in a new directory when needed. Rolling back a build after writing rate-free events also requires a compatible reader or a complete pre-change backup.
 
 ## Development
 

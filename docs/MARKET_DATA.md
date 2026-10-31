@@ -35,7 +35,7 @@ Provider adapters translate their external API into those contracts. Core sees o
 
 Price observations value an instrument on an economic date. FX observations value one unit of a currency in EUR on an economic date. Both become stamps in the local book.
 
-Historical EUR-rate observations prepare rate-bearing events. The CLI embeds the normalized rate, effective date, provider, and retrieval instant into the event before append.
+Historical EUR-rate observations prepare contribution events and explicitly requested reporting evidence. The CLI embeds the normalized rate, effective date, provider, and retrieval instant into the event before append.
 
 A current FX stamp must not supply an event’s historical `eurPerUnit`. Fetching a historical event rate must not append a valuation stamp as a side effect.
 
@@ -119,7 +119,7 @@ Adapter behaviour lives in `packages/market-data/src/yahoo.ts::YahooSource`, `pa
 
 Changing a subject's binding or effective route creates a different request identity. New subjects fetch independently. Failed needs receive no successful receipt, so retrying does not repeat completed work. A crash after saving a mark but before its receipt can cause another request, but cannot create a false cache hit.
 
-The refresh lock serializes complete refresh operations across processes. The book lock protects local commits and is released during network waits. A caller finding an active refresh fails fast rather than starting duplicate network work.
+The refresh lock serializes complete refresh operations across processes. The book lock protects local commits and is released during network waits. A caller finding an active refresh fails fast rather than starting duplicate network work. Abandoned or uncertain book and refresh locks remain in place and stop work for manual recovery; acquisition never removes another owner's lock.
 
 ## Resolve manual conflicts explicitly
 

@@ -201,6 +201,7 @@ const FxEditSchema = z
 const TradeEditFields = {
   ...EditBaseFields,
   ...RateFields,
+  clearEurRate: z.boolean().optional(),
   account: AccountIdSchema.optional(),
   instrument: InstrumentIdSchema.optional(),
   qty: PositiveDecimalStringSchema.optional(),
@@ -215,6 +216,7 @@ const TradeEditFields = {
 const IncomeEditFields = {
   ...EditBaseFields,
   ...RateFields,
+  clearEurRate: z.boolean().optional(),
   account: AccountIdSchema.optional(),
   grossAmount: PositiveDecimalStringSchema.optional(),
   grossCurrency: CurrencySchema.optional(),
@@ -256,7 +258,11 @@ const EditInputSchema = z.discriminatedUnion("type", [
     .strict()
     .superRefine(validateRateOptions),
   z
-    .object({ ...AccountMoneyEditFields, type: z.literal("fee") })
+    .object({
+      ...AccountMoneyEditFields,
+      type: z.literal("fee"),
+      clearEurRate: z.boolean().optional(),
+    })
     .strict()
     .superRefine(validateRateOptions),
 ]);
@@ -370,7 +376,10 @@ async function buildEvent(
     case "fee": {
       const amount = requiredMoney(input.amount, input.currency, "--amount", "--currency");
       const account = required(input.account, "--account");
-      const rate = await resolveEurRate(amount.currency, base.date, input, rateResolver);
+      const rate =
+        input.type === "fee"
+          ? await resolveOptionalEurRate(amount.currency, base.date, input, rateResolver)
+          : await resolveEurRate(amount.currency, base.date, input, rateResolver);
       return parseEvent({
         ...base,
         type: input.type,
@@ -413,7 +422,7 @@ async function buildEvent(
         "--price-currency",
       );
       const fee = buildTradeFee(input.feeIn, input.feeAmount);
-      const rate = await resolveEurRate(price.currency, base.date, input, rateResolver);
+      const rate = await resolveOptionalEurRate(price.currency, base.date, input, rateResolver);
       const event = {
         ...base,
         type: input.type,
@@ -448,7 +457,7 @@ async function buildEvent(
         "--withholding-domestic-amount",
         "--gross-currency",
       );
-      const rate = await resolveEurRate(gross.currency, base.date, input, rateResolver);
+      const rate = await resolveOptionalEurRate(gross.currency, base.date, input, rateResolver);
       const event = {
         ...base,
         type: input.type,
@@ -481,7 +490,7 @@ async function buildEvent(
         "--withholding-domestic-amount",
         "--gross-currency",
       );
-      const rate = await resolveEurRate(gross.currency, base.date, input, rateResolver);
+      const rate = await resolveOptionalEurRate(gross.currency, base.date, input, rateResolver);
       const event = {
         ...base,
         type: input.type,
@@ -632,7 +641,17 @@ function validateOptionalMoneyPair(
   });
 }
 
-function validateRateOptions(input: RateInput, context: z.RefinementCtx): void {
+function validateRateOptions(
+  input: RateInput & { clearEurRate?: boolean | undefined },
+  context: z.RefinementCtx,
+): void {
+  if (input.clearEurRate === true && (input.eurPerUnit !== undefined || input.fetchRate === true)) {
+    context.addIssue({
+      code: "custom",
+      path: ["clearEurRate"],
+      message: "Use either --clear-eur-rate or a replacement/fetched rate",
+    });
+  }
   if (input.provider !== undefined && input.fetchRate !== true) {
     context.addIssue({
       code: "custom",
@@ -720,14 +739,24 @@ async function buildAccountMoneyReplacement(
   rateResolver: HistoricalRateResolver | undefined,
 ): Promise<Event> {
   const amount = mergeMoney(current.amount, input.amount, input.currency);
-  const rate = await resolveEditedRate(
-    amount.currency,
-    current.amount.currency,
-    current,
-    base.date,
-    input,
-    rateResolver,
-  );
+  const rate =
+    current.type === "fee"
+      ? await resolveEditedOptionalRate(
+          amount.currency,
+          current.amount.currency,
+          current,
+          base.date,
+          input,
+          rateResolver,
+        )
+      : await resolveEditedRate(
+          amount.currency,
+          current.amount.currency,
+          current,
+          base.date,
+          input,
+          rateResolver,
+        );
   return parseEvent({
     ...base,
     type: current.type,
@@ -780,7 +809,7 @@ async function buildTradeReplacement(
     input.clearFee,
     feeUnitChanged,
   );
-  const rate = await resolveEditedRate(
+  const rate = await resolveEditedOptionalRate(
     price.currency,
     current.price.currency,
     current,
@@ -823,7 +852,7 @@ async function buildIncomeReplacement(
     input.clearWithholdingDomestic,
     "--withholding-domestic-amount",
   );
-  const rate = await resolveEditedRate(
+  const rate = await resolveEditedOptionalRate(
     gross.currency,
     current.gross.currency,
     current,
@@ -1026,6 +1055,48 @@ function existingRate(event: RateBearingEvent): RateFields {
 }
 
 type RateFields = { eurPerUnit: string; eurRateProvenance?: EurRateProvenance };
+
+type OptionalRateFields = Partial<RateFields>;
+type OptionalRateEvent = {
+  date: string;
+  eurPerUnit?: string | undefined;
+  eurRateProvenance?: EurRateProvenance | undefined;
+};
+
+async function resolveOptionalEurRate(
+  currency: string,
+  date: string,
+  input: RateInput,
+  resolver: HistoricalRateResolver | undefined,
+): Promise<OptionalRateFields> {
+  if (input.eurPerUnit === undefined && input.fetchRate !== true) return {};
+  return resolveEurRate(currency, date, input, resolver);
+}
+
+async function resolveEditedOptionalRate(
+  currency: string,
+  currentCurrency: string,
+  current: OptionalRateEvent,
+  date: string,
+  input: RateInput & { clearEurRate?: boolean | undefined },
+  resolver: HistoricalRateResolver | undefined,
+): Promise<OptionalRateFields> {
+  if (input.clearEurRate === true) return {};
+  if (input.eurPerUnit !== undefined || input.fetchRate === true)
+    return resolveEurRate(currency, date, input, resolver);
+  if (current.eurPerUnit === undefined) return {};
+  const changed = currency !== currentCurrency || date !== current.date;
+  const constantEurRate =
+    currency === "EUR" && currentCurrency === "EUR" && current.eurRateProvenance === undefined;
+  if (changed && !constantEurRate)
+    throw validationFailure(
+      "Changing a date or currency would make the saved EUR reporting rate stale.",
+      "Provide --eur-per-unit, use --fetch-rate, or explicitly remove it with --clear-eur-rate.",
+    );
+  return current.eurRateProvenance === undefined
+    ? { eurPerUnit: current.eurPerUnit }
+    : { eurPerUnit: current.eurPerUnit, eurRateProvenance: current.eurRateProvenance };
+}
 
 async function resolveEurRate(
   currency: string,

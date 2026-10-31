@@ -11,7 +11,14 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { fail, inspectBookLock, succeed, withBookLock, type LockOwner } from "../src/index.js";
+import {
+  fail,
+  inspectBookLock,
+  succeed,
+  withBookLock,
+  withRefreshLock,
+  type LockOwner,
+} from "../src/index.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -96,7 +103,7 @@ describe("book lock", () => {
     expect(result).toEqual({ ok: true, data: undefined });
   });
 
-  it("reclaims a dead same-host owner once", () => {
+  it("blocks on a dead same-host owner without removing it or running the operation", () => {
     const dataHome = temporaryHome();
     writeOwner(dataHome, {
       pid: 2_147_483_647,
@@ -104,11 +111,22 @@ describe("book lock", () => {
       createdAt: "2026-08-31T12:00:00.000Z",
       token: "stale-token",
     });
-
-    const result = withBookLock(dataHome, () => succeed("acquired"));
-
-    expect(result).toEqual({ ok: true, data: "acquired" });
-    expect(() => readFileSync(ownerPath(dataHome), "utf8")).toThrow();
+    const before = readFileSync(ownerPath(dataHome), "utf8");
+    let entered = false;
+    const result = withBookLock(dataHome, () => {
+      entered = true;
+      return succeed("acquired");
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        type: "storage",
+        message: expect.stringContaining("abandoned"),
+        hint: expect.stringContaining("confirming"),
+      },
+    });
+    expect(entered).toBe(false);
+    expect(readFileSync(ownerPath(dataHome), "utf8")).toBe(before);
   });
 
   it("does not reclaim a foreign-host lock", () => {
@@ -194,4 +212,54 @@ describe("book lock", () => {
 
     expect(result).toEqual({ ok: true, data: undefined });
   });
+});
+
+it("blocks competing refresh operations on an abandoned lock without reclaiming ownership", async () => {
+  const home = temporaryHome();
+  const lock = join(home, ".finbook.refresh.lock");
+  mkdirSync(lock);
+  const path = join(lock, "owner.json");
+  const owner = JSON.stringify({
+    pid: 2_147_483_647,
+    hostname: hostname(),
+    createdAt: "2026-08-31T12:00:00.000Z",
+    token: "abandoned-refresh",
+  });
+  writeFileSync(path, owner);
+  let entered = 0;
+  const operation = async () => {
+    entered++;
+    return succeed("ran");
+  };
+  const outcomes = await Promise.all([
+    withRefreshLock(home, operation),
+    withRefreshLock(home, operation),
+  ]);
+  expect(outcomes).toMatchObject([
+    { ok: false, error: { type: "storage" } },
+    { ok: false, error: { type: "storage" } },
+  ]);
+  expect(entered).toBe(0);
+  expect(readFileSync(path, "utf8")).toBe(owner);
+});
+
+it("does not remove a replacement owner's lock during release", () => {
+  const home = temporaryHome();
+  let replacement = "";
+  const result = withBookLock(home, () => {
+    rmSync(join(home, ".finbook.lock"), { recursive: true });
+    writeOwner(home, {
+      pid: process.pid,
+      hostname: hostname(),
+      createdAt: "2026-08-31T12:00:00.000Z",
+      token: "replacement-owner",
+    });
+    replacement = readFileSync(ownerPath(home), "utf8");
+    return succeed("finished");
+  });
+  expect(result).toMatchObject({
+    ok: false,
+    error: { type: "storage", message: expect.stringContaining("may have committed") },
+  });
+  expect(readFileSync(ownerPath(home), "utf8")).toBe(replacement);
 });

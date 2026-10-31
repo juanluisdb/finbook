@@ -1,5 +1,10 @@
 import { homedir } from "node:os";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { z } from "zod";
+
+const DataHomeSchema = z.string().trim().min(1).default("~/.finbook");
 
 export type RuntimeConfig = {
   dataHome: string;
@@ -9,21 +14,32 @@ export function loadRuntimeConfig(
   env: NodeJS.ProcessEnv = process.env,
   cwd: string = process.cwd(),
 ): RuntimeConfig {
-  const configuredHome = env.FINBOOK_HOME;
-  const rawDataHome = configuredHome === undefined ? "~/.finbook" : configuredHome.trim();
-
-  if (rawDataHome.length === 0) {
+  const parsed = DataHomeSchema.safeParse(env.FINBOOK_HOME);
+  if (!parsed.success) {
     throw new Error("FINBOOK_HOME must not be empty.");
   }
+  const rawDataHome = parsed.data;
 
   const dataHome =
     rawDataHome === "~/.finbook" ? resolve(homedir(), ".finbook") : resolve(cwd, rawDataHome);
 
-  if (isWithin(cwd, dataHome)) {
+  const checkout = fileURLToPath(new URL("../../../", import.meta.url));
+  if (isWithin(canonicalPath(checkout), canonicalPath(dataHome))) {
     throw new Error(`FINBOOK_HOME must be outside the checkout; received ${dataHome}.`);
   }
 
   return { dataHome };
+}
+
+function canonicalPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch (error) {
+    if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+    const parent = dirname(path);
+    if (parent === path) throw error;
+    return join(canonicalPath(parent), basename(path));
+  }
 }
 
 function isWithin(parent: string, candidate: string): boolean {

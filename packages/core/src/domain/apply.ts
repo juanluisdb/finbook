@@ -205,12 +205,24 @@ function applySell(state: BookState, event: Extract<Event, { type: "sell" }>): R
   const remainingFactor = calculatedDecimal(
     new DecimalMath(1).minus(disposedQuantity.dividedBy(totalQuantity)),
   );
+  const remainingQuantity = totalQuantity.minus(disposedQuantity);
+  let unallocated = remainingQuantity;
   const remainingLots = instrumentLots
-    .map((lot) => ({
-      ...lot,
-      quantity: new DecimalMath(lot.quantity).times(remainingFactor).toFixed(),
-      cost: MoneyValue.from(lot.cost).multiply(remainingFactor).toMoney(),
-    }))
+    .map((lot, index) => {
+      const quantity =
+        index === instrumentLots.length - 1
+          ? unallocated
+          : DecimalMath.min(
+              new DecimalMath(lot.quantity).times(remainingQuantity).dividedBy(totalQuantity),
+              unallocated,
+            );
+      unallocated = unallocated.minus(quantity);
+      return {
+        ...lot,
+        quantity: quantity.toFixed(),
+        cost: MoneyValue.from(lot.cost).multiply(remainingFactor).toMoney(),
+      };
+    })
     .filter((lot) => !new DecimalMath(lot.quantity).isZero());
   if (remainingLots.length === 0) {
     delete accountLots[event.instrument];
