@@ -185,7 +185,7 @@ describe("provider configuration CLI", () => {
     });
   });
 
-  it("lists EODHD as an explicitly bound fund provider", () => {
+  it("lists EODHD for raw stock history and permits explicit fund bindings", () => {
     const dataHome = temporaryHome();
     addInstrument(dataHome, "fund-x");
 
@@ -210,7 +210,7 @@ describe("provider configuration CLI", () => {
           id: "eodhd",
           enabled: true,
           credentialEnv: "FINBOOK_EODHD_API_KEY",
-          routes: [],
+          routes: ["price:stock (default)"],
         },
       ]),
     );

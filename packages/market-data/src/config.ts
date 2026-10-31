@@ -25,10 +25,10 @@ import {
 const CONFIG_FILE = "market-data.json";
 
 const DEFAULT_ROUTES = {
-  "price:stock": ["yahoo"],
-  "price:etf": ["yahoo"],
+  "price:stock": ["eodhd"],
+  "price:etf": [],
   "price:fund": ["yahoo"],
-  "price:etc": ["yahoo"],
+  "price:etc": [],
   "price:crypto": ["coingecko"],
   fx: ["ecb"],
   "eur-rate:fiat": ["ecb"],

@@ -60,20 +60,20 @@ describe("market-data configuration", () => {
   });
 
   it("provides deterministic routes without a config file", () => {
-    expect(defaultRoute("price:stock")).toEqual(["yahoo"]);
-    expect(defaultRoute("price:etf")).toEqual(["yahoo"]);
+    expect(defaultRoute("price:stock")).toEqual(["eodhd"]);
+    expect(defaultRoute("price:etf")).toEqual([]);
     expect(defaultRoute("price:fund")).toEqual(["yahoo"]);
-    expect(defaultRoute("price:etc")).toEqual(["yahoo"]);
+    expect(defaultRoute("price:etc")).toEqual([]);
     expect(defaultRoute("price:crypto")).toEqual(["coingecko"]);
     expect(defaultRoute("fx")).toEqual(["ecb"]);
     expect(defaultRoute("eur-rate:fiat")).toEqual(["ecb"]);
     expect(defaultRoute("eur-rate:crypto")).toEqual(["coingecko"]);
   });
 
-  it("offers EODHD for explicit fund and stock bindings without changing the default route", () => {
+  it("uses raw stock history by default and retains Yahoo for funds", () => {
     expect(providerSupportsRoute("eodhd", "price:fund")).toBe(true);
     expect(providerSupportsRoute("eodhd", "price:stock")).toBe(true);
-    expect(defaultRoute("price:stock")).toEqual(["yahoo"]);
+    expect(defaultRoute("price:stock")).toEqual(["eodhd"]);
     expect(defaultRoute("price:fund")).toEqual(["yahoo"]);
   });
 
@@ -112,7 +112,7 @@ describe("market-data configuration", () => {
     });
 
     expect(effectiveRoute("price:crypto", config)).toEqual([]);
-    expect(effectiveRoute("price:stock", config)).toEqual(["yahoo"]);
+    expect(effectiveRoute("price:stock", config)).toEqual(["eodhd"]);
   });
 
   it("finds explicit bindings by local instrument or currency", () => {

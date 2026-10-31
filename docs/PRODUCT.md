@@ -18,7 +18,7 @@ The same interface should work well for a person and a coding agent. Commands ar
 
 Agent usability does not justify a parallel API or agent-only behaviour. Agents use the same commands, validation, and book as the owner.
 
-Spanish focus means reporting in EUR and retaining the event-level facts needed by later Spanish tax work. It does not mean that the current product calculates or files taxes.
+Spanish focus means reporting in EUR while preserving exact native-currency facts. Additional reporting evidence can be supplied where useful. The current product does not calculate or file taxes.
 
 ## Use the book as the source
 
@@ -110,19 +110,19 @@ Missing valuation evidence stays visible as a hole. Affected values, totals, and
 
 `update` acquires available history for recorded end-of-day holdings and foreign cash, including fully sold assets and currencies no longer held. It checks the newest required ranges first, saves dated observations locally, and lets subsequent reads stay offline. Range checks use the completed-date cutoff of the daily cycle.
 
-Historical acquisition supports fund NAVs through Yahoo, fund and raw stock closes through EODHD, and fiat FX through ECB. Stocks need an explicit EODHD binding or route; the default Yahoo stock route serves single-date fetching but rejects historical stock unit prices because those closes can be split-adjusted. Crypto history is unsupported by `update` and is reported as a failed need while other work continues. Provider access determines available depth. No corporate-action accounting is implied by historical stock support.
+Historical acquisition supports Yahoo fund NAVs, EODHD raw fund and stock closes, ECB fiat FX, and CoinGecko crypto prices and bound crypto cash. Fund and stock identifiers must match their actual share class or exchange listing. EODHD is the default stock route because split-adjusted Yahoo prices can disagree with the historical units held. Provider access determines available depth; automatic ETF/ETC history and corporate-action accounting are unsupported.
 
-A completed historical range, including an empty response, is reused across restarts while its saved evidence remains present and its source selection is unchanged. Checks have no expiry or automatic overlap. Late data or provider corrections inside a checked range may remain absent; selected dates stay visible. Missing initial history stays unknown. An economical request for unchecked work can retain an incidental predecessor, but never a future observation.
+Crypto closing observations for economic date D come from midnight UTC starting D+1. The adapter normalizes the source instant to the preceding closing date; core still values holdings through D using economic marks dated on or before D. Historical event-rate lookup keeps its own effective-date meaning. A portfolio total is indicative across markets, rather than one synchronized closing instant.
 
-Historical update reports saved observations, checked and reused ranges, empty checks, provider failures, and conflicting manual marks. A provider failure leaves successful work saved and the failed range retryable. Manual marks keep precedence; update saves the provider candidate without replacing them.
+A completed historical range, including an empty response, is reused across restarts while its saved evidence remains present and source selection is unchanged. When there is new unchecked work, the source request includes catch-up from the last saved eligible observation and retains relevant delayed dates. Checks do not expire. Old corrections, late interior prices before the last saved mark, or final prices published after a sold exposure ends may remain absent. The observation dates used remain visible; missing initial history stays unknown.
 
-Single-date fetching with `--fetch` uses refresh cycles starting at 06:00 UTC, independently of the book timezone. For a cycle dated `C`, stock, ETF, ETC, fund, and fiat FX requests target observations through `C - 1`; crypto requests target the midnight UTC snapshot on `C`. An earlier view date caps each target. Current holdings remain current even when their valuation evidence is older.
+CoinGecko Demo requests cover available history within its access horizon. Older unavailable dates remain unknown rather than receiving fabricated observations or zero balances. Successful acquisition means a range was resolved under the source's access policy, not that a price exists on every calendar day.
 
-The first explicit `--fetch` for an unresolved subject checks its configured providers. Successful resolutions are reused within the cycle, including across process restarts; an exact-date result remains reusable in later cycles. A lagging result can be checked again in the next cycle. Failed subjects remain retryable. A provider binding change or a newly held subject creates a distinct need.
+Historical update reports saved observations, checked and reused ranges, empty checks, provider failures, and manual conflicts. A provider failure preserves completed work and leaves its failed range retryable. Storage failure stops acquisition. The completed-history cutoff advances at 06:00 UTC; the CLI schedules no background work.
 
-Observations retain their actual economic dates. A successful check returning Friday's close does not turn it into a Monday observation. Each refresh reports fetched, reused, and failed needs. The operation is on demand and performs no scheduling itself.
+All portfolio views are offline. They preserve exact decimal JSON values and show the economic dates and sources selected. Human EUR valuations round for reading and put evidence near the headline. Missing inputs and input age are distinct: having a selected mark for every subject does not establish recent prices.
 
-When a fetched observation differs from a same-date manual mark, the manual value remains selected and the CLI reports both values. `--fetch --replace-manual` persistently accepts the saved provider candidate by removing the same-date manual marks. Acceptance rejects a concurrent manual change rather than overwriting it unseen. Identical values need no conflict warning.
+Manual marks keep same-date precedence. Update saves and reports differing provider candidates without replacing the manual choice. An explicit price or FX entry is the deliberate correction path. Whole-book update has no bulk replacement option.
 
 The difference between total value and contributed capital is a portfolio glance, not realized gain, tax profit, or performance attribution.
 
@@ -134,7 +134,7 @@ The CLI is non-interactive. Deletion is immediate once the candidate ledger vali
 
 finbook creates no automatic backup, tombstone, undo log, or hidden event history. The local data files are the current book. Ordinary first use initializes a new book; a partially missing core book fails without recreating files. Abandoned or uncertain locks stop operations for manual inspection rather than being removed automatically. Whole-folder backup and restoration are deliberate owner procedures described in the README.
 
-`doctor` is an offline, read-only inspection. It can report an uninitialized book, schema or replay problems, unsafe permissions, lock state, market configuration, and valuation completeness. It does not initialize, repair, unlock, fetch, or expose event payloads or credentials.
+`doctor` is an offline, read-only inspection. It can report an uninitialized book, schema or replay problems, unsafe permissions, lock state, market configuration, and the presence of required valuation inputs. It does not initialize, repair, unlock, fetch, or expose event payloads or credentials.
 
 Human output is for direct use. JSON output uses a stable success or error envelope for scripts, keeps data on stdout, diagnostics on stderr, and distinguishes validation, not-found, and external failures with exit codes.
 

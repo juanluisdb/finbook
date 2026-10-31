@@ -18,7 +18,7 @@ import {
   ProviderIdSchema,
   type EurRateNeed,
   type EurRateResolution,
-  type ResolvePriceOptions,
+  type ResolveRateOptions,
 } from "@finbook/market-data";
 import { z } from "zod";
 
@@ -292,7 +292,7 @@ type Reference = { kind: "account" | "instrument"; id: string };
 export type HistoricalRateResolver = {
   resolveHistoricalEurRate(
     need: EurRateNeed,
-    options?: ResolvePriceOptions,
+    options?: ResolveRateOptions,
   ): Promise<EurRateResolution>;
 };
 

@@ -83,6 +83,55 @@ function writeLock(dataHome: string, owner: LockFixture): void {
 }
 
 describe("finbook doctor", () => {
+  it("describes present valuation inputs without claiming market freshness", () => {
+    const dataHome = temporaryHome();
+    const store = initializeBook(dataHome);
+    expect(
+      store.appendAccount(
+        AccountSchema.parse({
+          id: "broker",
+          name: "Broker",
+          platform: "example",
+          country: "ES",
+          custodial: "broker",
+        }),
+      ).ok,
+    ).toBe(true);
+    expect(
+      store.appendEvent(
+        EventSchema.parse({
+          id: "cash",
+          type: "deposit",
+          date: "2020-01-01",
+          source: "manual",
+          account: "broker",
+          amount: { amount: "100", currency: "USD" },
+          eurPerUnit: "0.9",
+        }),
+      ).ok,
+    ).toBe(true);
+    expect(
+      store.appendFx({
+        pair: "USD/EUR",
+        rate: "0.8",
+        asOf: "2020-01-01",
+        provenance: { kind: "manual" },
+      }).ok,
+    ).toBe(true);
+    const result = runDoctor(dataHome);
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      data: {
+        holeCount: 0,
+        checks: expect.arrayContaining([
+          expect.objectContaining({
+            id: "valuation",
+            message: expect.stringContaining("observation dates may be earlier"),
+          }),
+        ]),
+      },
+    });
+  });
   it("reports an uninitialized home without creating it", () => {
     const dataHome = temporaryHome(false);
     const before = snapshotTree(dataHome);

@@ -88,11 +88,14 @@ export function inspectDoctor(
         holeCount = glance.data.holes.length;
         checks.push(
           holeCount === 0
-            ? okCheck("valuation", `Valuation as of ${asOf} is complete.`)
+            ? okCheck(
+                "valuation",
+                `Required valuation inputs are present for ${asOf}; observation dates may be earlier.`,
+              )
             : {
                 id: "valuation",
                 status: "warning",
-                message: `${String(holeCount)} valuation ${holeCount === 1 ? "hole" : "holes"} as of ${asOf}.`,
+                message: `${String(holeCount)} missing valuation ${holeCount === 1 ? "input" : "inputs"} as of ${asOf}.`,
                 hint: "Run a glance or positions view to see each missing observation and remedy.",
               },
         );

@@ -38,11 +38,9 @@ export async function main(
       return new MarketDataCoordinator({
         store: new FileBookStore(dataHome),
         config,
-        priceSources: [yahoo, coingecko, eodhd],
-        fxSources: [ecb, coingecko],
         eurRateSources: [ecb, coingecko],
-        priceHistorySources: [yahoo, eodhd],
-        fxHistorySources: [ecb],
+        priceHistorySources: [yahoo, eodhd, coingecko],
+        fxHistorySources: [ecb, coingecko],
       });
     };
     const program = createProgram(dataHome, { marketDataFactory: marketData });
@@ -60,7 +58,7 @@ export async function main(
     return 0;
   } catch (error) {
     if (error instanceof CliFailure) {
-      writeError(error.domainError, json, error.externalDetails);
+      writeError(error.domainError, json);
       return error.exitCode;
     }
     if (error instanceof CommanderError) {

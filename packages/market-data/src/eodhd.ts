@@ -1,18 +1,15 @@
-import { IsoDateSchema, MoneyValue } from "@finbook/core";
+import { IsoDateSchema } from "@finbook/core";
 
 import { z } from "zod";
 
 import {
-  type PriceNeed,
-  type PriceOutcome,
-  type PriceSource,
+  type PriceHistorySource,
   type PriceHistoryNeed,
   type PriceHistoryOutcome,
   type ProviderFailure,
 } from "./contracts.js";
 
 const EODHD_BASE_URL = "https://eodhd.com/api/eod/";
-const LOOKBACK_DAYS = 9;
 const REQUEST_TIMEOUT_MS = 10_000;
 
 const EodhdRowSchema = z
@@ -29,7 +26,7 @@ export type EodhdSourceOptions = {
   now?: () => Date;
 };
 
-export class EodhdSource implements PriceSource {
+export class EodhdSource implements PriceHistorySource {
   readonly id = "eodhd" as const;
   private readonly apiKey: string | undefined;
   private readonly fetchImplementation: typeof fetch;
@@ -39,10 +36,6 @@ export class EodhdSource implements PriceSource {
     this.apiKey = nonEmpty(options.apiKey);
     this.fetchImplementation = options.fetchImplementation ?? globalThis.fetch;
     this.now = options.now ?? (() => new Date());
-  }
-
-  fetchPrices(needs: readonly PriceNeed[]): Promise<readonly PriceOutcome[]> {
-    return Promise.all(needs.map(async (need) => this.fetchPrice(need)));
   }
 
   async fetchPriceHistory(need: PriceHistoryNeed): Promise<PriceHistoryOutcome> {
@@ -101,86 +94,6 @@ export class EodhdSource implements PriceSource {
       })),
     };
   }
-
-  private async fetchPrice(need: PriceNeed): Promise<PriceOutcome> {
-    if (need.instrument.type !== "fund" && need.instrument.type !== "stock") {
-      return failure(need, "unsupported", "EODHD supports fund and stock prices.");
-    }
-    if (this.apiKey === undefined) {
-      return failure(need, "unauthorized", "EODHD requires FINBOOK_EODHD_API_KEY.");
-    }
-
-    let response: Response;
-    try {
-      response = await this.fetchImplementation(requestUrl(need, this.apiKey), {
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
-    } catch {
-      return failure(need, "unavailable", "EODHD request failed.");
-    }
-    if (!response.ok) return { need, ok: false, error: httpFailure(response) };
-
-    let raw: unknown;
-    try {
-      raw = await response.json();
-    } catch {
-      return failure(need, "invalid-response", "EODHD returned invalid JSON.");
-    }
-    const parsed = EodhdResponseSchema.safeParse(raw);
-    if (!parsed.success) {
-      return failure(need, "invalid-response", "EODHD returned invalid daily prices.");
-    }
-    const [first, ...remaining] = parsed.data;
-    if (first === undefined) {
-      return failure(need, "not-found", `EODHD returned no history for ${need.identifier}.`);
-    }
-    if (parsed.data.some((row) => row.date > need.asOf)) {
-      return failure(
-        need,
-        "invalid-response",
-        `EODHD returned a future date for ${need.identifier}.`,
-      );
-    }
-
-    const selected = remaining.reduce(
-      (latest, row) => (row.date > latest.date ? row : latest),
-      first,
-    );
-
-    return {
-      need,
-      ok: true,
-      data: {
-        instrument: need.instrument.id,
-        price: {
-          amount: MoneyValue.from({
-            amount: String(selected.close),
-            currency: need.instrument.quoteCurrency,
-          }).toMoney().amount,
-          currency: need.instrument.quoteCurrency,
-        },
-        asOf: selected.date,
-        provenance: {
-          kind: "fetched",
-          source: "eodhd",
-          retrievedAt: this.now().toISOString(),
-        },
-      },
-    };
-  }
-}
-
-function requestUrl(need: PriceNeed, apiKey: string): URL {
-  const url = new URL(`${EODHD_BASE_URL}${encodeURIComponent(need.identifier)}`);
-  const from = new Date(`${need.asOf}T00:00:00.000Z`);
-  from.setUTCDate(from.getUTCDate() - LOOKBACK_DAYS);
-  url.searchParams.set("api_token", apiKey);
-  url.searchParams.set("fmt", "json");
-  url.searchParams.set("period", "d");
-  url.searchParams.set("order", "d");
-  url.searchParams.set("from", from.toISOString().slice(0, 10));
-  url.searchParams.set("to", need.asOf);
-  return url;
 }
 
 function httpFailure(response: Response): ProviderFailure {
@@ -218,8 +131,4 @@ function retryAfterMs(value: string | null): number | undefined {
 function nonEmpty(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed === "" ? undefined : trimmed;
-}
-
-function failure(need: PriceNeed, kind: ProviderFailure["kind"], message: string): PriceOutcome {
-  return { need, ok: false, error: { kind, message } };
 }

@@ -5,38 +5,31 @@ import { createRetryingFetch } from "./http.js";
 import {
   type EurRateNeed,
   type EurRateOutcome,
-  type FxNeed,
-  type FxOutcome,
-  type FxSource,
   type HistoricalEurRateSource,
-  type PriceNeed,
-  type PriceOutcome,
-  type PriceSource,
   type ProviderFailure,
+  type PriceHistorySource,
+  type FxHistorySource,
+  type PriceHistoryNeed,
+  type PriceHistoryOutcome,
+  type FxHistoryNeed,
+  type FxHistoryOutcome,
+  type HistoryWindow,
 } from "./contracts.js";
+import { shiftDate } from "./history-plan.js";
 
 const CoinGeckoHistorySchema = z
   .object({
     prices: z.array(z.tuple([z.number().finite(), z.number().finite().positive()])),
   })
   .passthrough();
-const SnapshotSchema = z
-  .object({
-    id: z.string(),
-    market_data: z
-      .object({ current_price: z.record(z.string(), z.number().finite().positive()) })
-      .passthrough(),
-  })
-  .passthrough();
-
 export type CoinGeckoHistoryPoint = { timestamp: number; price: number };
 export type CoinGeckoGateway = {
-  snapshotFor(
+  rangeFor(
     id: string,
     currency: string,
-    asOf: string,
-  ): Promise<CoinGeckoHistoryPoint | undefined>;
-  historyFor(id: string, currency: string, asOf: string): Promise<readonly CoinGeckoHistoryPoint[]>;
+    from: string,
+    through: string,
+  ): Promise<readonly CoinGeckoHistoryPoint[]>;
 };
 export type CoinGeckoSourceOptions = {
   gateway?: CoinGeckoGateway;
@@ -45,7 +38,9 @@ export type CoinGeckoSourceOptions = {
   now?: () => Date;
 };
 
-export class CoinGeckoSource implements PriceSource, FxSource, HistoricalEurRateSource {
+export class CoinGeckoSource
+  implements PriceHistorySource, FxHistorySource, HistoricalEurRateSource
+{
   readonly id = "coingecko" as const;
   private readonly gateway: CoinGeckoGateway;
   private readonly now: () => Date;
@@ -55,109 +50,117 @@ export class CoinGeckoSource implements PriceSource, FxSource, HistoricalEurRate
     this.now = options.now ?? (() => new Date());
   }
 
-  async fetchPrices(needs: readonly PriceNeed[]): Promise<readonly PriceOutcome[]> {
-    return Promise.all(
-      needs.map(async (need) => {
-        const snapshot = await this.snapshot(
-          need.identifier,
-          need.instrument.quoteCurrency,
-          need.asOf,
-        );
-        if (!snapshot.ok) return { need, ok: false, error: snapshot.error };
-        return {
-          need,
-          ok: true,
-          data: {
-            instrument: need.instrument.id,
-            price: {
-              amount: plainAmount(snapshot.price, need.instrument.quoteCurrency),
-              currency: need.instrument.quoteCurrency,
-            },
-            asOf: need.asOf,
-            provenance: {
-              kind: "fetched",
-              source: "coingecko",
-              retrievedAt: this.now().toISOString(),
-            },
-          },
-        };
-      }),
+  async fetchPriceHistory(need: PriceHistoryNeed): Promise<PriceHistoryOutcome> {
+    if (need.instrument.type !== "crypto")
+      return {
+        ok: false,
+        error: { kind: "unsupported", message: "CoinGecko history supports cryptoassets." },
+      };
+    const response = await this.closingHistory(
+      need.identifier,
+      need.instrument.quoteCurrency,
+      need,
     );
+    if (!response.ok) return response;
+    return {
+      ok: true,
+      data: response.points.map((point) => ({
+        instrument: need.instrument.id,
+        asOf: point.date,
+        price: {
+          amount: plainAmount(point.price, need.instrument.quoteCurrency),
+          currency: need.instrument.quoteCurrency,
+        },
+        provenance: { kind: "fetched", source: this.id, retrievedAt: this.now().toISOString() },
+      })),
+    };
   }
 
-  async fetchFxRates(needs: readonly FxNeed[]): Promise<readonly FxOutcome[]> {
+  async fetchFxHistory(needs: readonly FxHistoryNeed[]): Promise<readonly FxHistoryOutcome[]> {
     return Promise.all(
-      needs.map(async (need) => {
+      needs.map(async (need): Promise<FxHistoryOutcome> => {
         if (need.identifier === undefined)
           return {
             need,
             ok: false,
-            error: {
-              kind: "unsupported",
-              message: "CoinGecko requires a currency binding.",
-            },
+            error: { kind: "unsupported", message: "CoinGecko requires a currency binding." },
           };
-        const snapshot = await this.snapshot(need.identifier, "EUR", need.asOf);
-        if (!snapshot.ok) return { need, ok: false, error: snapshot.error };
+        const response = await this.closingHistory(need.identifier, "EUR", need);
+        if (!response.ok) return { need, ...response };
         return {
           need,
           ok: true,
-          data: {
+          data: response.points.map((point) => ({
             pair: `${need.currency}/EUR`,
-            rate: plainAmount(snapshot.price, "EUR"),
-            asOf: need.asOf,
-            provenance: {
-              kind: "fetched",
-              source: "coingecko",
-              retrievedAt: this.now().toISOString(),
-            },
-          },
+            rate: plainAmount(point.price, "EUR"),
+            asOf: point.date,
+            provenance: { kind: "fetched", source: this.id, retrievedAt: this.now().toISOString() },
+          })),
         };
       }),
     );
   }
 
-  private async snapshot(
+  private async closingHistory(
     id: string,
     currency: string,
-    asOf: string,
-  ): Promise<{ ok: true; price: number } | { ok: false; error: ProviderFailure }> {
-    let point: CoinGeckoHistoryPoint | undefined;
+    window: HistoryWindow,
+  ): Promise<
+    { ok: true; points: { date: string; price: number }[] } | { ok: false; error: ProviderFailure }
+  > {
+    const day = 86_400_000;
+    const availableFrom = new Date(Math.ceil((this.now().getTime() - 365 * day) / day) * day)
+      .toISOString()
+      .slice(0, 10);
+    const requestedFrom =
+      window.sourceFrom === undefined ? availableFrom : shiftDate(window.sourceFrom, 1);
+    const from = requestedFrom < availableFrom ? availableFrom : requestedFrom;
+    const through = shiftDate(window.through, 1);
+    if (from > through) return { ok: true, points: [] };
+    let points: readonly CoinGeckoHistoryPoint[];
     try {
-      point = await this.gateway.snapshotFor(id, currency.toLowerCase(), asOf);
+      points = await this.gateway.rangeFor(id, currency.toLowerCase(), from, through);
     } catch (error) {
       return {
         ok: false,
         error:
           error instanceof z.ZodError
-            ? { kind: "invalid-response", message: "CoinGecko returned an invalid daily snapshot." }
+            ? { kind: "invalid-response", message: "CoinGecko returned invalid daily history." }
             : error instanceof Error
-              ? coingeckoFailure(error, "CoinGecko snapshot request failed.")
-              : { kind: "unavailable", message: "CoinGecko snapshot request failed." },
+              ? coingeckoFailure(error, "CoinGecko history request failed.")
+              : { kind: "unavailable", message: "CoinGecko history request failed." },
       };
     }
-    if (point === undefined)
-      return {
-        ok: false,
-        error: {
-          kind: "not-found",
-          message: `CoinGecko has no ${currency} snapshot for ${id} on ${asOf}.`,
-        },
-      };
-    if (
-      point.timestamp !== Date.parse(`${asOf}T00:00:00Z`) ||
-      !Number.isFinite(point.price) ||
-      point.price <= 0
-    ) {
-      return {
-        ok: false,
-        error: {
-          kind: "invalid-response",
-          message: "CoinGecko did not return the requested midnight UTC snapshot.",
-        },
-      };
+    const selected: { date: string; price: number }[] = [];
+    const closingBoundary = Date.parse(`${through}T00:00:00Z`);
+    for (const point of points) {
+      if (!Number.isFinite(point.timestamp) || !Number.isFinite(point.price) || point.price <= 0)
+        return {
+          ok: false,
+          error: { kind: "invalid-response", message: "CoinGecko returned invalid daily history." },
+        };
+      if (point.timestamp > closingBoundary) continue;
+      if (point.timestamp % day !== 0)
+        return {
+          ok: false,
+          error: {
+            kind: "invalid-response",
+            message: "CoinGecko returned a non-midnight daily price.",
+          },
+        };
+      const date = dateOnly(new Date(point.timestamp));
+      if (date === undefined)
+        return {
+          ok: false,
+          error: {
+            kind: "invalid-response",
+            message: "CoinGecko returned an invalid observation date.",
+          },
+        };
+      if (date < from) continue;
+      selected.push({ date: shiftDate(date, -1), price: point.price });
     }
-    return { ok: true, price: point.price };
+    return { ok: true, points: selected };
   }
 
   async fetchHistoricalEurRates(needs: readonly EurRateNeed[]): Promise<readonly EurRateOutcome[]> {
@@ -172,7 +175,12 @@ export class CoinGeckoSource implements PriceSource, FxSource, HistoricalEurRate
         }
         let points: readonly CoinGeckoHistoryPoint[];
         try {
-          points = await this.gateway.historyFor(need.identifier, "eur", need.date);
+          points = await this.gateway.rangeFor(
+            need.identifier,
+            "eur",
+            shiftDate(need.date, -1),
+            shiftDate(need.date, 1),
+          );
         } catch (error) {
           return {
             need,
@@ -228,36 +236,31 @@ export class CoinGeckoSource implements PriceSource, FxSource, HistoricalEurRate
 }
 
 function createCoinGeckoGateway(options: CoinGeckoSourceOptions): CoinGeckoGateway {
+  const demoApiKey = options.demoApiKey?.trim() || null;
   const client = new Coingecko({
     environment: "demo",
-    demoAPIKey: options.demoApiKey,
+    demoAPIKey: demoApiKey,
+    proAPIKey: null,
+    defaultHeaders: {
+      "x-cg-pro-api-key": null,
+      "x-cg-demo-api-key": demoApiKey === null ? null : undefined,
+    },
     fetch: createRetryingFetch(options.fetchImplementation),
     maxRetries: 0,
     timeout: 10_000,
     logLevel: "off",
   });
   return {
-    async snapshotFor(id, currency, asOf) {
-      const response = await client.coins.history.get(id, { date: asOf, localization: false });
-      const parsed = SnapshotSchema.extend({ id: z.literal(id) }).parse(response);
-      const price = parsed.market_data.current_price[currency];
-      return price === undefined
-        ? undefined
-        : { timestamp: Date.parse(`${asOf}T00:00:00Z`), price };
-    },
-    async historyFor(id, currency, asOf) {
-      const end = new Date(`${asOf}T00:00:00.000Z`);
-      const start = new Date(end.getTime() - 86_400_000);
+    async rangeFor(id, currency, from, through) {
       const response = await client.coins.marketChart.getRange(id, {
-        from: start.toISOString(),
-        to: new Date(end.getTime() + 86_400_000).toISOString(),
+        from,
+        to: through,
         vs_currency: currency,
         interval: "daily",
         precision: "full",
       });
-      const parsed = CoinGeckoHistorySchema.safeParse(response);
-      if (!parsed.success) return [];
-      return parsed.data.prices.map(([timestamp, price]) => ({ timestamp, price }));
+      const parsed = CoinGeckoHistorySchema.parse(response);
+      return parsed.prices.map(([timestamp, price]) => ({ timestamp, price }));
     },
   };
 }
@@ -286,6 +289,8 @@ function dateOnly(value: Date): string | undefined {
 }
 
 function coingeckoFailure(error: Error, fallback: string): ProviderFailure {
+  if (error instanceof z.ZodError)
+    return { kind: "invalid-response", message: "CoinGecko returned invalid history." };
   if (error instanceof Coingecko.APIError) {
     const status = error.status;
     if (status === 401 || status === 403) {
@@ -308,5 +313,5 @@ function coingeckoFailure(error: Error, fallback: string): ProviderFailure {
       message: `CoinGecko returned HTTP ${status ?? "unknown"}.`,
     };
   }
-  return { kind: "unavailable", message: error.message || fallback };
+  return { kind: "unavailable", message: fallback };
 }

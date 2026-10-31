@@ -102,15 +102,13 @@ function coordinator(
   return new MarketDataCoordinator({
     store,
     config,
-    priceSources: [],
-    fxSources: [],
     eurRateSources: [],
     priceHistorySources: [source],
     now: () => new Date(now),
   });
 }
 
-it("checks an empty weekend durably without inventing observations or rechecking Friday", async () => {
+it("checks an empty weekend durably without inventing prices or repeating completed work", async () => {
   const store = book();
   record(store, [
     EventSchema.parse({
@@ -151,7 +149,7 @@ it("checks an empty weekend durably without inventing observations or rechecking
   expect(fetchPriceHistory.mock.calls[1]?.[0]).toMatchObject({
     from: "2024-09-07",
     through: "2024-09-08",
-    sourceFrom: "2024-09-07",
+    sourceFrom: "2024-09-06",
   });
   expect(await coordinator(store, source, "2024-09-09T12:00:00Z").updateHistory()).toMatchObject({
     ok: true,
@@ -209,8 +207,6 @@ it("retains an interrupted append, writes no successful check, and retries witho
           }
         : store.appendPrice(mark),
     appendFx: (mark) => store.appendFx(mark),
-    acceptFetchedPrice: (candidate, expected) => store.acceptFetchedPrice(candidate, expected),
-    acceptFetchedFx: (candidate, expected) => store.acceptFetchedFx(candidate, expected),
   };
   expect(
     await coordinator(interrupted, source, "2024-09-04T12:00:00Z").updateHistory(),
@@ -272,7 +268,7 @@ it("fetches newer exposure first, retains it after an older failure, and retries
   ]);
 });
 
-it("does not deliberately overlap a checked Monday when Tuesday becomes required", async () => {
+it("includes the last saved observation when a new date becomes required", async () => {
   const store = book();
   position(store, "2024-09-02");
   const fetchPriceHistory = vi
@@ -285,8 +281,190 @@ it("does not deliberately overlap a checked Monday when Tuesday becomes required
   expect(fetchPriceHistory.mock.calls[1]?.[0]).toMatchObject({
     from: "2024-09-03",
     through: "2024-09-03",
-    sourceFrom: "2024-09-03",
+    sourceFrom: "2024-08-30",
   });
+});
+
+it("catches up a consistently delayed NAV without repeating completed same-cutoff work", async () => {
+  const store = book();
+  position(store, "2024-09-02");
+  let published = "2024-09-02";
+  const fetchPriceHistory = vi.fn<PriceHistorySource["fetchPriceHistory"]>(async (need) => ({
+    ok: true,
+    data: [price("2024-09-02", "40"), price("2024-09-03", "41"), price("2024-09-04", "42")].filter(
+      (mark) =>
+        mark.asOf <= published &&
+        mark.asOf <= need.through &&
+        (need.sourceFrom === undefined || mark.asOf >= need.sourceFrom),
+    ),
+  }));
+  const source = { id: "eodhd" as const, fetchPriceHistory };
+  for (const [today, latest] of [
+    ["2024-09-04", "2024-09-02"],
+    ["2024-09-05", "2024-09-03"],
+    ["2024-09-06", "2024-09-04"],
+  ]) {
+    published = latest;
+    expect((await coordinator(store, source, `${today}T12:00:00Z`).updateHistory()).ok).toBe(true);
+    expect((await coordinator(store, source, `${today}T12:00:00Z`).updateHistory()).ok).toBe(true);
+  }
+  expect(store.load()).toMatchObject({
+    data: {
+      prices: [
+        { asOf: "2024-09-02", price: { amount: "40" } },
+        { asOf: "2024-09-03", price: { amount: "41" } },
+        { asOf: "2024-09-04", price: { amount: "42" } },
+      ],
+    },
+  });
+  expect(fetchPriceHistory.mock.calls.map(([need]) => need.sourceFrom)).toEqual([
+    undefined,
+    "2024-09-02",
+    "2024-09-03",
+  ]);
+});
+
+it("retains every delayed date returned behind the new logical interval", async () => {
+  const store = book();
+  position(store, "2024-09-02");
+  let published = "2024-09-02";
+  const source: PriceHistorySource = {
+    id: "eodhd",
+    fetchPriceHistory: async (need) => ({
+      ok: true,
+      data: [
+        price("2024-09-02", "40"),
+        price("2024-09-03", "41"),
+        price("2024-09-04", "42"),
+      ].filter(
+        (mark) =>
+          mark.asOf <= published && (need.sourceFrom === undefined || mark.asOf >= need.sourceFrom),
+      ),
+    }),
+  };
+  expect((await coordinator(store, source, "2024-09-04T12:00:00Z").updateHistory()).ok).toBe(true);
+  expect((await coordinator(store, source, "2024-09-05T12:00:00Z").updateHistory()).ok).toBe(true);
+  published = "2024-09-04";
+  expect((await coordinator(store, source, "2024-09-06T12:00:00Z").updateHistory()).ok).toBe(true);
+  expect(store.load()).toMatchObject({
+    data: { prices: [{ asOf: "2024-09-02" }, { asOf: "2024-09-03" }, { asOf: "2024-09-04" }] },
+  });
+});
+
+it("serializes updates while releasing the book lock during provider waits", async () => {
+  const store = book();
+  position(store, "2024-09-02");
+  const started = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  const fetchPriceHistory = vi.fn<PriceHistorySource["fetchPriceHistory"]>(async () => {
+    started.resolve();
+    await finish.promise;
+    return { ok: true, data: [price("2024-09-02", "41")] };
+  });
+  const source = { id: "eodhd" as const, fetchPriceHistory };
+  const first = coordinator(store, source, "2024-09-03T12:00:00Z").updateHistory();
+  await started.promise;
+  try {
+    expect(store.load().ok).toBe(true);
+    expect(await coordinator(store, source, "2024-09-03T12:00:00Z").updateHistory()).toMatchObject({
+      ok: false,
+      error: { type: "storage" },
+    });
+  } finally {
+    finish.resolve();
+  }
+  expect(await first).toMatchObject({ ok: true });
+  expect(await coordinator(store, source, "2024-09-03T12:00:00Z").updateHistory()).toMatchObject({
+    ok: true,
+    data: { saved: { prices: 0, fx: 0 } },
+  });
+  expect(fetchPriceHistory).toHaveBeenCalledOnce();
+});
+
+it("uses fallback routes but never falls back from an explicit binding", async () => {
+  const store = book();
+  position(store, "2024-09-02");
+  const unavailable = vi.fn<PriceHistorySource["fetchPriceHistory"]>().mockResolvedValue({
+    ok: false,
+    error: { kind: "unavailable", message: "Controlled failure" },
+  });
+  const fallback = vi.fn<PriceHistorySource["fetchPriceHistory"]>().mockResolvedValue({
+    ok: true,
+    data: [
+      {
+        ...price("2024-09-02", "41"),
+        provenance: { kind: "fetched", source: "yahoo", retrievedAt: "2024-09-03T12:00:00Z" },
+      },
+    ],
+  });
+  const create = (config: MarketDataConfig) =>
+    new MarketDataCoordinator({
+      store,
+      config,
+      eurRateSources: [],
+      priceHistorySources: [
+        { id: "eodhd", fetchPriceHistory: unavailable },
+        { id: "yahoo", fetchPriceHistory: fallback },
+      ],
+      now: () => new Date("2024-09-03T12:00:00Z"),
+    });
+  expect(
+    await create(
+      MarketDataConfigSchema.parse({
+        bindings: [
+          { kind: "instrument", instrument: "fund", provider: "eodhd", identifier: "FUND.EUFUND" },
+        ],
+        routes: { "price:fund": ["eodhd", "yahoo"] },
+      }),
+    ).updateHistory(),
+  ).toMatchObject({ data: { failures: [{ provider: "eodhd" }] } });
+  expect(fallback).not.toHaveBeenCalled();
+  expect(
+    await create(
+      MarketDataConfigSchema.parse({ routes: { "price:fund": ["eodhd", "yahoo"] } }),
+    ).updateHistory(),
+  ).toMatchObject({ data: { checked: [{ provider: "yahoo" }], failures: [] } });
+  expect(fallback).toHaveBeenCalledOnce();
+});
+
+it.each([
+  { instrument: "other" },
+  { asOf: "2024-09-04" },
+  { price: { amount: "41", currency: "USD" } },
+  { price: { amount: "-41", currency: "EUR" } },
+])(
+  "rejects invalid normalized price facts without committing marks or successful checks: %o",
+  async (fields) => {
+    const store = book();
+    position(store, "2024-09-02");
+    const source: PriceHistorySource = {
+      id: "eodhd",
+      fetchPriceHistory: async () => ({
+        ok: true,
+        data: [{ ...price("2024-09-02", "41"), ...fields }],
+      }),
+    };
+    expect(await coordinator(store, source, "2024-09-03T12:00:00Z").updateHistory()).toMatchObject({
+      data: { checked: [], failures: [{ error: { kind: "invalid-response" } }] },
+    });
+    expect(store.load()).toMatchObject({ data: { prices: [] } });
+  },
+);
+
+it("advances the completed-date cutoff at 06:00 UTC without point receipt state", async () => {
+  const store = book();
+  position(store, "2024-09-02");
+  const fetchPriceHistory = vi
+    .fn<PriceHistorySource["fetchPriceHistory"]>()
+    .mockResolvedValue({ ok: true, data: [] });
+  const source = { id: "eodhd" as const, fetchPriceHistory };
+  expect((await coordinator(store, source, "2024-09-04T05:59:00Z").updateHistory()).ok).toBe(true);
+  expect((await coordinator(store, source, "2024-09-04T06:00:00Z").updateHistory()).ok).toBe(true);
+  expect(fetchPriceHistory.mock.calls.map(([need]) => [need.from, need.through])).toEqual([
+    ["2024-09-02", "2024-09-02"],
+    ["2024-09-03", "2024-09-03"],
+  ]);
+  expect(existsSync(join(store.dataHome, "market-refresh.jsonl"))).toBe(false);
 });
 
 it("keeps the manual mark selected and reports a saved conflicting candidate", async () => {
@@ -418,8 +596,6 @@ it("values raw pre-split stock units and requests FX while sale proceeds remain 
         { kind: "instrument", instrument: "apple", provider: "eodhd", identifier: "AAPL.US" },
       ],
     }),
-    priceSources: [],
-    fxSources: [],
     eurRateSources: [],
     priceHistorySources: [eodhd],
     fxHistorySources: [ecb],
@@ -553,8 +729,6 @@ it("batches FX needs and falls through to the next configured history source", a
   const updater = new MarketDataCoordinator({
     store,
     config: MarketDataConfigSchema.parse({ routes: { fx: ["coingecko", "ecb"] } }),
-    priceSources: [],
-    fxSources: [],
     eurRateSources: [],
     fxHistorySources: [
       { id: "coingecko", fetchFxHistory: first },
