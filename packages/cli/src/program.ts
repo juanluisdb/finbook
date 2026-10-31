@@ -1,11 +1,14 @@
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 
 import {
   EventTypeSchema,
   FileBookStore,
   InstrumentIdSchema,
+  IsoDateSchema,
   NonEmptyStringSchema,
   getGlance,
+  getHistory,
   getPositions,
   type BookSnapshot,
   type Event,
@@ -49,6 +52,7 @@ import {
   renderRefresh,
 } from "./human-output.js";
 import { writeSuccess } from "./output.js";
+import { renderHistory, renderHistoryUpdate } from "./history-output.js";
 import { addAccount, addInstrument, setFx, setPrice } from "./writes.js";
 
 type ProgramOptions = {
@@ -56,6 +60,10 @@ type ProgramOptions = {
   generateId?: () => string;
   marketDataFactory?: () => MarketDataCoordinator;
 };
+
+const HistoryOptionsSchema = z
+  .object({ from: IsoDateSchema, to: IsoDateSchema })
+  .refine((value) => value.from <= value.to);
 
 export function createProgram(dataHome: string, options: ProgramOptions = {}): Command {
   const store = new FileBookStore(dataHome);
@@ -224,6 +232,46 @@ export function createProgram(dataHome: string, options: ProgramOptions = {}): C
   fxList.action((_options, command) => listFx(store, jsonMode(command)));
 
   const show = program.command("show").description("show derived views");
+  const update = program
+    .command("update")
+    .description("fetch unchecked portfolio history, newest ranges first");
+  addJsonOption(update);
+  update.action(async (_options, command) => {
+    if (marketDataFactory === undefined)
+      throw validationFailure(
+        "Market data is not configured.",
+        "Configure historical data sources before updating.",
+      );
+    const report = requireResult(await marketDataFactory().updateHistory());
+    const json = jsonMode(command);
+    if (report.failures.length > 0) {
+      if (!json) writeSuccess(report, false, renderHistoryUpdate(report));
+      throw new CliFailure({
+        type: "external",
+        message: "Could not update every historical range.",
+        hint: "Review the reported sources and retry; saved observations and completed checks are retained.",
+        details: report,
+      });
+    }
+    writeSuccess(report, json, renderHistoryUpdate(report));
+  });
+  const history = show
+    .command("history")
+    .description("show saved daily EUR values without fetching");
+  history
+    .requiredOption("--from <date>", "inclusive start date")
+    .requiredOption("--to <date>", "inclusive end date");
+  addJsonOption(history);
+  history.action((_options, command) => {
+    const parsed = HistoryOptionsSchema.safeParse(command.opts());
+    if (!parsed.success)
+      throw validationFailure(
+        "Invalid history interval.",
+        "Use --from and --to in YYYY-MM-DD form, with from on or before to.",
+      );
+    const rows = requireResult(getHistory(loadSnapshot(store), parsed.data.from, parsed.data.to));
+    writeSuccess(rows, jsonMode(command), renderHistory(rows));
+  });
   const glance = show.command("glance").description("show the portfolio glance");
   glance
     .option("--as-of <date>", "valuation date")

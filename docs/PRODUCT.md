@@ -102,7 +102,17 @@ EUR cash needs no FX stamp. Every other live currency needs a currency-to-EUR st
 
 Missing valuation evidence stays visible as a hole. Affected values, totals, and weights are unknown rather than guessed; the remaining positions and cash are still returned.
 
-Daily refresh cycles start at 06:00 UTC, independently of the book timezone. For a cycle dated `C`, stock, ETF, ETC, fund, and fiat FX requests target observations through `C - 1`; crypto requests target the midnight UTC snapshot on `C`. An earlier view date caps each target. Current holdings remain current even when their valuation evidence is older.
+`show history` returns one daily glance for each calendar date in an explicit inclusive interval, starting no earlier than the first recorded event. It uses the same replay and mark selection as a single-date view. Empty history returns no rows. JSON preserves exact decimal strings; the human table rounds displayed EUR totals and shows actual observation dates and missing inputs.
+
+`update` acquires available history for recorded end-of-day holdings and foreign cash, including fully sold assets and currencies no longer held. It checks the newest required ranges first, saves dated observations locally, and lets subsequent reads stay offline. Range checks use the completed-date cutoff of the daily cycle.
+
+Historical acquisition supports fund NAVs through Yahoo, fund and raw stock closes through EODHD, and fiat FX through ECB. Stocks need an explicit EODHD binding or route; the default Yahoo stock route serves single-date fetching but rejects historical stock unit prices because those closes can be split-adjusted. Crypto history is unsupported by `update` and is reported as a failed need while other work continues. Provider access determines available depth. No corporate-action accounting is implied by historical stock support.
+
+A completed historical range, including an empty response, is reused across restarts while its saved evidence remains present and its source selection is unchanged. Checks have no expiry or automatic overlap. Late data or provider corrections inside a checked range may remain absent; selected dates stay visible. Missing initial history stays unknown. An economical request for unchecked work can retain an incidental predecessor, but never a future observation.
+
+Historical update reports saved observations, checked and reused ranges, empty checks, provider failures, and conflicting manual marks. A provider failure leaves successful work saved and the failed range retryable. Manual marks keep precedence; update saves the provider candidate without replacing them.
+
+Single-date fetching with `--fetch` uses refresh cycles starting at 06:00 UTC, independently of the book timezone. For a cycle dated `C`, stock, ETF, ETC, fund, and fiat FX requests target observations through `C - 1`; crypto requests target the midnight UTC snapshot on `C`. An earlier view date caps each target. Current holdings remain current even when their valuation evidence is older.
 
 The first explicit `--fetch` for an unresolved subject checks its configured providers. Successful resolutions are reused within the cycle, including across process restarts; an exact-date result remains reusable in later cycles. A lagging result can be checked again in the next cycle. Failed subjects remain retryable. A provider binding change or a newly held subject creates a distinct need.
 
@@ -112,7 +122,7 @@ When a fetched observation differs from a same-date manual mark, the manual valu
 
 The difference between total value and contributed capital is a portfolio glance, not realized gain, tax profit, or performance attribution.
 
-The query contract lives in `packages/core/src/domain/queries.ts::getPositions` and `packages/core/src/domain/queries.ts::getGlance`.
+The query contract lives in `packages/core/src/domain/queries.ts::getPositions`, `packages/core/src/domain/queries.ts::getGlance`, and `packages/core/src/domain/queries.ts::getHistory`.
 
 ## Correct and inspect deliberately
 

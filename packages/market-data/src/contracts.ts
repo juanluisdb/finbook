@@ -23,7 +23,7 @@ export const PROVIDER_CAPABILITIES = {
   yahoo: ["price:stock", "price:etf", "price:fund", "price:etc", "price:crypto"],
   coingecko: ["price:crypto", "fx", "eur-rate:crypto"],
   ecb: ["fx", "eur-rate:fiat"],
-  eodhd: ["price:fund"],
+  eodhd: ["price:fund", "price:stock"],
 } as const satisfies Record<ProviderId, readonly RouteKey[]>;
 
 export function providerSupportsRoute(provider: ProviderId, route: RouteKey): boolean {
@@ -202,6 +202,26 @@ export interface FxSource {
 export interface HistoricalEurRateSource {
   readonly id: ProviderId;
   fetchHistoricalEurRates(needs: readonly EurRateNeed[]): Promise<readonly EurRateOutcome[]>;
+}
+
+export type HistoryWindow = { from: string; through: string; sourceFrom?: string };
+export type PriceHistoryNeed = HistoryWindow & { instrument: Instrument; identifier: string };
+export type FxHistoryNeed = HistoryWindow & { currency: string; identifier?: string };
+export type PriceHistoryOutcome =
+  | { ok: true; data: readonly PriceObservation[] }
+  | { ok: false; error: ProviderFailure };
+export type FxHistoryOutcome =
+  | { need: FxHistoryNeed; ok: true; data: readonly FxObservation[] }
+  | { need: FxHistoryNeed; ok: false; error: ProviderFailure };
+
+export interface PriceHistorySource {
+  readonly id: ProviderId;
+  fetchPriceHistory(need: PriceHistoryNeed): Promise<PriceHistoryOutcome>;
+}
+
+export interface FxHistorySource {
+  readonly id: ProviderId;
+  fetchFxHistory(needs: readonly FxHistoryNeed[]): Promise<readonly FxHistoryOutcome[]>;
 }
 
 export type PriceFetchFailure = {

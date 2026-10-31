@@ -6,6 +6,8 @@ import {
   type PriceNeed,
   type PriceOutcome,
   type PriceSource,
+  type PriceHistoryNeed,
+  type PriceHistoryOutcome,
   type ProviderFailure,
 } from "./contracts.js";
 
@@ -43,9 +45,66 @@ export class EodhdSource implements PriceSource {
     return Promise.all(needs.map(async (need) => this.fetchPrice(need)));
   }
 
+  async fetchPriceHistory(need: PriceHistoryNeed): Promise<PriceHistoryOutcome> {
+    if (need.instrument.type !== "fund" && need.instrument.type !== "stock") {
+      return {
+        ok: false,
+        error: { kind: "unsupported", message: "EODHD history supports funds and stocks." },
+      };
+    }
+    if (this.apiKey === undefined) {
+      return {
+        ok: false,
+        error: { kind: "unauthorized", message: "EODHD requires FINBOOK_EODHD_API_KEY." },
+      };
+    }
+    const url = new URL(`${EODHD_BASE_URL}${encodeURIComponent(need.identifier)}`);
+    url.searchParams.set("api_token", this.apiKey);
+    url.searchParams.set("fmt", "json");
+    url.searchParams.set("period", "d");
+    url.searchParams.set("order", "d");
+    if (need.sourceFrom !== undefined) url.searchParams.set("from", need.sourceFrom);
+    url.searchParams.set("to", need.through);
+    let response: Response;
+    try {
+      response = await this.fetchImplementation(url, {
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch {
+      return { ok: false, error: { kind: "unavailable", message: "EODHD request failed." } };
+    }
+    if (!response.ok) return { ok: false, error: httpFailure(response) };
+    let raw: unknown;
+    try {
+      raw = await response.json();
+    } catch {
+      return {
+        ok: false,
+        error: { kind: "invalid-response", message: "EODHD returned invalid JSON." },
+      };
+    }
+    const parsed = EodhdResponseSchema.safeParse(raw);
+    if (!parsed.success || parsed.data.some((row) => row.date > need.through)) {
+      return {
+        ok: false,
+        error: { kind: "invalid-response", message: "EODHD returned invalid historical prices." },
+      };
+    }
+    const retrievedAt = this.now().toISOString();
+    return {
+      ok: true,
+      data: parsed.data.map((row) => ({
+        instrument: need.instrument.id,
+        asOf: row.date,
+        price: { amount: String(row.close), currency: need.instrument.quoteCurrency },
+        provenance: { kind: "fetched", source: this.id, retrievedAt },
+      })),
+    };
+  }
+
   private async fetchPrice(need: PriceNeed): Promise<PriceOutcome> {
-    if (need.instrument.type !== "fund") {
-      return failure(need, "unsupported", "EODHD is configured only for fund prices.");
+    if (need.instrument.type !== "fund" && need.instrument.type !== "stock") {
+      return failure(need, "unsupported", "EODHD supports fund and stock prices.");
     }
     if (this.apiKey === undefined) {
       return failure(need, "unauthorized", "EODHD requires FINBOOK_EODHD_API_KEY.");

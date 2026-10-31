@@ -2,7 +2,13 @@ import YahooFinance from "yahoo-finance2";
 import { CurrencySchema, IsoDateSchema, MoneyValue, TimeZoneSchema } from "@finbook/core";
 import { z } from "zod";
 import { createRetryingFetch } from "./http.js";
-import { type PriceNeed, type PriceOutcome, type PriceSource } from "./contracts.js";
+import {
+  type PriceNeed,
+  type PriceOutcome,
+  type PriceSource,
+  type PriceHistoryNeed,
+  type PriceHistoryOutcome,
+} from "./contracts.js";
 
 export type YahooHistoryPoint = { date: Date; close: number | null };
 export type YahooChartWindow = { from: string; to: string };
@@ -41,6 +47,77 @@ export class YahooSource implements PriceSource {
 
   fetchPrices(needs: readonly PriceNeed[]): Promise<readonly PriceOutcome[]> {
     return Promise.all(needs.map((need) => this.fetchPrice(need)));
+  }
+
+  async fetchPriceHistory(need: PriceHistoryNeed): Promise<PriceHistoryOutcome> {
+    if (need.instrument.type !== "fund")
+      return {
+        ok: false,
+        error: {
+          kind: "unsupported",
+          message:
+            "Yahoo historical unit prices are supported only for funds; bind stocks to a raw-close source.",
+        },
+      };
+    let chart: YahooChart;
+    try {
+      chart = await this.gateway.chart(need.identifier, {
+        from: `${need.sourceFrom ?? "1970-01-01"}T00:00:00.000Z`,
+        to: new Date(Date.parse(`${need.through}T00:00:00Z`) + 2 * 86_400_000).toISOString(),
+      });
+    } catch {
+      return {
+        ok: false,
+        error: { kind: "unavailable", message: "Yahoo historical price request failed." },
+      };
+    }
+    if (chart.currency !== need.instrument.quoteCurrency)
+      return {
+        ok: false,
+        error: {
+          kind: "invalid-response",
+          message: "Yahoo historical quote currency does not match the instrument.",
+        },
+      };
+    const tradingDate = new Intl.DateTimeFormat("en-CA", {
+      timeZone: chart.timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    const observations = [];
+    for (const point of chart.quotes) {
+      if (point.close === null) continue;
+      if (!Number.isFinite(point.close) || point.close <= 0)
+        return {
+          ok: false,
+          error: {
+            kind: "invalid-response",
+            message: "Yahoo returned an invalid historical close.",
+          },
+        };
+      const values = Object.fromEntries(
+        tradingDate.formatToParts(point.date).map((part) => [part.type, part.value]),
+      );
+      const date = IsoDateSchema.safeParse(`${values.year}-${values.month}-${values.day}`);
+      if (!date.success)
+        return {
+          ok: false,
+          error: { kind: "invalid-response", message: "Yahoo returned an invalid trading date." },
+        };
+      if (date.data > need.through) continue;
+      observations.push({
+        instrument: need.instrument.id,
+        price: { amount: String(point.close), currency: chart.currency },
+        asOf: date.data,
+        provenance: {
+          kind: "fetched" as const,
+          source: this.id,
+          retrievedAt: this.now().toISOString(),
+        },
+      });
+    }
+    return { ok: true, data: observations };
   }
 
   private async fetchPrice(need: PriceNeed): Promise<PriceOutcome> {

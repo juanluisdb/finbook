@@ -1,4 +1,12 @@
 import {
+  selectPriceProviders,
+  selectFxProviders,
+  selectHistoricalEurRateProviders,
+  providerFxNeed,
+  providerPriceNeed,
+} from "./routing.js";
+import { HistoryUpdater, type HistoryUpdateReport } from "./history.js";
+import {
   FileBookStore,
   FxStampSchema,
   IsoDateSchema,
@@ -16,7 +24,7 @@ import {
   type BookSnapshot,
 } from "@finbook/core";
 
-import { effectiveRoute, findBinding } from "./config.js";
+import { findBinding } from "./config.js";
 import { DailyResolutions, dailyCycle, dailyTarget, cachedResolution } from "./daily.js";
 import type { MarketDataConfig } from "./contracts.js";
 import {
@@ -36,10 +44,10 @@ import {
   type PriceObservation,
   type PriceOutcome,
   type PriceSource,
+  type PriceHistorySource,
+  type FxHistorySource,
   type ProviderFailure,
   type ProviderId,
-  type RouteKey,
-  providerSupportsRoute,
 } from "./contracts.js";
 
 export type MarketDataStore = Pick<
@@ -54,6 +62,8 @@ export type MarketDataCoordinatorOptions = {
   fxSources: readonly FxSource[];
   eurRateSources: readonly HistoricalEurRateSource[];
   now?: () => Date;
+  priceHistorySources?: readonly PriceHistorySource[];
+  fxHistorySources?: readonly FxHistorySource[];
 };
 
 export type ResolvePriceOptions = {
@@ -79,10 +89,6 @@ type PendingFx = {
   cycle: string;
 };
 
-type ProviderSelection =
-  | { ok: true; providers: readonly ProviderId[] }
-  | { ok: false; provider: ProviderId | "none"; error: ProviderFailure };
-
 export type ManualMarkConflict = {
   kind: "price" | "fx";
   subject: string;
@@ -100,14 +106,6 @@ export type ValuationRefreshReport = {
   conflicts: readonly ManualMarkConflict[];
 };
 
-const PRICE_ROUTE_BY_INSTRUMENT_TYPE = {
-  stock: "price:stock",
-  etf: "price:etf",
-  fund: "price:fund",
-  etc: "price:etc",
-  crypto: "price:crypto",
-} as const satisfies Record<PriceNeed["instrument"]["type"], RouteKey>;
-
 export class MarketDataCoordinator {
   private readonly store: MarketDataStore;
   private readonly config: MarketDataConfig;
@@ -116,6 +114,7 @@ export class MarketDataCoordinator {
   private readonly eurRateSources: readonly HistoricalEurRateSource[];
   private readonly now: () => Date;
   private readonly resolutions: DailyResolutions;
+  private readonly history: HistoryUpdater;
 
   constructor(options: MarketDataCoordinatorOptions) {
     this.store = options.store;
@@ -125,6 +124,17 @@ export class MarketDataCoordinator {
     this.eurRateSources = options.eurRateSources;
     this.now = options.now ?? (() => new Date());
     this.resolutions = new DailyResolutions(this.store.dataHome);
+    this.history = new HistoryUpdater({
+      store: this.store,
+      config: this.config,
+      priceSources: options.priceHistorySources ?? [],
+      fxSources: options.fxHistorySources ?? [],
+      now: this.now,
+    });
+  }
+
+  updateHistory(): Promise<Result<HistoryUpdateReport>> {
+    return this.history.update();
   }
 
   async refreshValuation(
@@ -692,99 +702,6 @@ class CoordinatorStorageError extends Error {
     this.name = "CoordinatorStorageError";
     this.domainError = error;
   }
-}
-
-function selectPriceProviders(
-  need: PriceNeed,
-  config: MarketDataConfig,
-  providerOverride: ProviderId | undefined,
-): ProviderSelection {
-  const route = priceRoute(need.instrument.type);
-  const binding = findBinding(config, "instrument", need.instrument.id);
-  if (providerOverride !== undefined) return selectProvider(providerOverride, route, config);
-  if (binding !== undefined) return selectProvider(binding.provider, route, config);
-  return selectRouteProviders(route, config);
-}
-
-function selectFxProviders(
-  need: FxNeed,
-  config: MarketDataConfig,
-  providerOverride: ProviderId | undefined,
-): ProviderSelection {
-  if (providerOverride !== undefined) return selectProvider(providerOverride, "fx", config);
-  const binding = findBinding(config, "currency", need.currency);
-  if (binding !== undefined) return selectProvider(binding.provider, "fx", config);
-  return selectRouteProviders("fx", config);
-}
-
-function selectHistoricalEurRateProviders(
-  binding: Extract<MarketDataConfig["bindings"][number], { kind: "currency" }> | undefined,
-  config: MarketDataConfig,
-  providerOverride: ProviderId | undefined,
-): ProviderSelection {
-  const route =
-    binding !== undefined && providerSupportsRoute(binding.provider, "eur-rate:crypto")
-      ? "eur-rate:crypto"
-      : "eur-rate:fiat";
-  if (providerOverride !== undefined) {
-    return selectProvider(providerOverride, route, config);
-  }
-  if (binding !== undefined) {
-    return selectProvider(binding.provider, route, config);
-  }
-  return selectRouteProviders("eur-rate:fiat", config);
-}
-
-function selectProvider(
-  provider: ProviderId,
-  route: RouteKey,
-  config: MarketDataConfig,
-): ProviderSelection {
-  if (config.disabledProviders.includes(provider)) {
-    return {
-      ok: false,
-      provider,
-      error: { kind: "unsupported", message: `Provider ${provider} is disabled.` },
-    };
-  }
-  if (!providerSupportsRoute(provider, route)) {
-    return {
-      ok: false,
-      provider,
-      error: { kind: "unsupported", message: `Provider ${provider} cannot serve ${route}.` },
-    };
-  }
-  return { ok: true, providers: [provider] };
-}
-
-function selectRouteProviders(route: RouteKey, config: MarketDataConfig): ProviderSelection {
-  const providers = effectiveRoute(route, config);
-  if (providers.length === 0) {
-    return {
-      ok: false,
-      provider: "none",
-      error: { kind: "unavailable", message: `No enabled provider is configured for ${route}.` },
-    };
-  }
-  return { ok: true, providers };
-}
-
-function priceRoute(type: PriceNeed["instrument"]["type"]): RouteKey {
-  return PRICE_ROUTE_BY_INSTRUMENT_TYPE[type];
-}
-
-function providerFxNeed(need: FxNeed, provider: ProviderId, config: MarketDataConfig): FxNeed {
-  const binding = findBinding(config, "currency", need.currency);
-  return binding?.provider === provider ? { ...need, identifier: binding.identifier } : need;
-}
-
-function providerPriceNeed(
-  need: PriceNeed,
-  provider: ProviderId,
-  config: MarketDataConfig,
-): PriceNeed {
-  const binding = findBinding(config, "instrument", need.instrument.id);
-  return binding?.provider === provider ? { ...need, identifier: binding.identifier } : need;
 }
 
 function groupPendingFx(pending: Map<string, PendingFx>): Map<ProviderId, PendingFx[]> {

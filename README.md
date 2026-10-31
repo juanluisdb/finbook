@@ -13,8 +13,8 @@ The book lives on your machine in inspectable files. The CLI is non-interactive 
 - Keep one history across multiple brokers and accounts.
 - Distinguish new contributions from transfers between accounts you own.
 - Preserve trade fees, withholding, and historical EUR rates with the event they belong to.
-- Inspect positions and portfolio value on any economic date.
-- Add valuation marks yourself or explicitly refresh the price and FX data a view needs.
+- Inspect positions and daily portfolio value history in EUR.
+- Update available fund, stock, and fiat FX history, then inspect saved values offline.
 - Correct history without allowing an edit or deletion to invalidate later events.
 - Inspect and automate the book through ordinary files, composable commands, and stable JSON output.
 
@@ -74,21 +74,27 @@ finbook show positions --as-of 2026-03-04
 
 `price set` records the market value of an instrument on a date; it does not record a trade. `fx set` does the same for a currency-to-EUR valuation rate. A trade price is never used as a valuation fallback.
 
-Ordinary views are offline. `--fetch` resolves the daily observations required by the view and saves successful results locally. A new refresh cycle starts at 06:00 UTC: prices and fiat FX target the previous UTC date, while crypto uses the cycle date's midnight UTC snapshot. Historical views cap those targets at their requested date. Every observation keeps its actual date and source, so older NAVs and weekend closes remain visibly dated.
-
-Successful resolutions are reused across commands and restarts within a cycle; exact-date resolutions can also serve later cycles. Failed subjects can retry without repeating successful work. A late-published NAV may wait until the next cycle. finbook does not run a background scheduler.
-
-Yahoo remains the default fund-price provider. A fund available through EODHD can opt in with its EODHD ticker:
+Update available historical data and read daily values offline:
 
 ```sh
+finbook config source set --instrument ACME --provider eodhd --identifier ACME.US
 export FINBOOK_EODHD_API_KEY="..."
-finbook config source set --instrument my-fund --provider eodhd --identifier PROVIDER-TICKER.EUFUND
+finbook update
+finbook show history --from 2026-03-03 --to 2026-03-10
+finbook show history --from 2026-03-03 --to 2026-03-10 --json
 ```
 
-Each unresolved EODHD-bound fund costs one API call. Repeated views reuse a completed daily resolution rather than spending another call.
+Use the actual provider identifier for your instrument. Historical updates support Yahoo fund NAVs, EODHD raw fund and stock closes, and ECB fiat exchange rates. Yahoo remains the default fund provider; bind its local instrument ID to the Yahoo symbol when needed. Historical stocks require an explicit EODHD binding or route because Yahoo historical stock closes can use split-adjusted units. Provider credentials and account access determine available history. Corporate actions are not modeled.
+
+`update` derives requirements from the complete recorded history, including sold assets and foreign cash left after a sale. It checks newest ranges first, saves each observation, and reports failed ranges without discarding completed work. Completed checks, including empty periods, are reused across restarts. They have no expiry or automatic recheck; late NAVs or provider corrections inside a checked period may remain absent. The table shows actual observation dates, carries the last eligible mark over non-trading days, and leaves totals unknown when an indispensable input is missing. A trade price never fills a valuation gap.
+
+Crypto historical acquisition is not supported by `update` yet. Such needs are reported as failures while supported work is saved. Ordinary views remain offline. Single-date fetching remains available with `show glance --fetch` or `show positions --fetch`, including crypto; its separate daily cache can recheck lagging observations on a later cycle.
+
+Both operations start their daily cycle at 06:00 UTC. History, security prices, and fiat FX stop at the preceding completed UTC date; single-date crypto uses the cycle date's midnight UTC snapshot. Earlier single-date views cap their targets at the requested date. The CLI performs no background scheduling.
 
 ```sh
-finbook show glance --fetch
+finbook update --json
+finbook show glance
 finbook doctor
 ```
 
