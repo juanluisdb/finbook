@@ -29,6 +29,7 @@ const ManifestSchema = z.object({
   private: z.literal(true),
   dependencies: z.record(PackageNameSchema, z.string()).default({}),
 });
+const ManagedHomeMarkerSchema = ManifestSchema.pick({ name: true, private: true });
 const PackageSchema = z.object({
   name: PackageNameSchema,
   version: z.string().min(1),
@@ -313,4 +314,14 @@ function packageFailure(message: string): Result<never> {
     message,
     hint: "Inspect `finbook provider list`, check npm availability and package access, then reinstall. Package-tool output is withheld to protect credentials.",
   });
+}
+
+export function isManagedProviderHome(path: string): boolean {
+  try {
+    return ManagedHomeMarkerSchema.safeParse(
+      JSON.parse(readFileSync(join(path, "package.json"), "utf8")),
+    ).success;
+  } catch {
+    return false;
+  }
 }

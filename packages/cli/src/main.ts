@@ -124,7 +124,7 @@ function resolveDataHome(argv: readonly string[], env: NodeJS.ProcessEnv, cwd: s
   } catch (error) {
     throw validationFailure(
       error instanceof Error ? error.message : "Invalid FINBOOK_HOME.",
-      "Set FINBOOK_HOME to a writable path outside the checkout.",
+      "Set FINBOOK_HOME to a writable path outside the checkout and separate from provider code.",
     );
   }
 }

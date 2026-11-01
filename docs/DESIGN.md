@@ -104,7 +104,7 @@ The store keeps the data directory owner-only and regular book files owner-reada
 
 ## Keep the book outside the running checkout
 
-`packages/cli/src/environment.ts::loadRuntimeConfig` resolves relative user paths against the caller's directory and derives the protected checkout from the running module's source/built monorepo location. Canonical path comparison includes existing symlinked parents of a not-yet-created data directory. The caller's directory is not the checkout boundary. This prevents accidental placement of private book data; it is not a sandbox against concurrent filesystem changes by the owner.
+`packages/cli/src/environment.ts::loadRuntimeConfig` resolves relative user paths against the caller's directory and derives the protected checkout from the running module's source/built monorepo location. Canonical path comparison includes existing symlinked parents of a not-yet-created data directory. The caller's directory is not the checkout boundary. Book paths cannot overlap the configured provider code directory in either direction; canonical ancestor inspection also rejects books inside another recognized managed installation. An unusable provider setting does not prevent a separate offline book from opening. Provider-only commands do not require a valid book location. This prevents accidental placement of private book data; it is not a sandbox against concurrent filesystem changes by the owner.
 
 ## Serialize access to one book
 

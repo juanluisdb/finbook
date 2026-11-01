@@ -75,7 +75,10 @@ export class MarketDataCoordinator {
     );
     return result.ok
       ? result.data
-      : { ok: false, error: { kind: "unavailable", message: result.error.message } };
+      : {
+          ok: false,
+          error: { kind: "unavailable", message: `${result.error.message} ${result.error.hint}` },
+        };
   }
 
   private async resolveRate(
@@ -103,7 +106,10 @@ export class MarketDataCoordinator {
         binding?.provider === provider ? { ...need, identifier: binding.identifier } : need;
       let outcomes: readonly EurRateOutcome[];
       try {
-        outcomes = await source.fetchHistoricalEurRates([providerNeed]);
+        outcomes = await source.fetchHistoricalEurRates(
+          [providerNeed],
+          binding === undefined && options.provider === undefined ? "eur-rate:fiat" : undefined,
+        );
       } catch (error) {
         lastFailure = {
           kind: "unavailable",

@@ -110,7 +110,10 @@ export type ProviderFailureKind = ProviderFailure["kind"];
 
 export interface HistoricalEurRateSource {
   readonly id: ProviderId;
-  fetchHistoricalEurRates(needs: readonly EurRateNeed[]): Promise<readonly EurRateOutcome[]>;
+  fetchHistoricalEurRates(
+    needs: readonly EurRateNeed[],
+    requiredCapability?: "eur-rate:fiat",
+  ): Promise<readonly EurRateOutcome[]>;
 }
 
 export type HistoryWindow = { from: string; through: string; sourceFrom?: string | undefined };

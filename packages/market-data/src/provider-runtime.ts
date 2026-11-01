@@ -60,7 +60,10 @@ export class ProviderRuntime {
       id,
       fetchPriceHistory: (need: PriceHistoryNeed) => this.price(id, need),
       fetchFxHistory: (needs: readonly FxHistoryNeed[]) => this.fx(id, needs),
-      fetchHistoricalEurRates: (needs: readonly EurRateNeed[]) => this.rates(id, needs),
+      fetchHistoricalEurRates: (
+        needs: readonly EurRateNeed[],
+        requiredCapability?: "eur-rate:fiat",
+      ) => this.rates(id, needs, requiredCapability),
     };
   }
 
@@ -194,10 +197,14 @@ export class ProviderRuntime {
   private async rates(
     id: string,
     needs: readonly EurRateNeed[],
+    requiredCapability?: "eur-rate:fiat",
   ): Promise<readonly EurRateOutcome[]> {
     const loaded = await this.provider(id);
     if (!loaded.ok) return needs.map((need) => ({ ...loaded, need }));
-    if (loaded.data.fetchHistoricalEurRates === undefined)
+    if (
+      loaded.data.fetchHistoricalEurRates === undefined ||
+      (requiredCapability !== undefined && !supports(loaded.metadata, requiredCapability))
+    )
       return needs.map((need) => ({ ...unsupported(id), need }));
     const requests = needs.map((need) => ({ ...need }));
     let parsed: ReturnType<typeof RateBatchSchema.safeParse>;
@@ -229,11 +236,13 @@ export class ProviderRuntime {
   }
   private sanitize(error: ProviderFailure, metadata: ProviderMetadata): ProviderFailure {
     let message = error.message;
-    for (const name of metadata.environment) {
-      const value = this.environment[name];
-      if (value !== undefined && value.length > 0)
-        message = message.replaceAll(value, "[redacted]");
-    }
+    const values = metadata.environment
+      .flatMap((name) => {
+        const value = this.environment[name];
+        return value === undefined || value.length === 0 ? [] : [value];
+      })
+      .sort((left, right) => right.length - left.length);
+    for (const value of values) message = message.replaceAll(value, "[redacted]");
     return { ...error, message };
   }
 }

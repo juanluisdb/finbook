@@ -410,3 +410,41 @@ it("reports duplicate declared IDs without selecting or importing either package
     await f.runtime.withSession(async () => succeed(await f.source.fetchPriceHistory(priceNeed))),
   ).toMatchObject({ data: { ok: false, error: { kind: "unavailable" } } });
 });
+
+it("redacts a token completely when a shorter declared value is its prefix", async () => {
+  const f = fixture(
+    'export default env => ({ok:false,error:{kind:"unauthorized",message:"Rejected token "+env.PROVIDER_TOKEN}});',
+    { PROVIDER_ACCOUNT: "client-42", PROVIDER_TOKEN: "client-42-actual-token-secret" },
+  );
+  const path = join(f.home, "node_modules/example-provider/package.json");
+  const metadata = JSON.parse(readFileSync(path, "utf8"));
+  metadata.finbook.environment = ["PROVIDER_ACCOUNT", "PROVIDER_TOKEN"];
+  writeFileSync(path, JSON.stringify(metadata));
+  expect(
+    await f.runtime.withSession(async () => succeed(await f.source.fetchPriceHistory(priceNeed))),
+  ).toMatchObject({ data: { error: { message: "Rejected token [redacted]" } } });
+});
+
+it("rejects a retained fiat route after capability removal while allowing an explicit crypto-rate pin", async () => {
+  const f = fixture(
+    'export default () => ({ok:true,data:{fetchPriceHistory:async()=>({ok:true,data:[]}),fetchFxHistory:async()=>[],fetchHistoricalEurRates:async needs=>needs.map(need=>({need,ok:true,data:{rate:"0.001",effectiveDate:need.date}}))}});',
+  );
+  const config = MarketDataConfigSchema.parse({ routes: { "eur-rate:fiat": ["example"] } });
+  const store = new FileBookStore(join(f.home, "unused-book"));
+  const coordinator = new MarketDataCoordinator({
+    store,
+    config,
+    eurRateSources: [],
+    eurRateSource: (id) => f.runtime.source(id),
+    withProviderSession: (operation) => f.runtime.withSession(operation),
+  });
+  const need = { currency: "USD", date: "2026-10-20" };
+  expect(await coordinator.resolveHistoricalEurRate(need)).toMatchObject({
+    ok: false,
+    error: { kind: "unsupported" },
+  });
+  expect(await coordinator.resolveHistoricalEurRate(need, { provider: "example" })).toMatchObject({
+    ok: true,
+    data: { rate: "0.001", provenance: { source: "example" } },
+  });
+});

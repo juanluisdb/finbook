@@ -3,6 +3,9 @@ import { realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import { isManagedProviderHome } from "@finbook/market-data";
+
+const ProvidersHomeSchema = z.string().trim().min(1).optional();
 
 const DataHomeSchema = z.string().trim().min(1).default("~/.finbook");
 
@@ -24,10 +27,31 @@ export function loadRuntimeConfig(
     rawDataHome === "~/.finbook" ? resolve(homedir(), ".finbook") : resolve(cwd, rawDataHome);
 
   const checkout = fileURLToPath(new URL("../../../", import.meta.url));
-  if (isWithin(canonicalPath(checkout), canonicalPath(dataHome))) {
+  const canonicalBook = canonicalPath(dataHome);
+  if (isWithin(canonicalPath(checkout), canonicalBook)) {
     throw new Error(`FINBOOK_HOME must be outside the checkout; received ${dataHome}.`);
   }
 
+  const configuredProviders = ProvidersHomeSchema.safeParse(env.FINBOOK_PROVIDERS_HOME);
+  if (configuredProviders.success) {
+    const code = providerPath(configuredProviders.data, cwd);
+    let canonicalCode = code;
+    try {
+      canonicalCode = canonicalPath(code);
+    } catch {
+      /* An unusable provider directory must not block a separate offline book. */
+    }
+    if (isWithin(canonicalCode, canonicalBook) || isWithin(canonicalBook, canonicalCode)) {
+      throw new Error(
+        "FINBOOK_HOME and FINBOOK_PROVIDERS_HOME must be separate, non-overlapping directories.",
+      );
+    }
+  }
+  for (let parent = canonicalBook; ; parent = dirname(parent)) {
+    if (isManagedProviderHome(parent))
+      throw new Error("FINBOOK_HOME must be separate from managed provider code.");
+    if (dirname(parent) === parent) break;
+  }
   return { dataHome };
 }
 
@@ -51,7 +75,10 @@ function isWithin(parent: string, candidate: string): boolean {
 }
 
 export function loadProvidersHome(env: NodeJS.ProcessEnv, cwd: string): string {
-  const configured = z.string().trim().min(1).optional().parse(env.FINBOOK_PROVIDERS_HOME);
+  return providerPath(ProvidersHomeSchema.parse(env.FINBOOK_PROVIDERS_HOME), cwd);
+}
+
+function providerPath(configured: string | undefined, cwd: string): string {
   return configured === undefined
     ? join(homedir(), ".local", "share", "finbook", "providers")
     : resolve(cwd, configured);
