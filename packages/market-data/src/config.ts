@@ -19,21 +19,9 @@ import {
   type ProviderId,
   type RouteKey,
   type SourceBinding,
-  providerSupportsRoute,
 } from "./contracts.js";
 
 const CONFIG_FILE = "market-data.json";
-
-const DEFAULT_ROUTES = {
-  "price:stock": ["eodhd"],
-  "price:etf": [],
-  "price:fund": ["yahoo"],
-  "price:etc": [],
-  "price:crypto": ["coingecko"],
-  fx: ["ecb"],
-  "eur-rate:fiat": ["ecb"],
-  "eur-rate:crypto": ["coingecko"],
-} as const satisfies Record<RouteKey, readonly ProviderId[]>;
 
 export function defaultMarketDataConfig(): MarketDataConfig {
   return MarketDataConfigSchema.parse({
@@ -43,16 +31,9 @@ export function defaultMarketDataConfig(): MarketDataConfig {
   });
 }
 
-export function defaultRoute(key: RouteKey): readonly ProviderId[] {
-  return DEFAULT_ROUTES[key];
-}
-
 export function effectiveRoute(key: RouteKey, config: MarketDataConfig): readonly ProviderId[] {
-  const configured = config.routes[key] ?? defaultRoute(key);
-  return configured.filter(
-    (provider) =>
-      providerSupportsRoute(provider, key) && !config.disabledProviders.includes(provider),
-  );
+  const configured = config.routes[key] ?? [];
+  return configured.filter((provider) => !config.disabledProviders.includes(provider));
 }
 
 export function findBinding(

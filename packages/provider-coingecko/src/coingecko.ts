@@ -1,21 +1,17 @@
 import Coingecko from "@coingecko/coingecko-typescript";
 import { IsoDateSchema, MoneyValue } from "@finbook/core";
 import { z } from "zod";
-import { createRetryingFetch } from "./http.js";
+import { createRetryingFetch } from "@finbook/provider-sdk";
 import {
   type EurRateNeed,
   type EurRateOutcome,
-  type HistoricalEurRateSource,
   type ProviderFailure,
-  type PriceHistorySource,
-  type FxHistorySource,
   type PriceHistoryNeed,
   type PriceHistoryOutcome,
   type FxHistoryNeed,
   type FxHistoryOutcome,
   type HistoryWindow,
-} from "./contracts.js";
-import { shiftDate } from "./history-plan.js";
+} from "@finbook/provider-sdk";
 
 const CoinGeckoHistorySchema = z
   .object({
@@ -38,10 +34,7 @@ export type CoinGeckoSourceOptions = {
   now?: () => Date;
 };
 
-export class CoinGeckoSource
-  implements PriceHistorySource, FxHistorySource, HistoricalEurRateSource
-{
-  readonly id = "coingecko" as const;
+export class CoinGeckoSource {
   private readonly gateway: CoinGeckoGateway;
   private readonly now: () => Date;
 
@@ -65,13 +58,11 @@ export class CoinGeckoSource
     return {
       ok: true,
       data: response.points.map((point) => ({
-        instrument: need.instrument.id,
         asOf: point.date,
         price: {
           amount: plainAmount(point.price, need.instrument.quoteCurrency),
           currency: need.instrument.quoteCurrency,
         },
-        provenance: { kind: "fetched", source: this.id, retrievedAt: this.now().toISOString() },
       })),
     };
   }
@@ -94,7 +85,6 @@ export class CoinGeckoSource
             pair: `${need.currency}/EUR`,
             rate: plainAmount(point.price, "EUR"),
             asOf: point.date,
-            provenance: { kind: "fetched", source: this.id, retrievedAt: this.now().toISOString() },
           })),
         };
       }),
@@ -223,11 +213,6 @@ export class CoinGeckoSource
           data: {
             rate: plainAmount(selected.price, "EUR"),
             effectiveDate,
-            provenance: {
-              kind: "fetched",
-              source: "coingecko",
-              retrievedAt: this.now().toISOString(),
-            },
           },
         };
       }),
@@ -314,4 +299,8 @@ function coingeckoFailure(error: Error, fallback: string): ProviderFailure {
     };
   }
   return { kind: "unavailable", message: fallback };
+}
+
+function shiftDate(date: string, days: number): string {
+  return new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
 }

@@ -29,7 +29,7 @@ export function inspectBookLock(dataHome: string): BookLockInspection {
   return inspectLock(dataHome, LOCK_DIRECTORY);
 }
 
-function inspectLock(dataHome: string, directory: string): BookLockInspection {
+export function inspectLock(dataHome: string, directory: string): BookLockInspection {
   const lockPath = join(dataHome, directory);
   if (!existsSync(lockPath)) return { kind: "absent" };
 
@@ -56,7 +56,14 @@ export async function withRefreshLock<T>(
   dataHome: string,
   operation: () => Promise<Result<T>>,
 ): Promise<Result<T>> {
-  const directory = ".finbook.refresh.lock";
+  return withFileLock(dataHome, ".finbook.refresh.lock", operation);
+}
+
+export async function withFileLock<T>(
+  dataHome: string,
+  directory: string,
+  operation: () => Promise<Result<T>>,
+): Promise<Result<T>> {
   const acquired = acquireBookLock(dataHome, directory);
   if (!acquired.ok) return fail(acquired.error);
   let result: Result<T>;
@@ -102,7 +109,7 @@ function acquireBookLock(dataHome: string, directory = LOCK_DIRECTORY): Result<s
     return fail(
       storageError(
         `Could not prepare ${dataHome}: ${detail}`,
-        "Check FINBOOK_HOME and its permissions.",
+        "Check the protected directory and its permissions.",
       ),
     );
   }
@@ -128,8 +135,8 @@ function acquireBookLock(dataHome: string, directory = LOCK_DIRECTORY): Result<s
       if (!(error instanceof Error)) {
         return fail(
           storageError(
-            "Could not create the book lock: unknown filesystem error; the mutation did not run",
-            "Check FINBOOK_HOME and retry.",
+            "Could not create the filesystem lock: unknown filesystem error; the mutation did not run",
+            "Check the protected directory and retry.",
           ),
         );
       }
@@ -139,15 +146,15 @@ function acquireBookLock(dataHome: string, directory = LOCK_DIRECTORY): Result<s
         } catch {
           return fail(
             storageError(
-              `Could not create the book lock: ${error.message}; the mutation did not run`,
-              "Check FINBOOK_HOME and retry.",
+              `Could not create the filesystem lock: ${error.message}; the mutation did not run`,
+              "Check the protected directory and retry.",
             ),
           );
         }
         return fail(
           storageError(
-            `Could not create the book lock: ${error.message}; the mutation did not run`,
-            "Check FINBOOK_HOME and retry.",
+            `Could not create the filesystem lock: ${error.message}; the mutation did not run`,
+            "Check the protected directory and retry.",
           ),
         );
       }
@@ -159,7 +166,7 @@ function acquireBookLock(dataHome: string, directory = LOCK_DIRECTORY): Result<s
       return fail(
         storageError(
           `The lock at ${lockPath} is active or uncertain; ${inspection.reason}; the mutation did not run`,
-          `Inspect ${lockPath} and remove it only after confirming no finbook process is using the book.`,
+          `Inspect ${lockPath} and remove it only after confirming no finbook process is using this directory.`,
         ),
       );
     }
@@ -174,7 +181,7 @@ function acquireBookLock(dataHome: string, directory = LOCK_DIRECTORY): Result<s
     return fail(
       storageError(
         `The lock at ${lockPath} is abandoned: PID ${inspection.owner.pid} on ${inspection.owner.hostname}, created ${inspection.owner.createdAt}; the operation did not run`,
-        `Stop finbook, inspect ${lockPath}, and remove it only after confirming no process is using the book.`,
+        `Stop finbook, inspect ${lockPath}, and remove it only after confirming no process is using this directory.`,
       ),
     );
   }
@@ -182,7 +189,7 @@ function acquireBookLock(dataHome: string, directory = LOCK_DIRECTORY): Result<s
   return fail(
     storageError(
       "The lock changed while acquisition was attempted; the mutation did not run",
-      `Inspect ${lockPath} and retry after confirming no finbook process is using the book.`,
+      `Inspect ${lockPath} and retry after confirming no finbook process is using this directory.`,
     ),
   );
 }
@@ -197,7 +204,7 @@ function releaseBookLock(
   if (!owner.ok) {
     return fail(
       storageError(
-        `Could not verify the book lock during release: ${owner.error}; the mutation may have committed`,
+        `Could not verify the filesystem lock during release: ${owner.error}; the mutation may have committed`,
         `Inspect ${lockPath} before retrying.`,
       ),
     );
@@ -205,7 +212,7 @@ function releaseBookLock(
   if (owner.data.token !== token) {
     return fail(
       storageError(
-        "The book lock changed during release; the mutation may have committed",
+        "The filesystem lock changed during release; the mutation may have committed",
         `Inspect ${lockPath} before retrying.`,
       ),
     );
@@ -217,7 +224,7 @@ function releaseBookLock(
     const detail = error instanceof Error ? error.message : "unknown filesystem error";
     return fail(
       storageError(
-        `Could not release the book lock: ${detail}; the mutation may have committed`,
+        `Could not release the filesystem lock: ${detail}; the mutation may have committed`,
         `Inspect ${lockPath} before retrying.`,
       ),
     );

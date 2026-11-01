@@ -1,8 +1,29 @@
 {
   "files": [],
   "references": [
-    { "path": "packages/core" },
-    { "path": "packages/market-data" },
-    { "path": "packages/cli" }
+    {
+      "path": "packages/core"
+    },
+    {
+      "path": "packages/provider-sdk"
+    },
+    {
+      "path": "packages/market-data"
+    },
+    {
+      "path": "packages/cli"
+    },
+    {
+      "path": "packages/provider-yahoo"
+    },
+    {
+      "path": "packages/provider-eodhd"
+    },
+    {
+      "path": "packages/provider-ecb"
+    },
+    {
+      "path": "packages/provider-coingecko"
+    }
   ]
 }

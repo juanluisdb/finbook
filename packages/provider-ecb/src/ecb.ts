@@ -4,17 +4,16 @@ import {
   IsoDateSchema,
   MoneyValue,
   PositiveDecimalStringSchema,
-  type Provenance,
 } from "@finbook/core";
 import { z } from "zod";
 
-import { createRetryingFetch } from "./http.js";
+import { createRetryingFetch } from "@finbook/provider-sdk";
 import {
   type EurRateNeed,
   type EurRateOutcome,
   type FxHistoryNeed,
   type FxHistoryOutcome,
-} from "./contracts.js";
+} from "@finbook/provider-sdk";
 
 const DEFAULT_BASE_URL = "https://www.ecb.europa.eu/stats/eurofxref";
 const EcbRateSchema = z
@@ -68,19 +67,15 @@ type EcbFailure = {
 export type EcbSourceOptions = {
   baseUrl?: string;
   fetchImplementation?: typeof fetch;
-  now?: () => Date;
 };
 
 export class EcbSource {
-  readonly id = "ecb" as const;
   private readonly baseUrl: URL;
   private readonly fetch: typeof fetch;
-  private readonly now: () => Date;
 
   constructor(options: EcbSourceOptions = {}) {
     this.baseUrl = new URL(`${options.baseUrl ?? DEFAULT_BASE_URL}/`);
     this.fetch = createRetryingFetch(options.fetchImplementation);
-    this.now = options.now ?? (() => new Date());
   }
 
   async fetchHistoricalEurRates(needs: readonly EurRateNeed[]): Promise<readonly EurRateOutcome[]> {
@@ -105,7 +100,6 @@ export class EcbSource {
         data: {
           rate: invert(rate.rate),
           effectiveDate: rate.date,
-          provenance: this.provenance(),
         },
       };
     });
@@ -139,7 +133,6 @@ export class EcbSource {
                 pair: `${need.currency}/EUR`,
                 rate: invert(rate.rate),
                 asOf: day.date,
-                provenance: this.provenance(),
               },
             ];
       });
@@ -174,14 +167,6 @@ export class EcbSource {
       };
     }
     return parseDays(body);
-  }
-
-  private provenance(): Extract<Provenance, { kind: "fetched" }> {
-    return {
-      kind: "fetched",
-      source: "ecb",
-      retrievedAt: this.now().toISOString(),
-    };
   }
 }
 

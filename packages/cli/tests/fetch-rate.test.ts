@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AccountSchema, FileBookStore } from "@finbook/core";
-import type { EurRateNeed, EurRateResolution, ResolvePriceOptions } from "@finbook/market-data";
+import type { EurRateNeed, EurRateResolution, ResolveRateOptions } from "@finbook/market-data";
 
 import { CliFailure } from "../src/errors.js";
 import { addEvent, type DepositAddInput } from "../src/event-input.js";
@@ -41,7 +41,7 @@ function seedAccount(store: FileBookStore): void {
 type RateResolver = {
   resolveHistoricalEurRate(
     need: EurRateNeed,
-    options?: ResolvePriceOptions,
+    options?: ResolveRateOptions,
   ): Promise<EurRateResolution>;
 };
 

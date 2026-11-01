@@ -587,7 +587,7 @@ describe("read CLI", () => {
     expect(humanResult.stdout).toBe("");
     expect(humanResult.stderr).toBe(
       "error: FINBOOK_HOME must not be empty.\n" +
-        "hint: Set FINBOOK_HOME to a writable path outside the checkout.\n",
+        "hint: Set FINBOOK_HOME to a writable path outside the checkout and separate from provider code.\n",
     );
   });
 

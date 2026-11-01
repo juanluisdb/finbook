@@ -27,7 +27,6 @@ it("retains every raw native close, independently of adjusted closes, in a singl
   const provider = new EodhdSource({
     apiKey: "fixture-key",
     fetchImplementation,
-    now: () => new Date("2026-03-04T12:00:00Z"),
   });
   expect(await provider.fetchPriceHistory(need)).toMatchObject({
     ok: true,

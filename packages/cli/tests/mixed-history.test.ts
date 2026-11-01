@@ -1,3 +1,4 @@
+import { installFixtureProviders } from "../../../tests/provider-fixture.js";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,6 +15,9 @@ afterEach(() => {
 function fixture() {
   const home = mkdtempSync(join(tmpdir(), "finbook-mixed-history-"));
   homes.push(home);
+  const providerHome = mkdtempSync(join(tmpdir(), "finbook-fixture-code-"));
+  homes.push(providerHome);
+  installFixtureProviders(providerHome);
   const store = new FileBookStore(home);
   expect(
     store.appendAccount(
@@ -64,6 +68,12 @@ function fixture() {
   expect(
     new MarketDataConfigStore(home).save(
       MarketDataConfigSchema.parse({
+        routes: {
+          "price:fund": ["yahoo"],
+          "price:stock": ["eodhd"],
+          fx: ["ecb"],
+          "eur-rate:fiat": ["ecb"],
+        },
         bindings: [
           { kind: "instrument", instrument: "BTC", provider: "coingecko", identifier: "bitcoin" },
         ],
@@ -85,6 +95,7 @@ function fixture() {
         env: {
           ...process.env,
           FINBOOK_HOME: home,
+          FINBOOK_PROVIDERS_HOME: providerHome,
           FINBOOK_EODHD_API_KEY: "fixture-key",
           FINBOOK_COINGECKO_DEMO_API_KEY: "",
           FINBOOK_TEST_HTTP_LOG: log,
@@ -185,6 +196,12 @@ it("maintains a mixed fund, stock, crypto and cash history offline, including a 
   expect(
     new MarketDataConfigStore(f.home).save(
       MarketDataConfigSchema.parse({
+        routes: {
+          "price:fund": ["yahoo"],
+          "price:stock": ["eodhd"],
+          fx: ["ecb"],
+          "eur-rate:fiat": ["ecb"],
+        },
         bindings: [
           { kind: "instrument", instrument: "fund", provider: "eodhd", identifier: "FUND.EUFUND" },
           { kind: "instrument", instrument: "AAPL", provider: "eodhd", identifier: "AAPL.US" },
@@ -330,6 +347,12 @@ it("keeps available history when crypto fails and retries only that subject", ()
   expect(
     new MarketDataConfigStore(f.home).save(
       MarketDataConfigSchema.parse({
+        routes: {
+          "price:fund": ["yahoo"],
+          "price:stock": ["eodhd"],
+          fx: ["ecb"],
+          "eur-rate:fiat": ["ecb"],
+        },
         bindings: [
           { kind: "instrument", instrument: "BTC", provider: "coingecko", identifier: "bitcoin" },
           { kind: "instrument", instrument: "fund", provider: "eodhd", identifier: "FUND.EUFUND" },

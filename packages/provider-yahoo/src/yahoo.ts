@@ -1,12 +1,8 @@
 import YahooFinance from "yahoo-finance2";
 import { CurrencySchema, IsoDateSchema, TimeZoneSchema } from "@finbook/core";
 import { z } from "zod";
-import { createRetryingFetch } from "./http.js";
-import {
-  type PriceHistorySource,
-  type PriceHistoryNeed,
-  type PriceHistoryOutcome,
-} from "./contracts.js";
+import { createRetryingFetch } from "@finbook/provider-sdk";
+import { type PriceHistoryNeed, type PriceHistoryOutcome } from "@finbook/provider-sdk";
 
 export type YahooHistoryPoint = { date: Date; close: number | null };
 export type YahooChartWindow = { from: string; to: string };
@@ -19,7 +15,6 @@ export type YahooGateway = { chart(symbol: string, window: YahooChartWindow): Pr
 export type YahooSourceOptions = {
   gateway?: YahooGateway;
   fetchImplementation?: typeof fetch;
-  now?: () => Date;
 };
 
 const ChartSchema = z
@@ -33,14 +28,11 @@ const ChartSchema = z
   })
   .passthrough();
 
-export class YahooSource implements PriceHistorySource {
-  readonly id = "yahoo" as const;
+export class YahooSource {
   private readonly gateway: YahooGateway;
-  private readonly now: () => Date;
 
   constructor(options: YahooSourceOptions = {}) {
     this.gateway = options.gateway ?? createYahooGateway(options.fetchImplementation);
-    this.now = options.now ?? (() => new Date());
   }
 
   async fetchPriceHistory(need: PriceHistoryNeed): Promise<PriceHistoryOutcome> {
@@ -101,14 +93,8 @@ export class YahooSource implements PriceHistorySource {
         };
       if (date.data > need.through) continue;
       observations.push({
-        instrument: need.instrument.id,
         price: { amount: String(point.close), currency: chart.currency },
         asOf: date.data,
-        provenance: {
-          kind: "fetched" as const,
-          source: this.id,
-          retrievedAt: this.now().toISOString(),
-        },
       });
     }
     return { ok: true, data: observations };

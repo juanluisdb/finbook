@@ -1,6 +1,7 @@
+import { installFixtureProviders } from "../../../tests/provider-fixture.js";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync, mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { AccountSchema, EventSchema, FileBookStore, InstrumentSchema } from "@finbook/core";
@@ -15,6 +16,9 @@ afterEach(() => {
 function fixture() {
   const home = mkdtempSync(join(tmpdir(), "finbook-history-cli-"));
   directories.push(home);
+  const providerHome = mkdtempSync(join(tmpdir(), "finbook-fixture-code-"));
+  directories.push(providerHome);
+  installFixtureProviders(providerHome);
   const store = new FileBookStore(home);
   expect(
     store.appendAccount(
@@ -87,6 +91,7 @@ function fixture() {
         env: {
           ...process.env,
           FINBOOK_HOME: home,
+          FINBOOK_PROVIDERS_HOME: providerHome,
           FINBOOK_EODHD_API_KEY: "fixture-key",
           FINBOOK_TEST_HTTP_LOG: log,
           FINBOOK_TEST_FAIL: String(fail),
@@ -95,6 +100,7 @@ function fixture() {
     );
   return {
     store,
+    providerHome,
     run,
     calls: () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []),
   };
@@ -253,4 +259,78 @@ it("returns a failed JSON envelope with saved newer work and retries only the ol
     },
   });
   expect(f.calls()).toEqual(["/api/eod/FUND.EUFUND", "/api/eod/OLD.EUFUND", "/api/eod/OLD.EUFUND"]);
+});
+
+it("fetches an explicitly pinned event-rate provider even without a configured rate route", () => {
+  const f = fixture();
+  const result = f.run([
+    "event",
+    "add",
+    "deposit",
+    "--id",
+    "foreign-deposit",
+    "--date",
+    "2024-09-10",
+    "--account",
+    "broker",
+    "--amount",
+    "100",
+    "--currency",
+    "USD",
+    "--fetch-rate",
+    "--provider",
+    "ecb",
+    "--json",
+  ]);
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+  expect(f.store.load()).toMatchObject({
+    data: {
+      events: expect.arrayContaining([
+        expect.objectContaining({
+          id: "foreign-deposit",
+          eurRateProvenance: expect.objectContaining({ source: "ecb" }),
+        }),
+      ]),
+    },
+  });
+});
+
+it("retains manual recovery instructions for an abandoned provider lock during event-rate fetching", () => {
+  const f = fixture();
+  const lock = join(f.providerHome, ".finbook.providers.lock");
+  mkdirSync(lock);
+  const owner = JSON.stringify({
+    pid: 2147483647,
+    hostname: hostname(),
+    createdAt: "2026-10-20T12:00:00Z",
+    token: "fixture-owner",
+  });
+  writeFileSync(join(lock, "owner.json"), owner);
+  const result = f.run([
+    "event",
+    "add",
+    "deposit",
+    "--id",
+    "blocked-deposit",
+    "--date",
+    "2024-09-10",
+    "--account",
+    "broker",
+    "--amount",
+    "100",
+    "--currency",
+    "USD",
+    "--fetch-rate",
+    "--provider",
+    "ecb",
+    "--json",
+  ]);
+  expect(result.status).toBe(1);
+  expect(result.stdout).toContain("remove it only after confirming no process");
+  expect(readFileSync(join(lock, "owner.json"), "utf8")).toBe(owner);
+  expect(f.store.load()).toMatchObject({
+    data: {
+      events: expect.not.arrayContaining([expect.objectContaining({ id: "blocked-deposit" })]),
+    },
+  });
 });

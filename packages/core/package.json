@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "files": [
-    "dist"
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "dist/**/*.map"
   ],
   "type": "module",
   "exports": {

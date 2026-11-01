@@ -56,18 +56,78 @@ importers:
 
   packages/market-data:
     dependencies:
+      '@finbook/core':
+        specifier: workspace:*
+        version: link:../core
+      '@finbook/provider-sdk':
+        specifier: workspace:*
+        version: link:../provider-sdk
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+
+  packages/provider-coingecko:
+    dependencies:
       '@coingecko/coingecko-typescript':
         specifier: 7.1.0
         version: 7.1.0
       '@finbook/core':
         specifier: workspace:*
         version: link:../core
+      '@finbook/provider-sdk':
+        specifier: workspace:*
+        version: link:../provider-sdk
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+
+  packages/provider-ecb:
+    dependencies:
+      '@finbook/core':
+        specifier: workspace:*
+        version: link:../core
+      '@finbook/provider-sdk':
+        specifier: workspace:*
+        version: link:../provider-sdk
       fast-xml-parser:
         specifier: 5.11.1
         version: 5.11.1
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+
+  packages/provider-eodhd:
+    dependencies:
+      '@finbook/core':
+        specifier: workspace:*
+        version: link:../core
+      '@finbook/provider-sdk':
+        specifier: workspace:*
+        version: link:../provider-sdk
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+
+  packages/provider-sdk:
+    dependencies:
+      '@finbook/core':
+        specifier: workspace:*
+        version: link:../core
       ky:
         specifier: 2.1.0
         version: 2.1.0
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+
+  packages/provider-yahoo:
+    dependencies:
+      '@finbook/core':
+        specifier: workspace:*
+        version: link:../core
+      '@finbook/provider-sdk':
+        specifier: workspace:*
+        version: link:../provider-sdk
       yahoo-finance2:
         specifier: 4.0.2
         version: 4.0.2

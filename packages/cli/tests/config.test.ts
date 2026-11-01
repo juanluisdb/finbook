@@ -1,3 +1,4 @@
+import { installFixtureProviders } from "../../../tests/provider-fixture.js";
 import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,6 +18,9 @@ afterEach(() => {
 function temporaryHome(): string {
   const directory = mkdtempSync(join(tmpdir(), "finbook-config-cli-"));
   temporaryDirectories.push(directory);
+  const providerHome = `${directory}-code`;
+  temporaryDirectories.push(providerHome);
+  installFixtureProviders(providerHome);
   return directory;
 }
 
@@ -28,7 +32,12 @@ function runCli(
   return spawnSync(process.execPath, [cliPath, ...args], {
     cwd: repositoryRoot,
     encoding: "utf8",
-    env: { ...process.env, FINBOOK_HOME: dataHome, ...extraEnv },
+    env: {
+      ...process.env,
+      FINBOOK_HOME: dataHome,
+      FINBOOK_PROVIDERS_HOME: `${dataHome}-code`,
+      ...extraEnv,
+    },
   });
 }
 
@@ -189,7 +198,7 @@ describe("provider configuration CLI", () => {
     const dataHome = temporaryHome();
     addInstrument(dataHome, "fund-x");
 
-    const listed = runCli(dataHome, ["config", "provider", "list", "--json"]);
+    const listed = runCli(dataHome, ["provider", "list", "--json"]);
     const binding = runCli(dataHome, [
       "config",
       "source",
@@ -204,13 +213,16 @@ describe("provider configuration CLI", () => {
     ]);
 
     expect(listed.status).toBe(0);
-    expect(JSON.parse(listed.stdout).data).toEqual(
+    expect(JSON.parse(listed.stdout).data.providers).toEqual(
       expect.arrayContaining([
         {
-          id: "eodhd",
-          enabled: true,
-          credentialEnv: "FINBOOK_EODHD_API_KEY",
-          routes: ["price:stock (default)"],
+          package: "@finbook/provider-eodhd",
+          version: "0.1.0",
+          metadata: {
+            id: "eodhd",
+            capabilities: ["price:fund", "price:stock"],
+            environment: ["FINBOOK_EODHD_API_KEY"],
+          },
         },
       ]),
     );
@@ -286,7 +298,7 @@ describe("provider configuration CLI", () => {
     expect(result.stdout).not.toContain("apiKey");
   });
 
-  it("rejects an unknown provider and an incomplete source binding", () => {
+  it("retains opaque disabled IDs and rejects an incomplete source binding", () => {
     const dataHome = temporaryHome();
     const unknown = runCli(dataHome, ["config", "provider", "disable", "unknown", "--json"]);
     const incomplete = runCli(dataHome, [
@@ -300,10 +312,10 @@ describe("provider configuration CLI", () => {
       "--json",
     ]);
 
-    expect(unknown.status).toBe(2);
+    expect(unknown.status).toBe(0);
     expect(JSON.parse(unknown.stdout)).toMatchObject({
-      ok: false,
-      error: { type: "validation" },
+      ok: true,
+      data: { disabledProviders: ["unknown"] },
     });
     expect(incomplete.status).toBe(2);
     expect(JSON.parse(incomplete.stdout)).toMatchObject({
@@ -347,4 +359,26 @@ describe("provider configuration CLI", () => {
       expect(disabled).toEqual([winner]);
     }
   });
+});
+
+it("replaces one subject mapping, clears routes explicitly, and preserves other source choices", () => {
+  const home = temporaryHome();
+  addInstrument(home, "fund-x");
+  const source = ["config", "source", "set", "--instrument", "fund-x"];
+  expect(
+    runCli(home, [...source, "--provider", "yahoo", "--identifier", "OLD", "--json"]).status,
+  ).toBe(0);
+  expect(
+    runCli(home, [...source, "--provider", "eodhd", "--identifier", "NEW.EUFUND", "--json"]).status,
+  ).toBe(0);
+  expect(runCli(home, ["config", "route", "set", "price:fund", "yahoo", "--json"]).status).toBe(0);
+  const cleared = runCli(home, ["config", "route", "remove", "price:fund", "--json"]);
+  expect(JSON.parse(cleared.stdout)).toMatchObject({
+    data: { routes: {}, bindings: [{ provider: "eodhd", identifier: "NEW.EUFUND" }] },
+  });
+  expect(JSON.parse(cleared.stdout).data.bindings).toHaveLength(1);
+  const rejected = runCli(home, ["config", "route", "set", "price:fund", "ecb", "--json"]);
+  expect(rejected.status).toBe(2);
+  const removed = runCli(home, ["config", "source", "remove", "--instrument", "fund-x", "--json"]);
+  expect(JSON.parse(removed.stdout)).toMatchObject({ data: { routes: {}, bindings: [] } });
 });

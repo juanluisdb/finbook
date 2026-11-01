@@ -13,7 +13,6 @@ function source(responseBody = fixture, status = 200): EcbSource {
   return new EcbSource({
     fetchImplementation,
     baseUrl: "https://ecb.test/eurofxref",
-    now: () => new Date("2026-03-03T12:00:00.000Z"),
   });
 }
 
@@ -29,7 +28,6 @@ describe("ECB source", () => {
         data: {
           rate: "0.909090909090909091",
           effectiveDate: "2026-03-02",
-          provenance: { kind: "fetched", source: "ecb" },
         },
       },
     ]);

@@ -3,11 +3,10 @@ import { IsoDateSchema } from "@finbook/core";
 import { z } from "zod";
 
 import {
-  type PriceHistorySource,
   type PriceHistoryNeed,
   type PriceHistoryOutcome,
   type ProviderFailure,
-} from "./contracts.js";
+} from "@finbook/provider-sdk";
 
 const EODHD_BASE_URL = "https://eodhd.com/api/eod/";
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -23,19 +22,15 @@ const EodhdResponseSchema = z.array(EodhdRowSchema);
 export type EodhdSourceOptions = {
   apiKey?: string | undefined;
   fetchImplementation?: typeof fetch;
-  now?: () => Date;
 };
 
-export class EodhdSource implements PriceHistorySource {
-  readonly id = "eodhd" as const;
+export class EodhdSource {
   private readonly apiKey: string | undefined;
   private readonly fetchImplementation: typeof fetch;
-  private readonly now: () => Date;
 
   constructor(options: EodhdSourceOptions = {}) {
     this.apiKey = nonEmpty(options.apiKey);
     this.fetchImplementation = options.fetchImplementation ?? globalThis.fetch;
-    this.now = options.now ?? (() => new Date());
   }
 
   async fetchPriceHistory(need: PriceHistoryNeed): Promise<PriceHistoryOutcome> {
@@ -83,14 +78,11 @@ export class EodhdSource implements PriceHistorySource {
         error: { kind: "invalid-response", message: "EODHD returned invalid historical prices." },
       };
     }
-    const retrievedAt = this.now().toISOString();
     return {
       ok: true,
       data: parsed.data.map((row) => ({
-        instrument: need.instrument.id,
         asOf: row.date,
         price: { amount: String(row.close), currency: need.instrument.quoteCurrency },
-        provenance: { kind: "fetched", source: this.id, retrievedAt },
       })),
     };
   }

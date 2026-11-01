@@ -1,6 +1,5 @@
 import { effectiveRoute, findBinding } from "./config.js";
 import {
-  providerSupportsRoute,
   type MarketDataConfig,
   type PriceHistoryNeed,
   type FxHistoryNeed,
@@ -11,7 +10,7 @@ import {
 
 type ProviderSelection =
   | { ok: true; providers: readonly ProviderId[] }
-  | { ok: false; provider: ProviderId | "none"; error: ProviderFailure };
+  | { ok: false; provider: ProviderId; error: ProviderFailure };
 
 const PRICE_ROUTE_BY_INSTRUMENT_TYPE = {
   stock: "price:stock",
@@ -49,10 +48,7 @@ export function selectHistoricalEurRateProviders(
   config: MarketDataConfig,
   providerOverride: ProviderId | undefined,
 ): ProviderSelection {
-  const route =
-    binding !== undefined && providerSupportsRoute(binding.provider, "eur-rate:crypto")
-      ? "eur-rate:crypto"
-      : "eur-rate:fiat";
+  const route = "eur-rate:fiat";
   if (providerOverride !== undefined) {
     return selectProvider(providerOverride, route, config);
   }
@@ -72,13 +68,6 @@ function selectProvider(
       ok: false,
       provider,
       error: { kind: "unsupported", message: `Provider ${provider} is disabled.` },
-    };
-  }
-  if (!providerSupportsRoute(provider, route)) {
-    return {
-      ok: false,
-      provider,
-      error: { kind: "unsupported", message: `Provider ${provider} cannot serve ${route}.` },
     };
   }
   return { ok: true, providers: [provider] };

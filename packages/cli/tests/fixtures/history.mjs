@@ -2,6 +2,10 @@ import { appendFileSync } from "node:fs";
 
 globalThis.fetch = async (input) => {
   const url = new URL(input instanceof Request ? input.url : String(input));
+  if (url.hostname === "www.ecb.europa.eu")
+    return new Response(
+      '<gesmes:Envelope><Cube><Cube time="2024-09-09"><Cube currency="USD" rate="1.25"/></Cube></Cube></gesmes:Envelope>',
+    );
   if (url.hostname !== "eodhd.com") throw new Error("Unexpected network request");
   appendFileSync(process.env.FINBOOK_TEST_HTTP_LOG, `${url.pathname}\n`);
   if (url.pathname.endsWith("/OLD.EUFUND")) return new Response("unavailable", { status: 503 });

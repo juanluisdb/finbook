@@ -1,4 +1,2 @@
 packages:
-  - packages/core
-  - packages/market-data
-  - packages/cli
+  - packages/*

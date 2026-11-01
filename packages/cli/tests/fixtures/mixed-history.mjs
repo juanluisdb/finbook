@@ -42,7 +42,7 @@ globalThis.fetch = async (input) => {
     return new Response(
       readFileSync(
         new URL(
-          "../../../market-data/tests/fixtures/coingecko-bitcoin-eur-daily.json",
+          "../../../provider-coingecko/tests/fixtures/coingecko-bitcoin-eur-daily.json",
           import.meta.url,
         ),
         "utf8",

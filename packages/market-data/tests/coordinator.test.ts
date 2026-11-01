@@ -65,7 +65,7 @@ describe("historical event-rate coordination", () => {
     );
     const coordinator = new MarketDataCoordinator({
       store,
-      config: MarketDataConfigSchema.parse({}),
+      config: MarketDataConfigSchema.parse({ routes: { "eur-rate:fiat": ["ecb"] } }),
       eurRateSources: [source],
     });
 
@@ -123,7 +123,7 @@ describe("historical event-rate coordination", () => {
     expect(source.calls).toHaveLength(0);
   });
 
-  it("explains how to bind an unsupported unbound currency", async () => {
+  it("returns the configured source failure for an unbound currency", async () => {
     const store = temporaryStore();
     const source = new FixtureRateSource("ecb", (needs) =>
       needs.map((need) => ({
@@ -134,7 +134,7 @@ describe("historical event-rate coordination", () => {
     );
     const coordinator = new MarketDataCoordinator({
       store,
-      config: MarketDataConfigSchema.parse({}),
+      config: MarketDataConfigSchema.parse({ routes: { "eur-rate:fiat": ["ecb"] } }),
       eurRateSources: [source],
     });
 
@@ -144,10 +144,9 @@ describe("historical event-rate coordination", () => {
     });
 
     expect(result).toMatchObject({ ok: false, error: { kind: "unsupported" } });
-    expect(result.ok ? "" : result.error.message).toContain("config source set --currency BTC");
   });
 
-  it("rejects an incapable historical-rate pin before I/O", async () => {
+  it("honors an explicit historical-rate pin without guessing currency categories", async () => {
     const store = temporaryStore();
     const source = new FixtureRateSource("coingecko", (needs) =>
       needs.map((need) => ({
@@ -158,7 +157,7 @@ describe("historical event-rate coordination", () => {
     );
     const coordinator = new MarketDataCoordinator({
       store,
-      config: MarketDataConfigSchema.parse({}),
+      config: MarketDataConfigSchema.parse({ routes: { "eur-rate:fiat": ["ecb"] } }),
       eurRateSources: [source],
     });
 
@@ -167,7 +166,7 @@ describe("historical event-rate coordination", () => {
       { provider: "coingecko" },
     );
 
-    expect(result).toMatchObject({ ok: false, error: { kind: "unsupported" } });
-    expect(source.calls).toHaveLength(0);
+    expect(result).toMatchObject({ ok: false, error: { kind: "unavailable" } });
+    expect(source.calls).toHaveLength(1);
   });
 });

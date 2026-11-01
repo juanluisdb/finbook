@@ -5,6 +5,11 @@
   "bin": {
     "finbook": "dist/main.js"
   },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "dist/**/*.map"
+  ],
   "type": "module",
   "scripts": {
     "build": "tsc -b",

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -68,4 +68,76 @@ describe("runtime configuration", () => {
     expect(JSON.parse(rejected.stdout)).toMatchObject({ ok: false, error: { type: "validation" } });
     expect(existsSync(blocked)).toBe(false);
   });
+});
+
+it("rejects overlapping provider and book locations through canonical parents before creating a book", () => {
+  const root = temporaryDirectory();
+  const code = join(root, "code");
+  mkdirSync(code);
+  const alias = join(root, "alias");
+  symlinkSync(code, alias, "dir");
+  for (const book of [
+    code,
+    join(code, "node_modules/example/book"),
+    join(alias, "not-created/book"),
+  ]) {
+    expect(() =>
+      loadRuntimeConfig({ FINBOOK_HOME: book, FINBOOK_PROVIDERS_HOME: code }, root),
+    ).toThrow("separate");
+  }
+  expect(() =>
+    loadRuntimeConfig({ FINBOOK_HOME: root, FINBOOK_PROVIDERS_HOME: code }, root),
+  ).toThrow("separate");
+  const nested = join(code, "node_modules/example/book");
+  const rejected = spawnSync(
+    process.execPath,
+    [
+      cliPath,
+      "account",
+      "add",
+      "--id",
+      "broker",
+      "--name",
+      "Example",
+      "--platform",
+      "example",
+      "--country",
+      "ES",
+      "--custodial",
+      "broker",
+      "--json",
+    ],
+    {
+      encoding: "utf8",
+      env: { ...process.env, FINBOOK_HOME: nested, FINBOOK_PROVIDERS_HOME: code },
+    },
+  );
+  expect(rejected.status).toBe(2);
+  expect(rejected.stdout).toContain("separate");
+  expect(existsSync(nested)).toBe(false);
+  writeFileSync(
+    join(code, "package.json"),
+    JSON.stringify({ name: "finbook-providers", private: true }),
+  );
+  expect(() =>
+    loadRuntimeConfig(
+      { FINBOOK_HOME: nested, FINBOOK_PROVIDERS_HOME: join(root, "other-code") },
+      root,
+    ),
+  ).toThrow("separate");
+  expect(() =>
+    loadRuntimeConfig({ FINBOOK_HOME: nested, FINBOOK_PROVIDERS_HOME: "" }, root),
+  ).toThrow("separate");
+});
+
+it("keeps safe offline books usable with malformed or unusable provider locations", () => {
+  const root = temporaryDirectory();
+  const book = join(root, "book");
+  const file = join(root, "not-a-directory");
+  writeFileSync(file, "fixture");
+  for (const code of ["", join(file, "code"), join(root, "nonexistent", "code")]) {
+    expect(loadRuntimeConfig({ FINBOOK_HOME: book, FINBOOK_PROVIDERS_HOME: code }, root)).toEqual({
+      dataHome: book,
+    });
+  }
 });
