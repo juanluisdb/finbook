@@ -1,5 +1,6 @@
 import {
   type FileBookStore,
+  succeed,
   IsoDateSchema,
   PositiveDecimalStringSchema,
   type Result,
@@ -24,9 +25,11 @@ export type MarketDataCoordinatorOptions = {
   store: MarketDataStore;
   config: MarketDataConfig;
   eurRateSources: readonly HistoricalEurRateSource[];
+  eurRateSource?: (id: ProviderId) => HistoricalEurRateSource;
   priceHistorySources?: readonly PriceHistorySource[];
   fxHistorySources?: readonly FxHistorySource[];
   now?: () => Date;
+  withProviderSession?: <T>(operation: () => Promise<Result<T>>) => Promise<Result<T>>;
 };
 export type ResolveRateOptions = { provider?: ProviderId };
 export type ManualMarkConflict = {
@@ -41,9 +44,13 @@ export type ManualMarkConflict = {
 export class MarketDataCoordinator {
   private readonly config: MarketDataConfig;
   private readonly eurRateSources: readonly HistoricalEurRateSource[];
+  private readonly withProviderSession: MarketDataCoordinatorOptions["withProviderSession"];
+  private readonly eurRateSource: MarketDataCoordinatorOptions["eurRateSource"];
   private readonly history: HistoryUpdater;
   constructor(options: MarketDataCoordinatorOptions) {
+    this.withProviderSession = options.withProviderSession;
     this.config = options.config;
+    this.eurRateSource = options.eurRateSource;
     this.eurRateSources = options.eurRateSources;
     this.history = new HistoryUpdater({
       store: options.store,
@@ -51,6 +58,7 @@ export class MarketDataCoordinator {
       priceSources: options.priceHistorySources ?? [],
       fxSources: options.fxHistorySources ?? [],
       now: options.now ?? (() => new Date()),
+      withProviderSession: options.withProviderSession,
     });
   }
   updateHistory(): Promise<Result<HistoryUpdateReport>> {
@@ -61,6 +69,19 @@ export class MarketDataCoordinator {
     need: EurRateNeed,
     options: ResolveRateOptions = {},
   ): Promise<EurRateResolution> {
+    if (this.withProviderSession === undefined) return this.resolveRate(need, options);
+    const result = await this.withProviderSession(async () =>
+      succeed(await this.resolveRate(need, options)),
+    );
+    return result.ok
+      ? result.data
+      : { ok: false, error: { kind: "unavailable", message: result.error.message } };
+  }
+
+  private async resolveRate(
+    need: EurRateNeed,
+    options: ResolveRateOptions,
+  ): Promise<EurRateResolution> {
     const bindingCandidate = findBinding(this.config, "currency", need.currency);
     const binding = bindingCandidate?.kind === "currency" ? bindingCandidate : undefined;
     const selection = selectHistoricalEurRateProviders(binding, this.config, options.provider);
@@ -68,11 +89,13 @@ export class MarketDataCoordinator {
     let lastFailure: ProviderFailure | undefined;
 
     for (const provider of selection.providers) {
-      const source = this.eurRateSources.find((candidate) => candidate.id === provider);
+      const source =
+        this.eurRateSources.find((candidate) => candidate.id === provider) ??
+        this.eurRateSource?.(provider);
       if (source === undefined) {
         lastFailure = {
           kind: "unavailable",
-          message: `Provider ${provider} is not available in this build.`,
+          message: `Provider ${provider} is not installed or available.`,
         };
         continue;
       }
@@ -137,15 +160,6 @@ export class MarketDataCoordinator {
       kind: "unavailable" as const,
       message: `No provider is configured for ${need.currency}.`,
     };
-    if (binding === undefined && (error.kind === "unsupported" || error.kind === "not-found")) {
-      return {
-        ok: false,
-        error: {
-          ...error,
-          message: `${error.message} Bind it with: finbook config source set --currency ${need.currency} --provider coingecko --identifier <provider-id>.`,
-        },
-      };
-    }
     return { ok: false, error };
   }
 }

@@ -15,7 +15,7 @@ recorded events -> end-of-day core queries -> required exposure intervals
     -> persist range check -> report saved, reused, empty and failed work
 ```
 
-`packages/market-data/src/contracts.ts` owns normalized history needs, observations, provider failures, interfaces, route keys, and capabilities. Adapters own source identifiers, network protocols, available depth, and timestamp translation. Accounting and valuation remain in core.
+`packages/provider-sdk/src/index.ts` owns the public economic-data contract and schemas. `packages/market-data/src/contracts.ts` owns internal normalized observations, source interfaces, book configuration, and route keys. Adapters own source identifiers, network protocols, available depth, and timestamp translation. Accounting and valuation remain in core.
 
 ## Keep valuation and event evidence separate
 
@@ -27,15 +27,15 @@ Fetched provenance records the provider and UTC retrieval instant. Retrieval tim
 
 ## Route without guessing
 
-`packages/market-data/src/contracts.ts::PROVIDER_CAPABILITIES` declares bundled historical operations. Default routes live in `packages/market-data/src/config.ts::defaultRoute`. Route overrides may reorder or replace providers; disabled providers are removed from effective routes.
+Provider package metadata declares capabilities; there is no closed catalog or implicit default route. `packages/market-data/src/config.ts::effectiveRoute` reads explicit ordered routes and removes disabled IDs without filtering unavailable packages out of the source-selection identity. Adding a package selects nothing; clearing a route leaves no hidden default.
 
 A source binding pins one local instrument or currency to a provider-specific identifier. A historical event-rate request may also explicitly pin a provider. Pinned selection never silently falls back. Unpinned routes may try their next configured provider after failure.
 
-Instrument bindings require an existing local instrument. Currency bindings validate the currency shape; the book has no separate currency registry. Configuration rejects duplicate bindings and unsupported routes. Selection rejects disabled providers and empty effective routes before adapter I/O.
+Instrument bindings require an existing local instrument. Currency bindings validate the currency shape; the book has no separate currency registry. Stored configuration validates structural shape and duplicate bindings independently of installed code. New source/route assignments validate installed metadata and the relevant instrument capability before committing. Removal and disabling remain possible when referenced code is missing. Selection rejects disabled providers and empty effective routes before adapter I/O.
 
 Resolution precedence lives in `packages/market-data/src/routing.ts::selectPriceProviders`, `packages/market-data/src/routing.ts::selectFxProviders`, and `packages/market-data/src/routing.ts::selectHistoricalEurRateProviders`.
 
-Yahoo supplies fund history. EODHD is the default stock source and also supports explicit fund bindings. It uses raw closes matching the units held on the economic date; split-adjusted Yahoo stock history is not eligible. Stock exchange identifiers must be configured correctly. ETF and ETC automatic history has no bundled route; manual marks remain usable.
+Yahoo supplies fund history. EODHD supports stock history and explicit fund bindings. It uses raw closes matching the units held on the economic date; split-adjusted Yahoo stock history is not eligible. Stock exchange identifiers must be configured correctly. ETF and ETC automatic history has no official adapter; manual marks remain usable.
 
 CoinGecko supplies crypto instrument history and bound crypto-currency FX. ECB supplies fiat FX and historical contribution rates. A new provider must not require changes to core accounting or valuation.
 
@@ -51,7 +51,7 @@ Catch-up runs only when there is new unchecked work. Repeating a completed cutof
 
 Yahoo preserves exchange-local NAV dates. EODHD retains raw closes. ECB reads its historical feed once per compatible batch and inverts foreign units per EUR into EUR per foreign unit.
 
-`packages/market-data/src/coingecko.ts::CoinGeckoSource` requests daily midnight rows through the installed SDK. It translates closing date D into source midnight on D+1 and never substitutes an intraday point. Demo access is bounded to its rolling available horizon; requests for earlier history retain available later values while older portfolio dates remain unknown. A successful check establishes acquisition under that source's access limits, not complete market coverage or an observation on every day.
+`packages/provider-coingecko/src/coingecko.ts::CoinGeckoSource` requests daily midnight rows through the installed SDK. It translates closing date D into source midnight on D+1 and never substitutes an intraday point. Demo access is bounded to its rolling available horizon; requests for earlier history retain available later values while older portfolio dates remain unknown. A successful check establishes acquisition under that source's access limits, not complete market coverage or an observation on every day.
 
 ## Reuse durable checks
 
@@ -61,7 +61,7 @@ Yahoo preserves exchange-local NAV dates. EODHD retains raw closes. ECB reads it
 
 Each observation is appended before its check is saved. Interrupted commits retain earlier stamps and leave the range retryable. An unchanged fetched fact retains its retrieval identity; a changed latest candidate is appended. Storage failures stop acquisition. Provider failures preserve completed subjects and remain explicit in the report.
 
-The refresh lock spans a complete asynchronous update; ordinary book locks cover only local reads and commits. Network waits do not hold the book lock. Competing updates fail fast. Abandoned or uncertain locks stop work for manual recovery and are never reclaimed automatically.
+The refresh lock spans a complete asynchronous update; ordinary book locks cover only local reads and commits. A shared provider-code lock surrounds actual new source work, excluding code replacement/removal and other provider-backed operations across books. A fully reused update acquires no code lock or provider module. Network waits do not hold the book lock. Competing updates fail fast. Abandoned or uncertain locks stop work for manual recovery and are never reclaimed automatically.
 
 ## Preserve manual choices
 
@@ -71,16 +71,24 @@ Manual marks win same-date selection against fetched marks. Update saves differi
 
 ## Keep configuration and failures explicit
 
-`packages/market-data/src/config.ts::MarketDataConfigStore` stores non-secret routes, disabled providers, and bindings in `market-data.json`, validates reads, and replaces writes atomically under the book lock. Inspection returns defaults without creating a missing file.
+`packages/market-data/src/config.ts::MarketDataConfigStore` stores non-secret routes, disabled providers, and bindings in `market-data.json`, validates reads, and replaces writes atomically under the book lock. Inspection returns an empty source configuration without creating a missing file.
 
-`packages/cli/src/main.ts::main` reads provider credentials from the process environment. CoinGecko can use public access or the configured Demo credential; EODHD requires its configured API credential. Credentials never enter configuration, observations, output, logs, or successful-check identities. No paid-tier selection or subscription management is provided.
+`packages/cli/src/main.ts::main` parses process environment values. `packages/market-data/src/provider-runtime.ts::ProviderRuntime` passes only declared present values to the selected factory. CoinGecko can use public access or the configured Demo credential; EODHD requires its configured API credential. Credentials never enter configuration, observations, output, logs, or successful-check identities. No paid-tier selection or subscription management is provided.
 
-`packages/market-data/src/contracts.ts::ProviderFailureKind` distinguishes unsupported, not found, rate limited, unauthorized, unavailable, and invalid response. Adapters validate response structures before normalization; acquisition also verifies subject, currency/pair, date direction, and fetched provenance before committing marks. Provider errors cannot masquerade as empty successful ranges.
+`packages/provider-sdk/src/index.ts::ProviderFailureSchema` distinguishes unsupported, not found, rate limited, unauthorized, unavailable, and invalid response. Adapters validate source payloads before normalization. The runtime validates the complete economic result, currency/pair, economic date, and exact batch request echoes before adding local identity and host provenance. Historical orchestration receives trusted normalized marks rather than parsing foreign data again. Provider errors cannot masquerade as empty successful ranges.
 
-`packages/market-data/src/http.ts::createRetryingFetch` centralizes bounded transient retries. EODHD performs one bounded request without retrying to keep quota cost predictable. SDK payloads remain inside their adapters and are not persisted.
+`packages/provider-sdk/src/http.ts::createRetryingFetch` centralizes bounded transient retries. EODHD performs one bounded request without retrying to keep quota cost predictable. SDK payloads remain inside their adapters and are not persisted.
 
 ## Verify the surviving boundaries
 
 Adapter tests exercise sanitized source fixtures and controlled gateways or HTTP behavior. The ordinary gate has no live provider calls. Historical update tests exercise range reuse, catch-up, publication delays, source changes, validation, interruption, batching, fallback, and refresh-lock exclusion with temporary books.
 
 Built-CLI tests replace HTTP at the process boundary and verify mixed holdings, sold assets, foreign cash, closing dates, offline agreement, explicit corrections, partial failure, and removed fetch flags. Event-rate tests independently verify contribution-rate behavior and the absence of valuation side effects.
+
+## Load optional code only for needed work
+
+`packages/market-data/src/packages.ts::ProviderPackages` keeps selected code in a managed directory separate from all books. Its normal package manifest and lockfile track direct selected packages; the static catalog reads their metadata and public exports without importing them. Broken declarations are reported individually, and duplicate logical IDs are conflicts. No transitive dependency scanning occurs.
+
+`ProviderRuntime` lazily creates a source once per operation and catches import, factory, and operation exceptions at the foreign boundary. Expected failures redact declared environment values; raw package subprocess output is withheld. One bad source does not prevent independent subjects from saving useful marks. [PROVIDERS.md](PROVIDERS.md) owns authoring and package-contract details.
+
+Logical source IDs, route order, identifiers, and instrument meaning determine successful-check identity. Installed version, code hash, credentials, and availability do not expire old checks. Dangling references remain inspectable/editable, and saved valuation never depends on installed code.

@@ -1,6 +1,4 @@
 import {
-  FxStampSchema,
-  PriceStampSchema,
   MoneyValue,
   succeed,
   withRefreshLock,
@@ -37,7 +35,7 @@ export type HistoryRange = {
   subject: string;
   from: string;
   through: string;
-  provider: ProviderId | "none";
+  provider: ProviderId;
 };
 export type HistoryUpdateReport = {
   checked: HistoryRange[];
@@ -54,6 +52,9 @@ type HistoryUpdaterOptions = {
   priceSources: readonly PriceHistorySource[];
   fxSources: readonly FxHistorySource[];
   now: () => Date;
+  withProviderSession?:
+    | (<T>(operation: () => Promise<Result<T>>) => Promise<Result<T>>)
+    | undefined;
 };
 
 type HistoryWork = {
@@ -95,61 +96,68 @@ export class HistoryUpdater {
       };
       const planned = this.plan(required.data, checked.data, loaded.data, report);
       const work = planned.work;
-      const snapshot = { ...loaded.data, prices: [...loaded.data.prices], fx: [...loaded.data.fx] };
-      const fxResponses = new Map<ProviderId, Map<HistoryWork, HistoryResponse>>();
-      const candidates = planned.observations;
-      for (const item of work) {
-        let failure: ProviderFailure = {
-          kind: "unsupported",
-          message: "No historical source is configured.",
+      const acquire = async (): Promise<Result<HistoryUpdateReport>> => {
+        const snapshot = {
+          ...loaded.data,
+          prices: [...loaded.data.prices],
+          fx: [...loaded.data.fx],
         };
-        let lastProvider: ProviderId | "none" = "none";
-        let completed = false;
-        for (const provider of item.providers) {
-          lastProvider = provider;
-          const response =
-            item.requirement.kind === "price"
-              ? await this.fetchPrice(item, provider)
-              : await this.fetchFx(item, provider, work, fxResponses);
-          if (!response.ok) {
-            failure = response.error;
-            continue;
+        const fxResponses = new Map<ProviderId, Map<HistoryWork, HistoryResponse>>();
+        const candidates = planned.observations;
+        for (const item of work) {
+          let failure: ProviderFailure = {
+            kind: "unsupported",
+            message: "No historical source is configured.",
+          };
+          let lastProvider: ProviderId = "none";
+          let completed = false;
+          for (const provider of item.providers) {
+            lastProvider = provider;
+            const response =
+              item.requirement.kind === "price"
+                ? await this.fetchPrice(item, provider)
+                : await this.fetchFx(item, provider, work, fxResponses);
+            if (!response.ok) {
+              failure = response.error;
+              continue;
+            }
+            const retained = retainHistory(
+              response.observations.map((observation) => ({
+                asOf: observation.mark.asOf,
+                observation,
+              })),
+              { from: item.retainFrom, through: item.requirement.through },
+            ).map((value) => value.observation);
+            const saved = this.save(item, provider, retained, snapshot, report);
+            if (!saved.ok) return saved;
+            candidates.push(...retained);
+            completed = true;
+            break;
           }
-          const validated = validateHistory(item.requirement, provider, response.observations);
-          if (!validated.ok) {
-            failure = validated.error;
-            continue;
-          }
-          const retained = retainHistory(
-            validated.observations.map((observation) => ({
-              asOf: observation.mark.asOf,
-              observation,
-            })),
-            { from: item.retainFrom, through: item.requirement.through },
-          ).map((value) => value.observation);
-          const saved = this.save(item, provider, retained, snapshot, report);
-          if (!saved.ok) return saved;
-          candidates.push(...retained);
-          completed = true;
-          break;
+          if (!completed)
+            report.failures.push({ ...range(item.requirement, lastProvider), error: failure });
         }
-        if (!completed)
-          report.failures.push({ ...range(item.requirement, lastProvider), error: failure });
-      }
-      const current = this.options.store.load();
-      if (!current.ok) return current;
-      const latestCandidates = new Map(
-        candidates.map((observation) => {
-          const subject =
-            observation.kind === "price" ? observation.mark.instrument : observation.mark.pair;
-          return [`${observation.kind}:${subject}:${observation.mark.asOf}`, observation] as const;
-        }),
-      );
-      report.conflicts = [...latestCandidates.values()].flatMap((observation) => {
-        const conflict = manualConflict(observation, current.data);
-        return conflict === undefined ? [] : [conflict];
-      });
-      return succeed(report);
+        const current = this.options.store.load();
+        if (!current.ok) return current;
+        const latestCandidates = new Map(
+          candidates.map((observation) => {
+            const subject =
+              observation.kind === "price" ? observation.mark.instrument : observation.mark.pair;
+            return [
+              `${observation.kind}:${subject}:${observation.mark.asOf}`,
+              observation,
+            ] as const;
+          }),
+        );
+        report.conflicts = [...latestCandidates.values()].flatMap((observation) => {
+          const conflict = manualConflict(observation, current.data);
+          return conflict === undefined ? [] : [conflict];
+        });
+        return succeed(report);
+      };
+      return work.length > 0 && this.options.withProviderSession !== undefined
+        ? this.options.withProviderSession(acquire)
+        : acquire();
     });
   }
 
@@ -387,7 +395,7 @@ export class HistoryUpdater {
   }
 }
 
-function range(requirement: HistoryRequirement, provider: ProviderId | "none"): HistoryRange {
+function range(requirement: HistoryRequirement, provider: ProviderId): HistoryRange {
   return {
     kind: requirement.kind,
     subject: requirement.subject,
@@ -421,55 +429,6 @@ function latestObservationDate(
     .map((mark) => mark.asOf)
     .sort()
     .at(-1);
-}
-
-function validateHistory(
-  requirement: HistoryRequirement,
-  provider: ProviderId,
-  observations: readonly HistoryObservation[],
-): HistoryResponse {
-  const parsed: HistoryObservation[] = [];
-  for (const observation of observations) {
-    const result =
-      observation.kind === "price"
-        ? PriceStampSchema.safeParse(observation.mark)
-        : FxStampSchema.safeParse(observation.mark);
-    if (
-      !result.success ||
-      result.data.provenance.kind !== "fetched" ||
-      result.data.provenance.source !== provider ||
-      result.data.asOf > requirement.through
-    )
-      return invalidHistory();
-    if (
-      observation.kind === "price" &&
-      requirement.kind === "price" &&
-      "instrument" in result.data &&
-      result.data.instrument === requirement.subject &&
-      result.data.price.currency === requirement.instrument.quoteCurrency
-    )
-      parsed.push({ kind: "price", mark: result.data });
-    else if (
-      observation.kind === "fx" &&
-      requirement.kind === "fx" &&
-      "pair" in result.data &&
-      result.data.pair === `${requirement.subject}/EUR`
-    )
-      parsed.push({ kind: "fx", mark: result.data });
-    else return invalidHistory();
-  }
-  return { ok: true, observations: parsed };
-}
-
-function invalidHistory(): HistoryResponse {
-  return {
-    ok: false,
-    error: {
-      kind: "invalid-response",
-      message:
-        "Historical observations do not match the requested subject, currency, date, or provider.",
-    },
-  };
 }
 
 function manualConflict(

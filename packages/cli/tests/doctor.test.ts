@@ -436,7 +436,7 @@ describe("finbook doctor", () => {
     initializeBook(dataHome);
     writeFileSync(
       join(dataHome, "market-data.json"),
-      `${JSON.stringify({ routes: { "price:stock": ["ecb"] } })}\n`,
+      `${JSON.stringify({ routes: { "unknown-route": ["ecb"] } })}\n`,
       { mode: 0o600 },
     );
     const before = snapshotTree(dataHome);

@@ -12,6 +12,8 @@ argv and environment
         v
 packages/cli  --------->  packages/market-data
         |                         |
+        |                provider-sdk <--- optional providers
+        |                         |
         +------------+------------+
                      v
                 packages/core
@@ -22,13 +24,13 @@ packages/cli  --------->  packages/market-data
 
 `packages/core` owns schemas, decimal arithmetic, event application, replay, queries, the local file adapter, and the shared result model.
 
-`packages/market-data` owns historical acquisition, normalized provider contracts, non-secret source configuration, provider adapters, routing, retries, and incremental cache writes. It derives valuation needs from core queries and depends on core types and storage; core has no knowledge of provider protocols or acquisition timing.
+`packages/market-data` owns historical acquisition, generic provider hosting/package management, non-secret source configuration, routing, and incremental cache writes. The SDK owns public provider schemas and shared HTTP support; optional adapter packages own source clients and parsing. It derives valuation needs from core queries and depends on core types and storage; core has no knowledge of provider protocols or acquisition timing.
 
 `packages/cli` owns process boot, environment parsing, Commander registration, input preparation, human and JSON rendering, and exit codes. It composes core and market data without moving their rules into command handlers.
 
 `packages/app` is reserved and has no responsibility in the current system.
 
-The public package surfaces are `packages/core/src/index.ts` and `packages/market-data/src/index.ts`. New cross-package dependencies should enter through those exports instead of reaching into another package’s private module.
+Public package surfaces are their `src/index.ts` exports, including `packages/provider-sdk/src/index.ts` and each optional adapter. New cross-package dependencies should enter through those exports instead of reaching into another package’s private module.
 
 ## Keep computation pure
 
@@ -118,7 +120,7 @@ Release verifies the acquisition token before removing the lock. A release failu
 
 This lock protects one local book from concurrent CLI processes. It is not a distributed lock or a synchronization protocol for replicated folders.
 
-`packages/core/src/domain/lock.ts::withRefreshLock` uses a separate per-book refresh lock over the asynchronous provider operation. A competing refresh fails fast and can retry after completion. Ordinary book locks cover only local reads and commits, not network waits. Both locks use the same ownership and manual recovery rules.
+`packages/core/src/domain/lock.ts::withRefreshLock` uses a separate per-book refresh lock over the asynchronous provider operation. A competing refresh fails fast and can retry after completion. Ordinary book locks cover only local reads and commits, not network waits. Both locks use the same ownership and manual recovery rules. `withFileLock` also protects shared provider code: acquire per-book refresh, then shared code, then short book locks where applicable. Package mutations need only the code lock. Fully reused history does not acquire it.
 
 ## Prevent stale event edits
 
@@ -156,7 +158,7 @@ Trade input requires the exact gross amount. Fee source and amount are supplied 
 
 Human renderers in `packages/cli/src/human-output.ts` consume the same filtered or derived values as JSON mode. Filtering and query semantics happen before presentation so output mode cannot change results.
 
-`packages/cli/src/main.ts::main` is the process boundary. It validates the runtime, resolves `FINBOOK_HOME`, constructs concrete providers lazily, maps expected failures, and returns the process exit code.
+`packages/cli/src/main.ts::main` is the process boundary. It validates the runtime, resolves `FINBOOK_HOME`, composes the generic provider runtime lazily, maps expected failures, and returns the process exit code.
 
 ## Inspect without changing state
 
@@ -179,3 +181,13 @@ CLI behaviour runs the built binary against temporary book directories so argv p
 Tests should assert domain invariants and public failure behaviour, not private helpers or incidental object construction. A behaviour change adds coverage at the narrowest boundary that owns the guarantee.
 
 The repository gate in `package.json::scripts.check` runs typechecking, type-aware linting, formatting checks, and tests.
+
+## Keep provider code separate from financial state
+
+`packages/provider-sdk` owns public schemas, inferred types, and shared HTTP support. Optional `packages/provider-*` implementations own source clients and parsing. The base market-data package contains no adapter imports or source-specific dependencies. CLI composes the host, while core remains independent of it.
+
+`packages/market-data/src/packages.ts::ProviderPackages` uses ordinary npm operations in a recognizable managed directory. Direct package dependencies select providers; no recursive plugin discovery or second registry exists. A small host-owned ESM bridge resolves normal public exports from that installation root without importing providers during inspection.
+
+`packages/market-data/src/provider-runtime.ts::ProviderRuntime` imports only sources needed for actual work, validates complete economic results and batch association, and supplies book identity and provenance. Foreign exceptions stay inside this boundary; expected diagnostics redact declared environment inputs. Internal accounting errors remain loud. See [PROVIDERS.md](PROVIDERS.md) for the authoring boundary and [MARKET_DATA.md](MARKET_DATA.md) for orchestration.
+
+Installation is independent of book initialization and configuration. Normal package-tool failure semantics apply: code may be changed or unavailable after failure, with inspection/reinstall as recovery. No package operation edits or migrates financial records. Static book references remain valid when code is absent.

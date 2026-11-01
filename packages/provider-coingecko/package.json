@@ -1,0 +1,34 @@
+{
+  "name": "@finbook/provider-coingecko",
+  "version": "0.1.0",
+  "private": true,
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "dist/**/*.map"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@coingecko/coingecko-typescript": "7.1.0",
+    "@finbook/core": "workspace:*",
+    "@finbook/provider-sdk": "workspace:*",
+    "zod": "4.4.3"
+  },
+  "finbook": {
+    "id": "coingecko",
+    "capabilities": [
+      "price:crypto",
+      "fx",
+      "eur-rate:crypto"
+    ],
+    "environment": [
+      "FINBOOK_COINGECKO_DEMO_API_KEY"
+    ]
+  }
+}

@@ -14,10 +14,14 @@ import {
   type Event,
 } from "@finbook/core";
 import { Command } from "commander";
-import { MarketDataConfigStore, type MarketDataCoordinator } from "@finbook/market-data";
+import {
+  MarketDataConfigStore,
+  type MarketDataCoordinator,
+  type ProviderPackagesFactory,
+} from "@finbook/market-data";
 
 import {
-  listProviders,
+  removeRoute,
   removeSource,
   setProviderEnabled,
   setRoute,
@@ -47,6 +51,8 @@ type ProgramOptions = {
   now?: () => Date;
   generateId?: () => string;
   marketDataFactory?: () => MarketDataCoordinator;
+  providerPackagesFactory?: ProviderPackagesFactory;
+  cwd?: string;
 };
 
 const HistoryOptionsSchema = z
@@ -81,6 +87,45 @@ export function createProgram(dataHome: string, options: ProgramOptions = {}): C
     showDoctor(store, marketDataConfig, jsonMode(command), now()),
   );
 
+  const packages = () => {
+    if (options.providerPackagesFactory === undefined)
+      throw validationFailure(
+        "Provider installation is unavailable.",
+        "Run the built finbook CLI.",
+      );
+    return options.providerPackagesFactory();
+  };
+  const provider = program
+    .command("provider")
+    .description("install and inspect shared provider packages");
+  const providerAdd = provider
+    .command("add <package-or-directory>")
+    .description("install or explicitly replace a provider package");
+  addJsonOption(providerAdd);
+  providerAdd.action(async (input, _options, command) => {
+    const installed = requireResult(await packages().add(input, options.cwd ?? process.cwd()));
+    writeSuccess(
+      installed,
+      jsonMode(command),
+      `${installed.package}@${installed.version} installed (${installed.metadata.id})`,
+    );
+  });
+  const providerList = provider
+    .command("list")
+    .description("inspect installed declarations without running providers");
+  addJsonOption(providerList);
+  providerList.action(async (_options, command) => {
+    const listed = requireResult(await packages().list());
+    writeSuccess(listed, jsonMode(command), JSON.stringify(listed, null, 2));
+  });
+  const providerRemove = provider
+    .command("remove <package>")
+    .description("uninstall shared provider code; preserve all books");
+  addJsonOption(providerRemove);
+  providerRemove.action(async (name, _options, command) => {
+    const removed = requireResult(await packages().remove(name));
+    writeSuccess(removed, jsonMode(command), `${removed.package} removed`);
+  });
   const config = program
     .command("config")
     .description("configure the book and market-data sources");
@@ -94,9 +139,6 @@ export function createProgram(dataHome: string, options: ProgramOptions = {}): C
   addJsonOption(timezoneSet);
   timezoneSet.action((value, _options, command) => setTimeZone(store, value, jsonMode(command)));
   const configProviders = config.command("provider").description("manage providers");
-  const providerList = configProviders.command("list").description("list providers");
-  addJsonOption(providerList);
-  providerList.action((_options, command) => listProviders(marketDataConfig, jsonMode(command)));
   for (const [verb, enabled] of [
     ["enable", true],
     ["disable", false],
@@ -113,7 +155,12 @@ export function createProgram(dataHome: string, options: ProgramOptions = {}): C
   const routeSet = route.command("set <kind> <providers...>").description("set a provider route");
   addJsonOption(routeSet);
   routeSet.action((kind, providers, _options, command) =>
-    setRoute(marketDataConfig, kind, providers, jsonMode(command)),
+    setRoute(marketDataConfig, kind, providers, jsonMode(command), packages()),
+  );
+  const routeRemove = route.command("remove <kind>").description("clear a provider route");
+  addJsonOption(routeRemove);
+  routeRemove.action((kind, _options, command) =>
+    removeRoute(marketDataConfig, kind, jsonMode(command)),
   );
   const source = config.command("source").description("manage source bindings");
   const sourceSet = source.command("set").description("bind an instrument or currency");
@@ -124,7 +171,7 @@ export function createProgram(dataHome: string, options: ProgramOptions = {}): C
     .requiredOption("--identifier <id>", "provider identifier");
   addJsonOption(sourceSet);
   sourceSet.action((_options, command) =>
-    setSource(store, marketDataConfig, command.opts(), jsonMode(command)),
+    setSource(store, marketDataConfig, command.opts(), jsonMode(command), packages()),
   );
   const sourceRemove = source
     .command("remove")

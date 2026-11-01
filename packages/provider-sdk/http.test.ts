@@ -2,7 +2,7 @@ import { createServer, type AddressInfo, type Server } from "node:http";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createRetryingFetch } from "../src/index.js";
+import { createRetryingFetch } from "./src/index.js";
 
 const servers: Server[] = [];
 

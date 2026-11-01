@@ -1,0 +1,26 @@
+{
+  "name": "@finbook/provider-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "dist/**/*.map"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@finbook/core": "workspace:*",
+    "ky": "2.1.0",
+    "zod": "4.4.3"
+  }
+}

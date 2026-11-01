@@ -110,7 +110,7 @@ Missing valuation evidence stays visible as a hole. Affected values, totals, and
 
 `update` acquires available history for recorded end-of-day holdings and foreign cash, including fully sold assets and currencies no longer held. It checks the newest required ranges first, saves dated observations locally, and lets subsequent reads stay offline. Range checks use the completed-date cutoff of the daily cycle.
 
-Historical acquisition supports Yahoo fund NAVs, EODHD raw fund and stock closes, ECB fiat FX, and CoinGecko crypto prices and bound crypto cash. Fund and stock identifiers must match their actual share class or exchange listing. EODHD is the default stock route because split-adjusted Yahoo prices can disagree with the historical units held. Provider access determines available depth; automatic ETF/ETC history and corporate-action accounting are unsupported.
+Optional providers support Yahoo fund NAVs, EODHD raw fund and stock closes, ECB fiat FX, and CoinGecko crypto prices and bound crypto cash. Fund and stock identifiers must match their actual share class or exchange listing. Stock sources must supply raw closes because split-adjusted Yahoo prices can disagree with the historical units held. Provider access determines available depth; automatic ETF/ETC history and corporate-action accounting are unsupported.
 
 Crypto closing observations for economic date D come from midnight UTC starting D+1. The adapter normalizes the source instant to the preceding closing date; core still values holdings through D using economic marks dated on or before D. Historical event-rate lookup keeps its own effective-date meaning. A portfolio total is indicative across markets, rather than one synchronized closing instant.
 
@@ -127,6 +127,14 @@ Manual marks keep same-date precedence. Update saves and reports differing provi
 The difference between total value and contributed capital is a portfolio glance, not realized gain, tax profit, or performance attribution.
 
 The query contract lives in `packages/core/src/domain/queries.ts::getPositions`, `packages/core/src/domain/queries.ts::getGlance`, and `packages/core/src/domain/queries.ts::getHistory`.
+
+## Select optional data sources
+
+The base CLI works without data-provider implementations. Manual observations and saved-data valuations remain usable without installed providers or credentials. Provider code is shared separately from private books; each book explicitly selects source mappings or category routes. Installation selects no route, and a fresh book has no hidden preferred provider.
+
+Official and custom JavaScript packages use the same public economic-data contract. Removing a package preserves settings, events, observations, and completed checks. Missing code is a new-acquisition failure rather than an unreadable book. Source edits can create unchecked work; code upgrades alone do not expire completed history.
+
+Package replacement is deliberate, and local providers are copied rather than linked to development folders. Provider-backed acquisition and package mutation serialize with one fail-fast shared lock; ordinary offline reads remain available. The authoring contract lives in `packages/provider-sdk/src/index.ts` and is explained in [PROVIDERS.md](PROVIDERS.md).
 
 ## Correct and inspect deliberately
 

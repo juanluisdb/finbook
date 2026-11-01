@@ -1,3 +1,4 @@
+import { installFixtureProviders } from "../../../tests/provider-fixture.js";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,6 +16,9 @@ afterEach(() => {
 function fixture() {
   const home = mkdtempSync(join(tmpdir(), "finbook-history-cli-"));
   directories.push(home);
+  const providerHome = mkdtempSync(join(tmpdir(), "finbook-fixture-code-"));
+  directories.push(providerHome);
+  installFixtureProviders(providerHome);
   const store = new FileBookStore(home);
   expect(
     store.appendAccount(
@@ -87,6 +91,7 @@ function fixture() {
         env: {
           ...process.env,
           FINBOOK_HOME: home,
+          FINBOOK_PROVIDERS_HOME: providerHome,
           FINBOOK_EODHD_API_KEY: "fixture-key",
           FINBOOK_TEST_HTTP_LOG: log,
           FINBOOK_TEST_FAIL: String(fail),
@@ -253,4 +258,38 @@ it("returns a failed JSON envelope with saved newer work and retries only the ol
     },
   });
   expect(f.calls()).toEqual(["/api/eod/FUND.EUFUND", "/api/eod/OLD.EUFUND", "/api/eod/OLD.EUFUND"]);
+});
+
+it("fetches an explicitly pinned event-rate provider even without a configured rate route", () => {
+  const f = fixture();
+  const result = f.run([
+    "event",
+    "add",
+    "deposit",
+    "--id",
+    "foreign-deposit",
+    "--date",
+    "2024-09-10",
+    "--account",
+    "broker",
+    "--amount",
+    "100",
+    "--currency",
+    "USD",
+    "--fetch-rate",
+    "--provider",
+    "ecb",
+    "--json",
+  ]);
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+  expect(f.store.load()).toMatchObject({
+    data: {
+      events: expect.arrayContaining([
+        expect.objectContaining({
+          id: "foreign-deposit",
+          eurRateProvenance: expect.objectContaining({ source: "ecb" }),
+        }),
+      ]),
+    },
+  });
 });

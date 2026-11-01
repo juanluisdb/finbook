@@ -1,18 +1,17 @@
 #!/usr/bin/env node
 
 import { CommanderError } from "commander";
+import { z } from "zod";
 import { FileBookStore } from "@finbook/core";
 import {
-  CoinGeckoSource,
-  EcbSource,
-  EodhdSource,
   MarketDataConfigStore,
   MarketDataCoordinator,
-  YahooSource,
+  ProviderPackages,
+  ProviderRuntime,
 } from "@finbook/market-data";
 
 import { CliFailure, requireResult, validationFailure } from "./errors.js";
-import { loadRuntimeConfig } from "./environment.js";
+import { loadProvidersHome, loadRuntimeConfig } from "./environment.js";
 import { writeError } from "./output.js";
 import { createProgram } from "./program.js";
 import { assertSupportedNodeVersion } from "./runtime.js";
@@ -27,23 +26,41 @@ export async function main(
   try {
     assertSupportedNodeVersion();
     const dataHome = resolveDataHome(argv, env, cwd);
+    const providerPackages = () => {
+      try {
+        return new ProviderPackages(loadProvidersHome(env, cwd), env);
+      } catch {
+        throw validationFailure(
+          "Invalid FINBOOK_PROVIDERS_HOME.",
+          "Use a nonempty path for the separate provider installation directory.",
+        );
+      }
+    };
     const marketData = () => {
       const config = requireResult(new MarketDataConfigStore(dataHome).load());
-      const ecb = new EcbSource();
-      const yahoo = new YahooSource();
-      const coingecko = new CoinGeckoSource({
-        demoApiKey: env.FINBOOK_COINGECKO_DEMO_API_KEY,
-      });
-      const eodhd = new EodhdSource({ apiKey: env.FINBOOK_EODHD_API_KEY });
+      const parsedEnvironment = z.record(z.string(), z.string().optional()).parse({ ...env });
+      const environment = Object.fromEntries(
+        Object.entries(parsedEnvironment).flatMap(([key, value]) =>
+          value === undefined ? [] : [[key, value]],
+        ),
+      );
+      const runtime = new ProviderRuntime(providerPackages, environment);
+      const sources = runtime.sources(config);
       return new MarketDataCoordinator({
         store: new FileBookStore(dataHome),
         config,
-        eurRateSources: [ecb, coingecko],
-        priceHistorySources: [yahoo, eodhd, coingecko],
-        fxHistorySources: [ecb, coingecko],
+        eurRateSources: sources,
+        eurRateSource: (id) => runtime.source(id),
+        priceHistorySources: sources,
+        fxHistorySources: sources,
+        withProviderSession: (operation) => runtime.withSession(operation),
       });
     };
-    const program = createProgram(dataHome, { marketDataFactory: marketData });
+    const program = createProgram(dataHome, {
+      marketDataFactory: marketData,
+      providerPackagesFactory: providerPackages,
+      cwd,
+    });
     if (argv.length === 0) {
       program.outputHelp();
       return 0;
@@ -100,7 +117,8 @@ export async function main(
 }
 
 function resolveDataHome(argv: readonly string[], env: NodeJS.ProcessEnv, cwd: string): string {
-  if (canRunWithoutDataHome(argv)) return cwd;
+  if (canRunWithoutDataHome(argv) || argv.filter((arg) => arg !== "--json")[0] === "provider")
+    return cwd;
   try {
     return loadRuntimeConfig(env, cwd).dataHome;
   } catch (error) {

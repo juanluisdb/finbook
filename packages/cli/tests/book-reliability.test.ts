@@ -83,7 +83,7 @@ it("explains abandoned book and refresh locks while leaving their owner records 
   });
   expect(json.stdout).not.toContain("private-owner-token");
   const human = f.run(["show", "positions"]);
-  expect(human.stderr).toContain("confirming no process is using the book");
+  expect(human.stderr).toContain("confirming no process is using this directory");
   expect(readFileSync(join(bookLock, "owner.json"), "utf8")).toBe(owner);
   rmSync(bookLock, { recursive: true });
   const refreshLock = join(f.home, ".finbook.refresh.lock");

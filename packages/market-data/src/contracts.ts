@@ -4,9 +4,9 @@ import { z } from "zod";
 
 import { CurrencySchema, InstrumentIdSchema } from "@finbook/core";
 
-export const ProviderIdSchema = z.enum(["yahoo", "coingecko", "ecb", "eodhd"]);
-export type ProviderId = z.infer<typeof ProviderIdSchema>;
-
+export { ProviderIdSchema } from "@finbook/provider-sdk";
+import { ProviderIdSchema } from "@finbook/provider-sdk";
+export type ProviderId = string;
 export const RouteKeySchema = z.enum([
   "price:stock",
   "price:etf",
@@ -15,34 +15,8 @@ export const RouteKeySchema = z.enum([
   "price:crypto",
   "fx",
   "eur-rate:fiat",
-  "eur-rate:crypto",
 ]);
 export type RouteKey = z.infer<typeof RouteKeySchema>;
-
-export const PROVIDER_CAPABILITIES = {
-  yahoo: ["price:fund"],
-  coingecko: ["price:crypto", "fx", "eur-rate:crypto"],
-  ecb: ["fx", "eur-rate:fiat"],
-  eodhd: ["price:fund", "price:stock"],
-} as const satisfies Record<ProviderId, readonly RouteKey[]>;
-
-export function providerSupportsRoute(provider: ProviderId, route: RouteKey): boolean {
-  return PROVIDER_CAPABILITIES[provider]?.some((candidate) => candidate === route) ?? false;
-}
-
-export function providerSupportsBinding(
-  provider: ProviderId,
-  kind: "instrument" | "currency",
-): boolean {
-  if (kind === "instrument") {
-    return PROVIDER_CAPABILITIES[provider].some((route) => route.startsWith("price:"));
-  }
-  return (
-    providerSupportsRoute(provider, "fx") ||
-    providerSupportsRoute(provider, "eur-rate:fiat") ||
-    providerSupportsRoute(provider, "eur-rate:crypto")
-  );
-}
 
 const ProviderIdentifierSchema = z.string().min(1);
 
@@ -79,7 +53,6 @@ const RouteOverridesSchema = z
     "price:crypto": z.array(ProviderIdSchema).optional(),
     fx: z.array(ProviderIdSchema).optional(),
     "eur-rate:fiat": z.array(ProviderIdSchema).optional(),
-    "eur-rate:crypto": z.array(ProviderIdSchema).optional(),
   })
   .strict()
   .default({});
@@ -92,26 +65,8 @@ export const MarketDataConfigSchema = z
   })
   .strict()
   .superRefine((config, context) => {
-    for (const route of RouteKeySchema.options) {
-      for (const provider of config.routes[route] ?? []) {
-        if (!providerSupportsRoute(provider, route)) {
-          context.addIssue({
-            code: "custom",
-            path: ["routes", route],
-            message: `Provider ${provider} cannot serve ${route}`,
-          });
-        }
-      }
-    }
     const seen = new Set<string>();
     for (const binding of config.bindings) {
-      if (!providerSupportsBinding(binding.provider, binding.kind)) {
-        context.addIssue({
-          code: "custom",
-          path: ["bindings"],
-          message: `Provider ${binding.provider} cannot serve ${binding.kind} bindings`,
-        });
-      }
       const key = `${binding.kind}:${binding.kind === "instrument" ? binding.instrument : binding.currency}`;
       if (seen.has(key)) {
         context.addIssue({
@@ -126,12 +81,8 @@ export const MarketDataConfigSchema = z
 
 export type MarketDataConfig = z.infer<typeof MarketDataConfigSchema>;
 
-export type EurRateNeed = {
-  currency: string;
-  date: string;
-  identifier?: string;
-};
-
+export type { EurRateNeed } from "@finbook/provider-sdk";
+import type { EurRateNeed, ProviderFailure } from "@finbook/provider-sdk";
 export type EurRateOutcome =
   | { need: EurRateNeed; ok: true; data: EurRateObservation }
   | { need: EurRateNeed; ok: false; error: ProviderFailure };
@@ -154,29 +105,17 @@ export type EurRateObservation = {
   provenance: Extract<Provenance, { kind: "fetched" }>;
 };
 
-export type ProviderFailureKind =
-  | "unsupported"
-  | "not-found"
-  | "rate-limited"
-  | "unauthorized"
-  | "unavailable"
-  | "invalid-response";
-
-export type ProviderFailure = {
-  kind: ProviderFailureKind;
-  message: string;
-  status?: number;
-  retryAfterMs?: number;
-};
+export type { ProviderFailure } from "@finbook/provider-sdk";
+export type ProviderFailureKind = ProviderFailure["kind"];
 
 export interface HistoricalEurRateSource {
   readonly id: ProviderId;
   fetchHistoricalEurRates(needs: readonly EurRateNeed[]): Promise<readonly EurRateOutcome[]>;
 }
 
-export type HistoryWindow = { from: string; through: string; sourceFrom?: string };
+export type HistoryWindow = { from: string; through: string; sourceFrom?: string | undefined };
 export type PriceHistoryNeed = HistoryWindow & { instrument: Instrument; identifier: string };
-export type FxHistoryNeed = HistoryWindow & { currency: string; identifier?: string };
+export type FxHistoryNeed = HistoryWindow & { currency: string; identifier?: string | undefined };
 export type PriceHistoryOutcome =
   | { ok: true; data: readonly PriceObservation[] }
   | { ok: false; error: ProviderFailure };

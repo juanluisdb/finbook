@@ -4,9 +4,9 @@
 
 finbook is a local, single-user financial event book.
 
-`packages/core` owns schemas, decimal arithmetic, deterministic accounting, replay, queries, and the local file adapter. `packages/market-data` owns provider contracts, adapters, non-secret configuration, routing, and cache orchestration. `packages/cli` owns process boot, argv parsing, input preparation, rendering, and exit codes. `packages/app` is reserved.
+`packages/core` owns schemas, decimal arithmetic, deterministic accounting, replay, queries, and the local file adapter. `packages/provider-sdk` owns the public data-provider contract and shared HTTP support. `packages/provider-*` adapters own source-specific I/O and dependencies. `packages/market-data` owns generic provider hosting, package installation, non-secret configuration, routing, and cache orchestration. `packages/cli` owns process boot, argv parsing, input preparation, rendering, and exit codes. `packages/app` is reserved.
 
-Respect the dependency direction: CLI composes core and market data; market data depends on core; core does not depend on either outer package.
+Respect the dependency direction: CLI composes core and market data; market data depends on the SDK and core; optional adapters depend on the SDK and core; core does not depend on either outer package.
 
 ## Read the owning design
 
@@ -15,6 +15,8 @@ Read `docs/PRODUCT.md` before changing user-visible behaviour, financial meaning
 Read `docs/DESIGN.md` before changing package responsibilities, parsing boundaries, persistence, locking, replay, mutation, errors, CLI contracts, or verification strategy.
 
 Read `docs/MARKET_DATA.md` before changing providers, capabilities, source configuration, routing, fetching, retries, caching, or historical-rate resolution.
+
+Read `docs/PROVIDERS.md` before changing the public authoring API, package declarations, or provider examples.
 
 Update the owning document in the same change when its mental model, constraints, or guarantees change. Follow `docs/AGENTS.md` whenever editing files under `docs/`.
 
@@ -46,7 +48,7 @@ The book lives at `$FINBOOK_HOME`, never in the checkout. Tests use a temporary 
 
 Route ordinary local book reads and all writes through the file adapter and book lock. Keep inspection paths read-only and non-initializing. Event mutations validate the complete candidate ledger before commit.
 
-`packages/market-data` is the only network boundary. Provider credentials come from environment variables and must never be logged, rendered, or persisted.
+Market data and optional provider packages form the network boundary. Core and CLI do not fetch from sources. Provider credentials come from environment variables and must never be logged, rendered, or persisted.
 
 Fetched price and FX observations are appended one at a time so interrupted work retains successful marks. Keep live network calls out of the normal repository gate.
 

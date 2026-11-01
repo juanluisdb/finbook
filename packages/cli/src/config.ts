@@ -8,16 +8,14 @@ import {
   MarketDataConfigStore,
   ProviderIdSchema,
   RouteKeySchema,
-  defaultRoute,
-  effectiveRoute,
-  type MarketDataConfig,
   type ProviderId,
   type RouteKey,
+  type ProviderPackages,
   type SourceBinding,
 } from "@finbook/market-data";
 
 import { notFoundFailure, requireResult, validationFailure } from "./errors.js";
-import { formatRows, writeSuccess } from "./output.js";
+import { writeSuccess } from "./output.js";
 
 export type SourceConfigOptions = {
   instrument?: string | undefined;
@@ -50,29 +48,6 @@ export function setTimeZone(store: FileBookStore, value: string, json: boolean):
   writeSuccess(config, json, `time zone set to ${metadata.timeZone}`);
 }
 
-export function listProviders(store: MarketDataConfigStore, json: boolean): void {
-  const config = requireResult(store.load());
-  const providers = ProviderIdSchema.options.map((provider) => ({
-    id: provider,
-    enabled: !config.disabledProviders.includes(provider),
-    credentialEnv: credentialEnv(provider),
-    routes: configuredRoutes(provider, config),
-  }));
-  writeSuccess(
-    providers,
-    json,
-    formatRows(
-      ["PROVIDER", "ENABLED", "CREDENTIAL ENV", "ROUTES"],
-      providers.map((provider) => [
-        provider.id,
-        provider.enabled ? "yes" : "no",
-        provider.credentialEnv ?? "none",
-        provider.routes.join(", "),
-      ]),
-    ),
-  );
-}
-
 export function setProviderEnabled(
   store: MarketDataConfigStore,
   value: string,
@@ -91,12 +66,13 @@ export function setProviderEnabled(
   writeSuccess(updated, json, `${provider} ${enabled ? "enabled" : "disabled"}`);
 }
 
-export function setRoute(
+export async function setRoute(
   store: MarketDataConfigStore,
   routeValue: string,
   providerValues: readonly string[],
   json: boolean,
-): void {
+  packages: ProviderPackages,
+): Promise<void> {
   const route = parseRoute(routeValue);
   if (providerValues.length === 0) {
     throw validationFailure("Missing providers", "Provide at least one provider for the route.");
@@ -105,27 +81,30 @@ export function setRoute(
   if (new Set(providers).size !== providers.length) {
     throw validationFailure("Duplicate providers", "List each route provider once.");
   }
+  for (const provider of providers) await requireCapability(packages, provider, [route]);
   const updated = requireResult(
     store.update((config) => ({ ...config, routes: { ...config.routes, [route]: providers } })),
   );
   writeSuccess(updated, json, `${route} route updated`);
 }
 
-export function setSource(
+export async function setSource(
   bookStore: FileBookStore,
   configStore: MarketDataConfigStore,
   options: SourceConfigOptions,
   json: boolean,
-): void {
+  packages: ProviderPackages,
+): Promise<void> {
   const binding = sourceBinding(options);
-  if (
-    binding.kind === "instrument" &&
-    !requireResult(bookStore.load()).instruments.some(
-      (instrument) => instrument.id === binding.instrument,
-    )
-  ) {
-    throw notFoundFailure("instrument", binding.instrument);
+  let routes = ["fx", "eur-rate:fiat", "eur-rate:crypto"];
+  if (binding.kind === "instrument") {
+    const instrument = requireResult(bookStore.load()).instruments.find(
+      (candidate) => candidate.id === binding.instrument,
+    );
+    if (instrument === undefined) throw notFoundFailure("instrument", binding.instrument);
+    routes = [`price:${instrument.type}`];
   }
+  await requireCapability(packages, binding.provider, routes);
   requireResult(
     configStore.update((config) => ({
       ...config,
@@ -200,8 +179,8 @@ function parseProvider(value: string): ProviderId {
   const parsed = ProviderIdSchema.safeParse(value);
   if (!parsed.success) {
     throw validationFailure(
-      `Unknown provider: ${value}.`,
-      "Use a provider supported by the build.",
+      `Invalid provider ID: ${value}.`,
+      "Use a provider ID from `finbook provider list`.",
     );
   }
   return parsed.data;
@@ -236,16 +215,27 @@ function required(value: string | undefined, flag: string): string {
   return value;
 }
 
-function credentialEnv(provider: ProviderId): string | null {
-  if (provider === "coingecko") return "FINBOOK_COINGECKO_DEMO_API_KEY";
-  if (provider === "eodhd") return "FINBOOK_EODHD_API_KEY";
-  return null;
+export function removeRoute(store: MarketDataConfigStore, value: string, json: boolean): void {
+  const route = parseRoute(value);
+  const updated = requireResult(
+    store.update((config) => {
+      const routes = { ...config.routes };
+      delete routes[route];
+      return { ...config, routes };
+    }),
+  );
+  writeSuccess(updated, json, `${route} route removed`);
 }
 
-function configuredRoutes(provider: ProviderId, config: MarketDataConfig): string[] {
-  return RouteKeySchema.options
-    .filter((route) => effectiveRoute(route, config).includes(provider))
-    .map(
-      (route) => `${route} (${defaultRoute(route).includes(provider) ? "default" : "override"})`,
+async function requireCapability(
+  packages: ProviderPackages,
+  id: string,
+  routes: readonly string[],
+): Promise<void> {
+  const provider = requireResult(await packages.find(id));
+  if (!provider.metadata.capabilities.some((capability) => routes.includes(capability)))
+    throw validationFailure(
+      `Provider ${id} cannot serve ${routes.join(" or ")}.`,
+      "Choose a provider with the required declared capability.",
     );
 }

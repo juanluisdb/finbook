@@ -49,3 +49,10 @@ function isWithin(parent: string, candidate: string): boolean {
     (relativePath !== ".." && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath))
   );
 }
+
+export function loadProvidersHome(env: NodeJS.ProcessEnv, cwd: string): string {
+  const configured = z.string().trim().min(1).optional().parse(env.FINBOOK_PROVIDERS_HOME);
+  return configured === undefined
+    ? join(homedir(), ".local", "share", "finbook", "providers")
+    : resolve(cwd, configured);
+}

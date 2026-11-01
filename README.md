@@ -34,11 +34,35 @@ finbook() { node packages/cli/dist/main.js "$@"; }
 finbook --help
 ```
 
+The base CLI needs no provider implementation. Transactions, manual marks, and saved-data valuation work without one. Optional providers are installed separately from the book.
+
 Book data defaults to `~/.finbook`. To try finbook without touching that book, point it at another directory outside the checkout:
 
 ```sh
 export FINBOOK_HOME="$(mktemp -d)"
 ```
+
+## Optional provider setup
+
+Provider code defaults to `~/.local/share/finbook/providers`; `FINBOOK_PROVIDERS_HOME` selects another directory. It is shared by books and separate from `FINBOOK_HOME`. npm is required only for package addition/replacement/removal.
+
+The packages in this unreleased repository are not published. For source builds, prepare an empty directory with ordinary local package artifacts and internal dependency overrides:
+
+```sh
+export FINBOOK_PROVIDERS_HOME="$(mktemp -d)"
+node tools/prepare-local-providers.mjs "$FINBOOK_PROVIDERS_HOME"
+finbook provider add "$FINBOOK_PROVIDERS_HOME/sources/provider-eodhd"
+finbook provider add "$FINBOOK_PROVIDERS_HOME/sources/provider-ecb"
+finbook provider list
+```
+
+The helper prepares artifacts only; it installs or selects no provider. Add Yahoo or CoinGecko from the corresponding prepared source directory when needed. The saved archives keep unpublished internal dependencies local. The helper accepts a new empty directory, not an existing installation to upgrade.
+
+For independently distributed packages, use `finbook provider add <package-name>` or a built local package directory. A first registry addition saves the exact version. Repeating a bare installed name keeps its version; `provider add name@version` or `name@latest` explicitly replaces code. Re-add a local directory to apply edits. `update` acquires portfolio data and never upgrades code.
+
+`provider remove <package-name>` uninstalls shared code without changing any book. Future requests through that provider fail until reinstallation or reconfiguration; saved values remain readable. Use `config provider disable <id>` to disable a source in one book. Package operations run trusted code dependencies and skip package lifecycle scripts; inspect packages before using them.
+
+See [the provider authoring guide](docs/PROVIDERS.md) for the public contract and a complete invented-fund example.
 
 ## Start a book
 
@@ -75,14 +99,16 @@ finbook show positions --as-of 2026-03-04
 Update available historical data and read daily values offline:
 
 ```sh
+# Install optional providers using the source-build setup below first.
 finbook config source set --instrument ACME --provider eodhd --identifier ACME.US
+finbook config route set fx ecb
 export FINBOOK_EODHD_API_KEY="..."
 finbook update
 finbook show history --from 2026-03-03 --to 2026-03-10
 finbook show history --from 2026-03-03 --to 2026-03-10 --json
 ```
 
-Use the actual provider identifier for your instrument. Yahoo supplies fund NAVs, EODHD raw fund and stock closes, ECB fiat exchange rates, and CoinGecko crypto closing history. Yahoo is the default fund provider; EODHD is the default stock provider and needs its API credential and correct exchange identifier. A source binding pins the chosen provider. Automatic ETF/ETC history and corporate actions are unsupported; manual marks remain usable.
+Use the actual provider identifier for your instrument. Yahoo supplies fund NAVs, EODHD raw fund and stock closes, ECB fiat exchange rates, and CoinGecko crypto closing history. There are no automatic default sources: install the packages you need, then configure subject bindings or category routes explicitly. EODHD needs its API credential and correct exchange identifier. A source binding pins the chosen provider. Automatic ETF/ETC history and corporate actions are unsupported; manual marks remain usable.
 
 For the public fund and Bitcoin examples:
 

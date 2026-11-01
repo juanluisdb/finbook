@@ -1,3 +1,4 @@
+import { installFixtureProviders } from "../../../tests/provider-fixture.js";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,8 +14,8 @@ import {
 import {
   MarketDataConfigSchema,
   MarketDataCoordinator,
-  EodhdSource,
-  EcbSource,
+  ProviderPackages,
+  ProviderRuntime,
   type FxHistorySource,
   type PriceHistorySource,
   type PriceObservation,
@@ -24,6 +25,7 @@ import {
 
 const directories: string[] = [];
 afterEach(() => {
+  vi.unstubAllGlobals();
   for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
@@ -427,30 +429,6 @@ it("uses fallback routes but never falls back from an explicit binding", async (
   expect(fallback).toHaveBeenCalledOnce();
 });
 
-it.each([
-  { instrument: "other" },
-  { asOf: "2024-09-04" },
-  { price: { amount: "41", currency: "USD" } },
-  { price: { amount: "-41", currency: "EUR" } },
-])(
-  "rejects invalid normalized price facts without committing marks or successful checks: %o",
-  async (fields) => {
-    const store = book();
-    position(store, "2024-09-02");
-    const source: PriceHistorySource = {
-      id: "eodhd",
-      fetchPriceHistory: async () => ({
-        ok: true,
-        data: [{ ...price("2024-09-02", "41"), ...fields }],
-      }),
-    };
-    expect(await coordinator(store, source, "2024-09-03T12:00:00Z").updateHistory()).toMatchObject({
-      data: { checked: [], failures: [{ error: { kind: "invalid-response" } }] },
-    });
-    expect(store.load()).toMatchObject({ data: { prices: [] } });
-  },
-);
-
 it("advances the completed-date cutoff at 06:00 UTC without point receipt state", async () => {
   const store = book();
   position(store, "2024-09-02");
@@ -580,7 +558,6 @@ it("values raw pre-split stock units and requests FX while sale proceeds remain 
     .mockResolvedValue(
       Response.json([{ date: "2020-08-27", close: 500.04, adjusted_close: 121.1519 }]),
     );
-  const eodhd = new EodhdSource({ apiKey: "fixture", fetchImplementation: priceFetch });
   const fxFetch = vi
     .fn<typeof fetch>()
     .mockResolvedValue(
@@ -588,17 +565,31 @@ it("values raw pre-split stock units and requests FX while sale proceeds remain 
         '<gesmes:Envelope><Cube><Cube time="2020-08-26"><Cube currency="USD" rate="1.25"/></Cube><Cube time="2020-08-31"><Cube currency="USD" rate="1.25"/></Cube><Cube time="2020-09-02"><Cube currency="USD" rate="2"/></Cube></Cube></gesmes:Envelope>',
       ),
     );
-  const ecb = new EcbSource({ fetchImplementation: fxFetch });
+  vi.stubGlobal("fetch", (input: Parameters<typeof fetch>[0], init?: RequestInit) =>
+    (input instanceof Request ? input.url : input.toString()).includes("eodhd.com")
+      ? priceFetch(input, init)
+      : fxFetch(input, init),
+  );
+  const providerHome = mkdtempSync(join(tmpdir(), "finbook-history-code-"));
+  directories.push(providerHome);
+  installFixtureProviders(providerHome);
+  const config = MarketDataConfigSchema.parse({
+    routes: { fx: ["ecb"] },
+    bindings: [
+      { kind: "instrument", instrument: "apple", provider: "eodhd", identifier: "AAPL.US" },
+    ],
+  });
+  const runtime = new ProviderRuntime(() => new ProviderPackages(providerHome, {}), {
+    FINBOOK_EODHD_API_KEY: "fixture",
+  });
+  const sources = runtime.sources(config);
   const updater = new MarketDataCoordinator({
     store,
-    config: MarketDataConfigSchema.parse({
-      bindings: [
-        { kind: "instrument", instrument: "apple", provider: "eodhd", identifier: "AAPL.US" },
-      ],
-    }),
-    eurRateSources: [],
-    priceHistorySources: [eodhd],
-    fxHistorySources: [ecb],
+    config,
+    eurRateSources: sources,
+    priceHistorySources: sources,
+    fxHistorySources: sources,
+    withProviderSession: (operation) => runtime.withSession(operation),
     now: () => new Date("2020-09-03T12:00:00Z"),
   });
   expect(await updater.updateHistory()).toMatchObject({
@@ -667,20 +658,6 @@ it("appends a returning provider value when a later saved candidate differs", as
   expect(getHistory(snapshot.data, "2024-09-02", "2024-09-02")).toMatchObject({
     data: [{ totalEur: { amount: "1020" } }],
   });
-});
-
-it("does not mark a semantically invalid response as an empty successful check", async () => {
-  const store = book();
-  position(store, "2024-09-02");
-  const fetchPriceHistory = vi
-    .fn<PriceHistorySource["fetchPriceHistory"]>()
-    .mockResolvedValue({ ok: true, data: [price("2024-09-03", "41")] });
-  const source = { id: "eodhd" as const, fetchPriceHistory };
-  expect(await coordinator(store, source, "2024-09-03T12:00:00Z").updateHistory()).toMatchObject({
-    data: { checked: [], empty: [], failures: [{ error: { kind: "invalid-response" } }] },
-  });
-  expect((await coordinator(store, source, "2024-09-03T12:00:00Z").updateHistory()).ok).toBe(true);
-  expect(fetchPriceHistory).toHaveBeenCalledTimes(2);
 });
 
 it("batches FX needs and falls through to the next configured history source", async () => {

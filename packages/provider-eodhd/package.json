@@ -1,0 +1,32 @@
+{
+  "name": "@finbook/provider-eodhd",
+  "version": "0.1.0",
+  "private": true,
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "dist/**/*.map"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@finbook/core": "workspace:*",
+    "@finbook/provider-sdk": "workspace:*",
+    "zod": "4.4.3"
+  },
+  "finbook": {
+    "id": "eodhd",
+    "capabilities": [
+      "price:fund",
+      "price:stock"
+    ],
+    "environment": [
+      "FINBOOK_EODHD_API_KEY"
+    ]
+  }
+}

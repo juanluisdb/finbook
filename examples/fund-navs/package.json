@@ -1,0 +1,19 @@
+{
+  "name": "finbook-example-fund-navs",
+  "version": "0.1.0",
+  "private": true,
+  "files": [
+    "index.js"
+  ],
+  "type": "module",
+  "exports": {
+    "import": "./index.js"
+  },
+  "finbook": {
+    "id": "example-navs",
+    "capabilities": [
+      "price:fund"
+    ],
+    "environment": []
+  }
+}
