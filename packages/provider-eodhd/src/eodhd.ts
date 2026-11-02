@@ -34,10 +34,14 @@ export class EodhdSource {
   }
 
   async fetchPriceHistory(need: PriceHistoryNeed): Promise<PriceHistoryOutcome> {
-    if (need.instrument.type !== "fund" && need.instrument.type !== "stock") {
+    if (
+      need.instrument.type !== "fund" &&
+      need.instrument.type !== "stock" &&
+      need.instrument.type !== "etc"
+    ) {
       return {
         ok: false,
-        error: { kind: "unsupported", message: "EODHD history supports funds and stocks." },
+        error: { kind: "unsupported", message: "EODHD history supports funds, stocks, and ETCs." },
       };
     }
     if (this.apiKey === undefined) {

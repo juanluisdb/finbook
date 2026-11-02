@@ -379,6 +379,16 @@ describe("finbook doctor", () => {
     expect(body.data.checks).toEqual(
       expect.arrayContaining([expect.objectContaining({ id: "lock", status: "warning" })]),
     );
+    if (kind === "stale") {
+      expect(body.data.checks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "lock",
+            hint: expect.stringContaining("confirming no finbook process"),
+          }),
+        ]),
+      );
+    }
     expect(snapshotTree(dataHome)).toBe(before);
   });
 

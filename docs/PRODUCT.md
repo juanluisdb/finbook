@@ -110,7 +110,7 @@ Missing valuation evidence stays visible as a hole. Affected values, totals, and
 
 `update` acquires available history for recorded end-of-day holdings and foreign cash, including fully sold assets and currencies no longer held. It checks the newest required ranges first, saves dated observations locally, and lets subsequent reads stay offline. Range checks use the completed-date cutoff of the daily cycle.
 
-Optional providers support Yahoo fund NAVs, EODHD raw fund and stock closes, ECB fiat FX, and CoinGecko crypto prices and bound crypto cash. Fund and stock identifiers must match their actual share class or exchange listing. Stock sources must supply raw closes because split-adjusted Yahoo prices can disagree with the historical units held. Provider access determines available depth; automatic ETF/ETC history and corporate-action accounting are unsupported.
+Optional providers support Yahoo fund NAVs, EODHD raw fund, stock, and ETC closes, ECB fiat FX, and CoinGecko crypto prices and bound crypto cash. Fund, stock, and ETC identifiers must match their actual share class or exchange listing. Stock sources must supply raw closes because split-adjusted Yahoo prices can disagree with the historical units held. Provider access determines available depth; automatic ETF history and corporate-action accounting are unsupported.
 
 Crypto closing observations for economic date D come from midnight UTC starting D+1. The adapter normalizes the source instant to the preceding closing date; core still values holdings through D using economic marks dated on or before D. Historical event-rate lookup keeps its own effective-date meaning. A portfolio total is indicative across markets, rather than one synchronized closing instant.
 
