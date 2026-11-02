@@ -198,7 +198,7 @@ function lockCheck(lock: BookLockInspection): DoctorCheck {
       id: "lock",
       status: "warning",
       message: `Book has a stale lock from PID ${String(lock.owner.pid)} on ${lock.owner.hostname}.`,
-      hint: "Retry a normal finbook command to reclaim the stale lock safely.",
+      hint: "Inspect and remove the lock only after confirming no finbook process is using the book.",
     };
   }
   return {

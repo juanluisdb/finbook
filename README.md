@@ -12,7 +12,7 @@ The same non-interactive commands and structured output work for people and codi
 - Distinguish new contributions from transfers between accounts you own.
 - Preserve trade fees, withholding, and historical EUR rates with the event they belong to.
 - Inspect positions and daily portfolio value history in EUR.
-- Update available fund, stock, crypto, and FX history, then inspect saved values offline.
+- Update available fund, stock, ETC, crypto, and FX history, then inspect saved values offline.
 - Correct history without allowing an edit or deletion to invalidate later events.
 - Inspect and automate the book through ordinary files, composable commands, and stable JSON output.
 
@@ -108,7 +108,7 @@ finbook show history --from 2026-03-03 --to 2026-03-10
 finbook show history --from 2026-03-03 --to 2026-03-10 --json
 ```
 
-Use the actual provider identifier for your instrument. Yahoo supplies fund NAVs, EODHD raw fund and stock closes, ECB fiat exchange rates, and CoinGecko crypto closing history. There are no automatic default sources: install the packages you need, then configure subject bindings or category routes explicitly. EODHD needs its API credential and correct exchange identifier. A source binding pins the chosen provider. Automatic ETF/ETC history and corporate actions are unsupported; manual marks remain usable.
+Use the actual provider identifier for your instrument. Yahoo supplies fund NAVs, EODHD raw fund, stock, and ETC closes, ECB fiat exchange rates, and CoinGecko crypto closing history. There are no automatic default sources: install the packages you need, then configure subject bindings or category routes explicitly. EODHD needs its API credential and correct exchange identifier. For CoinGecko's documented Demo API access, configure `FINBOOK_COINGECKO_DEMO_API_KEY`; anonymous access is not guaranteed. A source binding pins the chosen provider. Automatic ETF history and corporate actions are unsupported; manual marks remain usable.
 
 For the public fund and Bitcoin examples:
 

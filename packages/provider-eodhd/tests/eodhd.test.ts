@@ -1,5 +1,8 @@
 import { expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { z } from "zod";
 import { InstrumentSchema } from "@finbook/core";
+import { ProviderMetadataSchema } from "@finbook/provider-sdk";
 import { EodhdSource } from "../src/index.js";
 
 const fund = InstrumentSchema.parse({
@@ -37,6 +40,42 @@ it("retains every raw native close, independently of adjusted closes, in a singl
     ],
   });
   expect(fetchImplementation).toHaveBeenCalledOnce();
+});
+
+it("declares ETC history and retains its raw listing prices through the ordinary EOD endpoint", async () => {
+  const { finbook: metadata } = z
+    .object({ finbook: ProviderMetadataSchema })
+    .parse(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")));
+  const instrument = InstrumentSchema.parse({
+    id: "metal-x",
+    name: "Example Metal ETC",
+    type: "etc",
+    quoteCurrency: "EUR",
+  });
+  expect(metadata.capabilities).toContain(`price:${instrument.type}`);
+  const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(
+    Response.json([
+      { date: "2026-02-27", close: 73.4, adjusted_close: 36.7 },
+      { date: "2026-03-03", close: 74.6, adjusted_close: 37.3 },
+    ]),
+  );
+  const provider = new EodhdSource({ apiKey: "fixture-key", fetchImplementation });
+
+  expect(
+    await provider.fetchPriceHistory({ ...need, instrument, identifier: "COMMODX.XETRA" }),
+  ).toEqual({
+    ok: true,
+    data: [
+      { asOf: "2026-02-27", price: { amount: "73.4", currency: "EUR" } },
+      { asOf: "2026-03-03", price: { amount: "74.6", currency: "EUR" } },
+    ],
+  });
+  expect(fetchImplementation).toHaveBeenCalledOnce();
+  const url = fetchImplementation.mock.calls[0]?.[0];
+  if (!(url instanceof URL)) throw new Error("Expected a URL");
+  expect(url.pathname).toBe("/api/eod/COMMODX.XETRA");
+  expect(url.searchParams.get("from")).toBe("2026-02-27");
+  expect(url.searchParams.get("to")).toBe("2026-03-03");
 });
 
 it("rejects future rows, malformed payloads and non-JSON successes", async () => {

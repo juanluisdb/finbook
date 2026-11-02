@@ -23,7 +23,8 @@
     "id": "eodhd",
     "capabilities": [
       "price:fund",
-      "price:stock"
+      "price:stock",
+      "price:etc"
     ],
     "environment": [
       "FINBOOK_EODHD_API_KEY"

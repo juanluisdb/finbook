@@ -35,7 +35,7 @@ Instrument bindings require an existing local instrument. Currency bindings vali
 
 Resolution precedence lives in `packages/market-data/src/routing.ts::selectPriceProviders`, `packages/market-data/src/routing.ts::selectFxProviders`, and `packages/market-data/src/routing.ts::selectHistoricalEurRateProviders`.
 
-Yahoo supplies fund history. EODHD supports stock history and explicit fund bindings. It uses raw closes matching the units held on the economic date; split-adjusted Yahoo stock history is not eligible. Stock exchange identifiers must be configured correctly. ETF and ETC automatic history has no official adapter; manual marks remain usable.
+Yahoo supplies fund history. EODHD supports stock and ETC history and explicit fund bindings. It uses raw closes matching the units held on the economic date; split-adjusted Yahoo stock history is not eligible. Exchange identifiers and trading currencies must match the actual listing. ETF automatic history has no official adapter; manual marks remain usable.
 
 CoinGecko supplies crypto instrument history and bound crypto-currency FX. ECB supplies fiat FX and historical contribution rates. A new provider must not require changes to core accounting or valuation.
 
@@ -73,7 +73,7 @@ Manual marks win same-date selection against fetched marks. Update saves differi
 
 `packages/market-data/src/config.ts::MarketDataConfigStore` stores non-secret routes, disabled providers, and bindings in `market-data.json`, validates reads, and replaces writes atomically under the book lock. Inspection returns an empty source configuration without creating a missing file.
 
-`packages/cli/src/main.ts::main` parses process environment values. `packages/market-data/src/provider-runtime.ts::ProviderRuntime` passes only declared present values to the selected factory. CoinGecko can use public access or the configured Demo credential; EODHD requires its configured API credential. Credentials never enter configuration, observations, output, logs, or successful-check identities. No paid-tier selection or subscription management is provided.
+`packages/cli/src/main.ts::main` parses process environment values. `packages/market-data/src/provider-runtime.ts::ProviderRuntime` passes only declared present values to the selected factory. CoinGecko uses its configured Demo credential for the documented API path; the gateway also permits anonymous attempts, whose availability is not guaranteed. EODHD requires its configured API credential. Credentials never enter configuration, observations, output, logs, or successful-check identities. No paid-tier selection or subscription management is provided.
 
 `packages/provider-sdk/src/index.ts::ProviderFailureSchema` distinguishes unsupported, not found, rate limited, unauthorized, unavailable, and invalid response. Adapters validate source payloads before normalization. The runtime validates the complete economic result, currency/pair, economic date, and exact batch request echoes before adding local identity and host provenance. Historical orchestration receives trusted normalized marks rather than parsing foreign data again. Provider errors cannot masquerade as empty successful ranges.
 
