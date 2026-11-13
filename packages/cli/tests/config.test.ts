@@ -220,7 +220,7 @@ describe("provider configuration CLI", () => {
           version: "0.1.0",
           metadata: {
             id: "eodhd",
-            capabilities: ["price:fund", "price:stock"],
+            capabilities: ["price:fund", "price:stock", "price:etc"],
             environment: ["FINBOOK_EODHD_API_KEY"],
           },
         },
