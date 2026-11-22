@@ -71,6 +71,10 @@ export class FileBookStore {
     return withBookLock(this.dataHome, () => this.loadUnlocked());
   }
 
+  loadExisting(): Result<BookSnapshot> {
+    return withBookLock(this.dataHome, () => this.readSnapshot(), "existing-directory");
+  }
+
   loadMetadata(): Result<Meta> {
     return withBookLock(this.dataHome, () => {
       const initialized = this.ensureInitialized();
@@ -285,6 +289,10 @@ export class FileBookStore {
     const initialized = this.ensureInitialized();
     if (!initialized.ok) return fail(initialized.error);
 
+    return this.readSnapshot();
+  }
+
+  private readSnapshot(): Result<BookSnapshot> {
     const book = this.readBook();
     return book.ok ? succeed(book.data.snapshot) : fail(book.error);
   }

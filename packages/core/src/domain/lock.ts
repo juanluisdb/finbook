@@ -8,6 +8,7 @@ import { IsoInstantSchema, NonEmptyStringSchema } from "./scalars.js";
 import { fail, succeed, type DomainError, type Result } from "./result.js";
 
 const LOCK_DIRECTORY = ".finbook.lock";
+type LockHome = "prepare-directory" | "existing-directory";
 const LockOwnerSchema = z
   .object({
     pid: z.number().int().positive(),
@@ -77,8 +78,12 @@ export async function withFileLock<T>(
   return released.ok ? result : fail(released.error);
 }
 
-export function withBookLock<T>(dataHome: string, operation: () => Result<T>): Result<T> {
-  const acquired = acquireBookLock(dataHome);
+export function withBookLock<T>(
+  dataHome: string,
+  operation: () => Result<T>,
+  home: LockHome = "prepare-directory",
+): Result<T> {
+  const acquired = acquireBookLock(dataHome, LOCK_DIRECTORY, home);
   if (!acquired.ok) return fail(acquired.error);
 
   let result: Result<T> | undefined;
@@ -100,10 +105,14 @@ export function withBookLock<T>(dataHome: string, operation: () => Result<T>): R
   return result;
 }
 
-function acquireBookLock(dataHome: string, directory = LOCK_DIRECTORY): Result<string> {
+function acquireBookLock(
+  dataHome: string,
+  directory: string,
+  home: LockHome = "prepare-directory",
+): Result<string> {
   const lockPath = join(dataHome, directory);
   try {
-    ensureDataDirectory(dataHome);
+    if (home === "prepare-directory") ensureDataDirectory(dataHome);
   } catch (error) {
     const detail = error instanceof Error ? error.message : "unknown filesystem error";
     return fail(
@@ -139,6 +148,18 @@ function acquireBookLock(dataHome: string, directory = LOCK_DIRECTORY): Result<s
             "Check the protected directory and retry.",
           ),
         );
+      }
+      if (
+        home === "existing-directory" &&
+        !created &&
+        isErrnoException(error) &&
+        error.code === "ENOENT"
+      ) {
+        return fail({
+          type: "not-found",
+          message: "The book directory does not exist.",
+          hint: "Point FINBOOK_HOME at an existing book.",
+        });
       }
       if (!isAlreadyExists(error)) {
         try {

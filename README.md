@@ -42,6 +42,18 @@ Book data defaults to `~/.finbook`. To try finbook without touching that book, p
 export FINBOOK_HOME="$(mktemp -d)"
 ```
 
+## Run the local MCP preview
+
+Build from source, then point the MCP server at an existing finbook book outside the checkout.
+
+```sh
+FINBOOK_HOME=/path/to/book node packages/mcp/dist/main.js
+```
+
+Connect an MCP client using Streamable HTTP at `http://127.0.0.1:3000/mcp`. Set `FINBOOK_MCP_PORT` to select another port. The preview tool `get_portfolio_value` takes an `asOf` date in `YYYY-MM-DD` form and returns the saved EUR valuation for that date. If a required price or FX rate is missing, the value is `null`. Use the CLI to create a book, record events, and refresh market data.
+
+The listener trusts local processes on the same host. For remote access, put it behind a gateway that provides MCP-compatible OAuth discovery and authorizes every request to `/mcp` before forwarding it. Preserve the MCP request headers and keep the origin listener reachable only from the host running the gateway connector. Verify the OAuth flow with an invented book before connecting a private book.
+
 ## Optional provider setup
 
 Provider code defaults to `~/.local/share/finbook/providers`; `FINBOOK_PROVIDERS_HOME` selects another directory. It is shared by books and separate from `FINBOOK_HOME`. npm is required only for package addition/replacement/removal.

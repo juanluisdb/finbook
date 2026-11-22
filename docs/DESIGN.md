@@ -1,25 +1,20 @@
 # Engineering design
 
-finbook is a local, single-process CLI around a deterministic financial event model and an inspectable file store.
+finbook is a local CLI and optional MCP server around a deterministic financial event model and an inspectable file store.
 
 The [product contract](PRODUCT.md) owns what the book means to a user. This document explains the engineering boundaries that preserve those semantics. [Market data](MARKET_DATA.md) owns provider routing, fetching, and cache orchestration.
 
 ## Follow the dependency direction
 
 ```text
-argv and environment
-        |
-        v
-packages/cli  --------->  packages/market-data
-        |                         |
-        |                provider-sdk <--- optional providers
-        |                         |
-        +------------+------------+
-                     v
-                packages/core
-                     |
-                     v
-               $FINBOOK_HOME
+packages/cli --------> packages/market-data --> provider-sdk <-- optional providers
+     |                          |
+     +------------+-------------+
+                  v
+             packages/core <--- packages/mcp
+                  |
+                  v
+            $FINBOOK_HOME
 ```
 
 `packages/core` owns schemas, decimal arithmetic, event application, replay, queries, the local file adapter, and the shared result model.
@@ -27,6 +22,8 @@ packages/cli  --------->  packages/market-data
 `packages/market-data` owns historical acquisition, generic provider hosting/package management, non-secret source configuration, routing, and incremental cache writes. The SDK owns public provider schemas and shared HTTP support; optional adapter packages own source clients and parsing. It derives valuation needs from core queries and depends on core types and storage; core has no knowledge of provider protocols or acquisition timing.
 
 `packages/cli` owns process boot, environment parsing, Commander registration, input preparation, human and JSON rendering, and exit codes. It composes core and market data without moving their rules into command handlers.
+
+`packages/mcp` owns the local listener, protocol registration, tool schemas, and MCP results. It composes the core file adapter and valuation query.
 
 `packages/app` is reserved and has no responsibility in the current system.
 
@@ -44,11 +41,11 @@ These functions do not read files, environment variables, clocks, or providers. 
 
 `packages/core/src/domain/apply.ts::applySell` subtracts disposed units from aggregate holdings before allocating the remaining quantity across lots. The final allocation takes the explicit unit residual; non-final allocations cannot exceed the quantity still unallocated. Proportional cost allocation remains separate from that exact total.
 
-The file adapter and CLI perform effects around this deterministic center. Clocks, ID generators, provider gateways, and fetch implementations are passed in at effect boundaries where tests need control.
+The file adapter, CLI, and MCP server perform effects around this deterministic center. Clocks, ID generators, provider gateways, and fetch implementations are passed in at effect boundaries where tests need control.
 
 ## Parse each boundary once
 
-Zod schemas validate CLI option objects, canonical event files, environment-derived configuration, stored JSON, stored JSONL, and provider responses.
+Zod schemas validate CLI option objects, MCP arguments, canonical event files, environment-derived configuration, stored JSON, stored JSONL, and provider responses.
 
 The boundary passes parsed values downstream. Core logic does not re-interpret raw argv, JSON, file lines, or provider payloads.
 
@@ -104,13 +101,15 @@ The store keeps the data directory owner-only and regular book files owner-reada
 
 ## Keep the book outside the running checkout
 
-`packages/cli/src/environment.ts::loadRuntimeConfig` resolves relative user paths against the caller's directory and derives the protected checkout from the running module's source/built monorepo location. Canonical path comparison includes existing symlinked parents of a not-yet-created data directory. The caller's directory is not the checkout boundary. Book paths cannot overlap the configured provider code directory in either direction; canonical ancestor inspection also rejects books inside another recognized managed installation. An unusable provider setting does not prevent a separate offline book from opening. Provider-only commands do not require a valid book location. This prevents accidental placement of private book data; it is not a sandbox against concurrent filesystem changes by the owner.
+The CLI and MCP entry points resolve relative user paths against the caller's directory and derive the protected checkout from the running module's monorepo location. `packages/core/src/domain/book-path.ts::canonicalBookHome` includes existing symlinked parents when checking the book path against the checkout.
+
+`packages/cli/src/environment.ts::loadRuntimeConfig` also rejects overlap with the configured provider code directory in either direction and checks canonical ancestors for other managed installations. An unusable provider setting does not prevent a separate offline book from opening. Provider-only commands do not require a book location.
 
 ## Serialize access to one book
 
-Every store operation that may initialize, read for mutation, or write uses `packages/core/src/domain/lock.ts::withBookLock`.
+Ordinary book reads and operations that initialize or write use `packages/core/src/domain/lock.ts::withBookLock`. `packages/core/src/domain/store.ts::FileBookStore.loadExisting` acquires the same lock without preparing the home directory or initializing files.
 
-The lock is an owner-only directory containing a validated owner record with process, host, creation instant, and acquisition token. Directory creation provides mutual exclusion for independent CLI processes.
+The lock is an owner-only directory containing a validated owner record with process, host, creation instant, and acquisition token. Directory creation provides mutual exclusion across finbook processes.
 
 An existing live, abandoned, or uncertain lock prevents the protected operation from running. finbook never reclaims a stale lock automatically: inspecting ownership and subsequently deleting a pathname cannot guarantee that the pathname still belongs to that owner. Failures name the lock and advise waiting for a live owner or confirming that no process uses the book before manual recovery. Failed acquisition cleans up a directory only when that acquisition created it.
 
@@ -160,6 +159,12 @@ Human renderers in `packages/cli/src/human-output.ts` consume the same filtered 
 
 `packages/cli/src/main.ts::main` is the process boundary. It validates the runtime, resolves `FINBOOK_HOME`, composes the generic provider runtime lazily, maps expected failures, and returns the process exit code.
 
+## Serve MCP reads from the same book
+
+`packages/mcp/src/main.ts::main` validates the explicit book path, binds Streamable HTTP to loopback, and restricts the listener to `/mcp` with Host and Origin checks. A remote gateway owns OAuth discovery and authorization before forwarding requests to this private listener.
+
+`packages/mcp/src/server.ts::createFinbookMcpHandler` registers tools through the SDK's per-request factory. The tool in `packages/mcp/src/tools/portfolio-value.ts::registerPortfolioValue` reads a fresh snapshot on invocation and releases the lock before computing the value through core. Its response schema projects the valuation into JSON-compatible fields. Remote tool errors provide safe recovery guidance while local diagnostics identify storage problems.
+
 ## Inspect without changing state
 
 `packages/cli/src/doctor.ts::inspectDoctor` combines read-only book, lock, filesystem, market-config, replay, and valuation inspections.
@@ -177,6 +182,8 @@ Persistence and locking use real temporary directories rather than mocked filesy
 Provider adapters use fixtures or local HTTP behaviour without live network calls. Coordinator tests use small in-process sources and the real storage contract needed by the scenario.
 
 CLI behaviour runs the built binary against temporary book directories so argv parsing, stdout, stderr, and exit codes are covered together.
+
+MCP behaviour runs the built listener over loopback with the official client in both protocol eras. Tests use the built CLI to seed and change a temporary book.
 
 Tests should assert domain invariants and public failure behaviour, not private helpers or incidental object construction. A behaviour change adds coverage at the narrowest boundary that owns the guarantee.
 
