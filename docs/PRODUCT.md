@@ -4,7 +4,7 @@ finbook is a deliberately small financial event book for one person managing inv
 
 It answers three practical questions from a single history: what do I own, what is it worth in EUR, and how much of that value came from contributions rather than investment results.
 
-The CLI is the product surface. The local data folder is the persisted book. Broker statements and tax documents remain the owner’s external records.
+The CLI is the main product surface. The optional MCP preview provides agents with a saved valuation from the same local book. Broker statements and tax documents remain the owner’s external records.
 
 ## Prefer boring and explicit
 
@@ -14,9 +14,9 @@ Opinionated event meanings replace flexible categorization. Explicit dates and e
 
 The product should stay simple enough that its owner can inspect the book, understand a calculation from its inputs, and correct history without specialist tooling.
 
-The same interface should work well for a person and a coding agent. Commands are non-interactive, help is discoverable, machine output is structured, failures are actionable, and persisted data uses ordinary documented formats.
+CLI commands work for people and coding agents. Commands are non-interactive, help is discoverable, machine output is structured, failures are actionable, and persisted data uses ordinary documented formats.
 
-Agent usability does not justify a parallel API or agent-only behaviour. Agents use the same commands, validation, and book as the owner.
+The MCP preview reads one explicitly configured book and uses the same accounting and valuation rules as the CLI. It calculates the portfolio value in EUR for an explicit date from saved observations. The value is unknown when the book lacks required observations. The CLI handles book creation, edits, and market-data updates.
 
 Spanish focus means reporting in EUR while preserving exact native-currency facts. Additional reporting evidence can be supplied where useful. The current product does not calculate or file taxes.
 
@@ -120,7 +120,7 @@ CoinGecko Demo requests cover available history within its access horizon. Older
 
 Historical update reports saved observations, checked and reused ranges, empty checks, provider failures, and manual conflicts. A provider failure preserves completed work and leaves its failed range retryable. Storage failure stops acquisition. The completed-history cutoff advances at 06:00 UTC; the CLI schedules no background work.
 
-All portfolio views are offline. They preserve exact decimal JSON values and show the economic dates and sources selected. Human EUR valuations round for reading and put evidence near the headline. Missing inputs and input age are distinct: having a selected mark for every subject does not establish recent prices.
+All portfolio views are offline and preserve exact decimal JSON values. CLI views show the economic dates and sources selected. Human EUR valuations round for reading and put evidence near the headline. Missing inputs and input age are distinct: having a selected mark for every subject does not establish recent prices.
 
 Manual marks keep same-date precedence. Update saves and reports differing provider candidates without replacing the manual choice. An explicit price or FX entry is the deliberate correction path. Whole-book update has no bulk replacement option.
 

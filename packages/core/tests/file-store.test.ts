@@ -19,6 +19,8 @@ import {
   InstrumentSchema,
   getGlance,
   getPositions,
+  succeed,
+  withBookLock,
   type Account,
   type BookSnapshot,
   type Instrument,
@@ -74,6 +76,49 @@ function seedBook(store: FileBookStore): void {
 }
 
 describe("FileBookStore", () => {
+  it("leaves the home absent when reading a missing book", () => {
+    const home = join(temporaryStore().dataHome, "missing");
+
+    const result = new FileBookStore(home).loadExisting();
+
+    expect({ result, homeExists: existsSync(home) }).toMatchObject({
+      result: { ok: false, error: { type: "not-found" } },
+      homeExists: false,
+    });
+  });
+
+  it("leaves an empty home uninitialized", () => {
+    const store = temporaryStore();
+
+    expect(store.loadExisting()).toMatchObject({ ok: false, error: { type: "storage" } });
+    expect(store.inspect()).toEqual({ ok: true, data: { initialized: false } });
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "reads book facts without changing home permissions",
+    () => {
+      const store = temporaryStore();
+      seedBook(store);
+      expect(store.appendEvent(event).ok).toBe(true);
+      chmodSync(store.dataHome, 0o750);
+
+      expect(store.loadExisting()).toMatchObject({ ok: true, data: { events: [event] } });
+      expect(statSync(store.dataHome).mode & 0o777).toBe(0o750);
+      expect(existsSync(join(store.dataHome, ".finbook.lock"))).toBe(false);
+    },
+  );
+
+  it("shares the ordinary book lock when reading an existing book", () => {
+    const store = temporaryStore();
+    seedBook(store);
+
+    expect(withBookLock(store.dataHome, () => succeed(store.loadExisting()))).toMatchObject({
+      ok: true,
+      data: { ok: false, error: { type: "storage", message: expect.stringContaining("held") } },
+    });
+    expect(store.loadExisting().ok).toBe(true);
+  });
+
   it("inspects a missing book without initializing it", () => {
     const root = mkdtempSync(join(tmpdir(), "finbook-inspect-"));
     temporaryDirectories.push(root);
@@ -905,6 +950,10 @@ it.each([
     rmSync(join(store.dataHome, missing));
     expect(store.inspect()).toMatchObject({ ok: false, error: { type: "storage" } });
     expect(store.load()).toMatchObject({
+      ok: false,
+      error: { type: "storage", message: expect.stringContaining(missing) },
+    });
+    expect(store.loadExisting()).toMatchObject({
       ok: false,
       error: { type: "storage", message: expect.stringContaining(missing) },
     });
