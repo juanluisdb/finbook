@@ -44,15 +44,15 @@ export FINBOOK_HOME="$(mktemp -d)"
 
 ## Run the local MCP preview
 
-Build from source, then point the MCP server at an existing finbook book outside the checkout.
+Build from source, then point the MCP server at an existing finbook book outside the checkout. The server process needs permission to read the book and to create and remove the temporary lock in its directory.
 
 ```sh
 FINBOOK_HOME=/path/to/book node packages/mcp/dist/main.js
 ```
 
-Connect an MCP client using Streamable HTTP at `http://127.0.0.1:3000/mcp`. Set `FINBOOK_MCP_PORT` to select another port. The preview tool `get_portfolio_value` takes an `asOf` date in `YYYY-MM-DD` form and returns the saved EUR valuation for that date. If a required price or FX rate is missing, the value is `null`. Use the CLI to create a book, record events, and refresh market data.
+Connect an MCP client using Streamable HTTP at `http://127.0.0.1:3000/mcp`. Set `FINBOOK_MCP_PORT` to select another port. The preview tool `get_portfolio_value` takes an `asOf` date in `YYYY-MM-DD` form and calculates the EUR value using the latest saved prices and FX on or before that date. If a required observation is missing, the value is `null`. Use the CLI to create a book, record events, and refresh market data.
 
-The listener trusts local processes on the same host. For remote access, put it behind a gateway that provides MCP-compatible OAuth discovery and authorizes every request to `/mcp` before forwarding it. Preserve the MCP request headers and keep the origin listener reachable only from the host running the gateway connector. Verify the OAuth flow with an invented book before connecting a private book.
+The listener trusts local processes on the same host. For remote access, put it behind a gateway that provides MCP-compatible OAuth discovery and authorizes every request to `/mcp` before forwarding it. Preserve the MCP protocol headers and set the upstream HTTP `Host` to the loopback address and port used by finbook, for example `127.0.0.1:3000`. Keep the origin listener reachable only from the host running the gateway connector. Verify the OAuth flow with an invented book before connecting a private book.
 
 ## Optional provider setup
 

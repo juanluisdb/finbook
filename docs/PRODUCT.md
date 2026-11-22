@@ -16,7 +16,7 @@ The product should stay simple enough that its owner can inspect the book, under
 
 CLI commands work for people and coding agents. Commands are non-interactive, help is discoverable, machine output is structured, failures are actionable, and persisted data uses ordinary documented formats.
 
-The MCP preview reads one explicitly configured book and uses the same accounting and valuation rules as the CLI. It returns the saved EUR value for an explicit date or an unknown value when the book lacks required observations. The CLI handles book creation, edits, and market-data updates.
+The MCP preview reads one explicitly configured book and uses the same accounting and valuation rules as the CLI. It calculates the portfolio value in EUR for an explicit date from saved observations. The value is unknown when the book lacks required observations. The CLI handles book creation, edits, and market-data updates.
 
 Spanish focus means reporting in EUR while preserving exact native-currency facts. Additional reporting evidence can be supplied where useful. The current product does not calculate or file taxes.
 

@@ -161,9 +161,9 @@ Human renderers in `packages/cli/src/human-output.ts` consume the same filtered 
 
 ## Serve MCP reads from the same book
 
-`packages/mcp/src/main.ts::main` validates the explicit book path, binds Streamable HTTP to loopback, and restricts the listener to `/mcp` with Host and Origin checks. A remote gateway owns OAuth discovery and authorization before forwarding requests to this private listener.
+`packages/mcp/src/main.ts::main` validates the explicit book path, binds Streamable HTTP to loopback, and restricts the listener to `/mcp` with Host and Origin checks. The listener limits request body size and sets `Cache-Control: no-store` on responses. A remote gateway owns OAuth discovery and authorization before forwarding requests to this private listener.
 
-`packages/mcp/src/server.ts::createFinbookMcpHandler` registers tools through the SDK's per-request factory. The tool in `packages/mcp/src/tools/portfolio-value.ts::registerPortfolioValue` reads a fresh snapshot on invocation and releases the lock before computing the value through core. Its response schema projects the valuation into JSON-compatible fields. Remote tool errors provide safe recovery guidance while local diagnostics identify storage problems.
+`packages/mcp/src/server.ts::createFinbookMcpHandler` registers tools through the SDK's per-request factory and bounds the number of elements the SDK validates in a tool call. The tool in `packages/mcp/src/tools/portfolio-value.ts::registerPortfolioValue` reads a fresh snapshot on invocation and releases the lock before computing the value through core. Its response schema projects the valuation into JSON-compatible fields. Remote tool errors provide safe recovery guidance while local diagnostics identify storage problems.
 
 ## Inspect without changing state
 

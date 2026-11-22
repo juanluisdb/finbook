@@ -12,7 +12,7 @@ import {
 } from "@modelcontextprotocol/node";
 import { z } from "zod";
 
-import { createFinbookMcpHandler } from "./server.js";
+import { createFinbookMcpHandler, MCP_MAX_REQUEST_BYTES } from "./server.js";
 
 const HOST = "127.0.0.1";
 const ENDPOINT = "/mcp";
@@ -33,7 +33,17 @@ async function main(): Promise<void> {
   const checkout = fileURLToPath(new URL("../../../", import.meta.url));
   const dataHome = canonicalBookHome(resolve(home.data), checkout);
   const handler = createFinbookMcpHandler(new FileBookStore(dataHome));
-  const serve = toNodeHandler(handler);
+  const serve = toNodeHandler(
+    {
+      async fetch(request, options) {
+        const response = await handler.fetch(request, options);
+        const streaming = response.headers.get("Content-Type")?.startsWith("text/event-stream");
+        response.headers.set("Cache-Control", streaming ? "no-store, no-transform" : "no-store");
+        return response;
+      },
+    },
+    { maxRequestBodySize: MCP_MAX_REQUEST_BYTES },
+  );
   const validateHost = localhostHostValidation();
   const validateOrigin = localhostOriginValidation();
   const listener = createServer((request, response) => {
@@ -65,6 +75,7 @@ async function main(): Promise<void> {
   const { port: boundPort } = z.object({ port: z.number() }).parse(listener.address());
   const close = () => {
     listener.close();
+    listener.closeAllConnections();
     void handler.close();
   };
   process.once("SIGINT", close);

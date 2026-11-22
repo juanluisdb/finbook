@@ -9,7 +9,7 @@ export function registerPortfolioValue(server: McpServer, store: FileBookStore):
     "get_portfolio_value",
     {
       description:
-        "Read the saved EUR portfolio value on a given date. The value is null when required prices or exchange rates are missing.",
+        "Calculate the EUR portfolio value on a given date using the latest saved price and exchange-rate observations on or before that date. The value is null when a required observation is missing.",
       annotations: { readOnlyHint: true, openWorldHint: false },
       inputSchema: z.strictObject({
         asOf: IsoDateSchema.describe("Valuation date in YYYY-MM-DD format."),
